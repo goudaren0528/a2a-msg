@@ -140,7 +140,7 @@ test('composition shares one guard and authenticates without IP fallback; paused
   assert.equal(denied.text.includes(f.credential), false);
   assert.equal((await f.request('/api/v1/me', { bearer: null })).json.error.code, 'AUTH_REQUIRED');
   assert.equal((await f.request('/api/v1/conversations', { method: 'POST', body: { peerAgentId: f.agentId } })).json.error.code, 'NEW_WRITES_DISABLED');
-  assert.equal((await f.request('/api/v1/events')).json.error.code, 'RESOURCE_NOT_FOUND');
+  assert.equal((await f.request('/api/v1/unknown-resource')).json.error.code, 'RESOURCE_NOT_FOUND');
   assert.equal((await f.request('/api/v1?x=1')).json.error.code, 'INVALID_REQUEST');
   assert.equal((await f.request('/api/v1x/me')).status, 418);
   f.im.close();
@@ -168,7 +168,7 @@ test('legacy mount isolates namespace and preserves existing health and 404 beha
   const f = await setup(t, policy, true);
   assert.equal((await f.request('/api/v1/me')).json.agentId, f.agentId);
   assert.equal((await f.request('/api/v1', { bearer: null })).json.error.code, 'AUTH_REQUIRED');
-  assert.equal((await f.request('/api/v1/events')).json.error.code, 'RESOURCE_NOT_FOUND');
+  assert.equal((await f.request('/api/v1/unknown-resource')).json.error.code, 'RESOURCE_NOT_FOUND');
   assert.equal((await f.request('/health')).json.member.name, 'A');
   assert.equal((await f.request('/api/unknown')).json.error, 'Not Found');
   assert.equal((await f.request('/api/v1x/me')).json.error, 'Not Found');

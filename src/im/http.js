@@ -28,7 +28,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 // This is a handler, not a server: the caller must set server.maxHeadersCount,
 // headersTimeout, requestTimeout and maxHeaderSize before accepting connections.
-export function createImHandler({ auth, acl, messages, delivery, policy, trustedTimers } = {}) {
+export function createImHandler({ auth, acl, messages, delivery, events, listEventPeers, policy, trustedTimers } = {}) {
   const timers = trustedTimers === undefined ? { setTimeout, clearTimeout } : trustedTimers;
   if (typeof timers?.setTimeout !== 'function' || typeof timers?.clearTimeout !== 'function')
     throw new ImError('POLICY_NOT_CONFIGURED');
@@ -83,8 +83,12 @@ export function createImHandler({ auth, acl, messages, delivery, policy, trusted
       res.once('finish', cleanup);
       res.once('close', cleanup);
       req.once('close', requestClosed);
-      timer = timers.setTimeout(() => { req.destroy(); res.destroy(); }, 30000);
-      timer.unref?.();
+       // SSE has its own bounded lifetime and heartbeat; never apply the 30s request timer.
+       const isEvents = req.method === 'GET' && req.url.split('?', 1)[0] === '/api/v1/events';
+       if (!isEvents) {
+         timer = timers.setTimeout(() => { req.destroy(); res.destroy(); }, 30000);
+         timer.unref?.();
+       }
       const headers = new Map();
       let headerBytes = 0;
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
@@ -138,7 +142,26 @@ export function createImHandler({ auth, acl, messages, delivery, policy, trusted
       const noBody = () => {
         if (headers.has('transfer-encoding') || headers.has('content-length') && integer(headers.get('content-length')) !== 0) fail('INVALID_REQUEST');
       };
-      const path = url.pathname, method = req.method;
+       const path = url.pathname, method = req.method;
+       if (method === 'GET' && path === '/api/v1/events' && events) {
+         query(); noBody();
+         // Only the canonical bearer plus normal HTTP framing/negotiation headers.
+         const allowed = new Set(['host', 'authorization', 'accept', 'accept-encoding', 'connection',
+           'cache-control', 'user-agent', 'content-length']);
+         for (const name of headers.keys()) if (!allowed.has(name)) fail('INVALID_REQUEST');
+         if (req.rawHeaders.length / 2 !== headers.size) fail('INVALID_REQUEST');
+          if (typeof listEventPeers !== 'function') fail('POLICY_NOT_CONFIGURED');
+          const peers = listEventPeers(principal);
+         // Reserve the subscription before sending headers so quota errors remain JSON.
+          const subscription = events.subscribe(principal, res, peers);
+          try {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+            res.flushHeaders();
+            subscription.write(': connected\n\n');
+          } catch (error) { subscription.stop(); throw error; }
+         return true;
+       }
       if (config.writeMode !== 'enabled' && method === 'POST' &&
           (path === '/api/v1/messages' || path === '/api/v1/conversations' ||
            path === '/api/v1/acks' || path.startsWith('/api/v1/receiver/lease') ||

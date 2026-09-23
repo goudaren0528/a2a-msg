@@ -76,7 +76,7 @@ test('isolated HTTP identity, send/replay, binary ACL, lease sync ACK read and l
     const [a, b] = f.agents;
     assert.equal((await f.request('/old')).status, 418);
     assert.equal((await f.request('/api/v1x/me')).status, 418);
-    assert.equal((await f.request('/api/v1/events')).status, 404);
+    assert.equal((await f.request('/api/v1/unknown-resource')).status, 404);
     assert.deepEqual((await f.request('/api/v1/me')).json, { agentId: a.agentId });
     assert.equal((await f.request('/api/v1/contacts')).json.items[0].peerAgentId, b.agentId);
     const conv = (await f.request('/api/v1/conversations', { method: 'POST', body: { peerAgentId: b.agentId } })).json;
