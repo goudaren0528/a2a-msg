@@ -5,6 +5,7 @@ import { CONFIG } from './config.js';
 import { initDb, syncMembers, insertMessage, getMessageById, getAttachmentById, queryMessages, markMessagesRead, getUnreadSummary, getUnreadMetadata } from './db.js';
 import { loadAccessConfig } from './access.js';
 import { createUnreadEvents } from './unread-events.js';
+import { createImHandler } from './im/http.js';
 import { sendMessageSchema, getMsgQuerySchema, readMessageQuerySchema, markReadSchema, attachmentTextQuerySchema } from './validation.js';
 
 function sendJson(res, statusCode, data) {
@@ -100,6 +101,7 @@ function isPreviewableText(row) {
 }
 
 export function createServer(options = {}) {
+  const disabledImHandler = createImHandler();
   // Validate before opening/creating any database. Identity always comes from the socket.
   const access = loadAccessConfig(options.accessConfigPath || process.env.MSG_ACCESS_CONFIG || CONFIG.accessConfig);
   const dbPath = options.dbPath || process.env.MSG_DB_PATH || CONFIG.dbPath;
@@ -113,6 +115,13 @@ export function createServer(options = {}) {
 
   const server = http.createServer(async (req, res) => {
     try {
+      if (typeof req.url === 'string' && /^\/api\/v1(?:\/[^?]*)?(?:\?|$)/.test(req.url)) {
+        if (options.imHandler && await options.imHandler.handle(req, res)) return;
+        // The versioned namespace never reaches IP identity or legacy routing,
+        // even if an injected handler unexpectedly declines this request.
+        await disabledImHandler.handle(req, res);
+        return;
+      }
       const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const pathname = parsedUrl.pathname;
       const method = req.method.toUpperCase();
@@ -430,6 +439,7 @@ export function createServer(options = {}) {
     },
     close() {
       return new Promise((resolve) => {
+        disabledImHandler.close();
         unreadEvents.close();
         server.close(() => {
           try {

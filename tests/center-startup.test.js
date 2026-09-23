@@ -23,10 +23,10 @@ test('foreground task runs one real Node center on isolated DB; occupied port re
   fs.mkdirSync(path.resolve('.test-tmp'), { recursive: true });
   const root = fs.mkdtempSync(path.join(path.resolve('.test-tmp'), 'center-startup-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.mkdirSync(path.join(root, 'src'));
-  for (const name of ['server.js', 'db.js', 'access.js', 'config.js', 'validation.js', 'unread-events.js']) {
-    fs.copyFileSync(path.resolve('src', name), path.join(root, 'src', name));
-  }
+  // Copy the full src tree: the center entry imports its own module graph
+  // (including src/im for the versioned namespace), so an isolated deployment
+  // must contain all of it rather than a hand-listed subset.
+  fs.cpSync(path.resolve('src'), path.join(root, 'src'), { recursive: true });
   // Real imports use project dependencies, not production data or service.
   fs.symlinkSync(path.resolve('node_modules'), path.join(root, 'node_modules'), 'junction');
   const dbPath = path.join(root, 'data.sqlite');

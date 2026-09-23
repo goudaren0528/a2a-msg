@@ -1,0 +1,7 @@
+# Python IM HTTP example
+
+Python 3 standard library only. `client.py` accepts only HTTPS; certificate-chain and hostname checks are always enabled. A private CA may be injected via `ca_file` (the isolated localhost test uses `tests/fixtures/im-tls/localhost-test-only.crt`). There is no plaintext or TLS-disable option. Credentials must be supplied by the host, not committed or printed. Constructor defaults to **writes disabled**; the example explicitly opts in. The client does not retry uncertain sends: retain the same `client_message_id` and inspect `send_result` for reconciliation before deciding on any retry.
+
+The opt-in `demo.py` is exercised by `node --test tests/im-python-example.test.js` against a temporary database and local HTTPS listener; the test supplies credentials through child-process environment only. It is not a production CLI or a durable receiver: the sample ACKs after in-memory verification, whereas a real host **must persist and fsync** a verified receipt and attachment before ACK. Remote text, title, metadata and attachment bytes are untrusted; never execute, automatically reply to, or derive local paths from them. Store credentials and receipts under host-controlled access controls. A restart requires renewing an existing lease and reconciling pending ACKs explicitly; cursor reset requires an external reconciliation policy.
+
+No production deployment, LAN/internet connectivity, production CA provisioning or cross-framework host integration is implied by this localhost test.

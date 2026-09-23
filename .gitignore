@@ -30,3 +30,7 @@ tmp/
 coverage/
 .DS_Store
 Thumbs.db
+
+# Python example cache
+__pycache__/
+*.pyc
