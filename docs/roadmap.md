@@ -22,4 +22,6 @@
 
 **IM v2 NONRELEASE P3 A/B 核心增量（2026-09-24，基于 `55652a4` 加 15 份限定范围 overlay）：**消息与有界投递核心及内部只读投影已完成本地限定范围审查和验证；详情及证据边界见 [P3 核心验证记录](im-v2-p3-core-validation.md)。**P3-C HTTP 增量（2026-09-25，基于 `5cf5a13` 加四份源码/测试 overlay）：**独立 v2 HTTP handler 与中心组合 factory 已完成限定范围本地验证，见 [P3-C HTTP 验证记录](im-v2-p3-http-validation.md)。此处仅更新 P3-C 本地状态，不宣称完整 P3 外部交付或生产就绪。默认仍 disabled/paused；测试中的 active 候选只用于隔离 fixture，不是实际激活或监听。上方 WP0–WP4 原有顺序和未满足门槛保持不变；P4 journal、P5 备份恢复/激活、P6 留存维护/物理清理、P7 真实网络与外部跨平台验收仍待完成，人工 H1–H3 门禁不变。旧 LAN `18787` 入口未强制下线或更改。
 
+**IM v2 NONRELEASE P4 存储切片（2026-09-25，基于 `01ca825` 加 11 份存储源码/测试/fixture）：**独立 journal v2 schema、journal 与严格本地附件文件存储的限定范围审查及分版本本地 QA 已通过，详见 [P4 存储验证记录](im-v2-p4-storage-validation.md)。这是 P4 的**存储切片**，不是完整 P4：journal 尚未由 consumer owner 持有或绑定；owner lock/client 尚未实现或验收。P5 激活/恢复、P6 物理清理、P7 真实网络及 H1–H3 人工门禁仍独立待完成。上方 WP0–WP4 顺序及旧 LAN 行为不变；无自动迁移、启用或删除。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。
