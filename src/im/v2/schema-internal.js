@@ -249,15 +249,15 @@ export function assertImSchemaV4Internal(db, budget) {
     tick();
     if (state.retained_floor!==1) throw mismatch();
     const progress=db.prepare('SELECT handled_through FROM im_sync_progress WHERE recipient_id=? AND center_epoch=? AND stream_epoch=?').get(state.agent_id,center.center_epoch,state.stream_epoch);
-    if (!progress) throw mismatch();
-    let seq=0,ack=0,prefix=true;
+    if (!progress || state.acked_through>progress.handled_through ||
+        state.acked_through<0 || state.acked_through>=state.next_seq) throw mismatch();
+    let seq=0;
     for (const delivery of db.prepare('SELECT seq,acked_at FROM im_deliveries WHERE recipient_id=? ORDER BY seq').iterate(state.agent_id)) {
       tick();
       if (delivery.seq!==++seq) throw mismatch();
-      if (delivery.acked_at===null) prefix=false;
-      else if (prefix) ack=seq;
+      if (seq<=state.acked_through && delivery.acked_at===null) throw mismatch();
     }
-    if (state.next_seq!==seq+1 || state.acked_through!==ack) throw mismatch();
+    if (state.next_seq!==seq+1) throw mismatch();
   }
   for (const progress of db.prepare('SELECT recipient_id,center_epoch,stream_epoch,handled_through FROM im_sync_progress').iterate()) {
     tick();

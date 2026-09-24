@@ -147,8 +147,9 @@ export function createImV2Auth({ db, policy, clock = Date.now, timeGuard } = {})
       return callback();
     });
   }
-  function withWrite(principal, scope, callback) {
+  function withWrite(principal, scope, callback, finalCheck) {
     callbackCheck(callback);
+    if (finalCheck !== undefined) callbackCheck(finalCheck);
     return guard.runWriteFresh(() => {
       check(principal);
       const captured = scopeSnapshot(scope);
@@ -159,6 +160,13 @@ export function createImV2Auth({ db, policy, clock = Date.now, timeGuard } = {})
         throw error('INVALID_REQUEST');
       guard.refreshCurrent();
       scoped(principal, captured); writeGate();
+      // Trusted internal check sees the FINAL observed time via guard.current().
+      // It must not refresh time or control the transaction; failure is signaled by throwing.
+      if (finalCheck !== undefined) {
+        const checked = finalCheck(value);
+        if (checked !== null && (typeof checked === 'object' || typeof checked === 'function') &&
+            typeof checked.then === 'function') throw error('INVALID_REQUEST');
+      }
       return value;
     });
   }

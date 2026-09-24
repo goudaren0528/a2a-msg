@@ -74,6 +74,8 @@ P1额外固定：mapping准确拼接CHECK、旧v1 storage UUID/hash不变；live
 - [ ] 当前epoch相同key重放、冲突、7天到期不复用；旧origin可查结果、snapshot缺失返回SEND_OUTCOME_UNKNOWN、旧origin POST拒绝。
 - [ ] lease内部requestId使用76字符 `v2:<centerEpoch>:<requestId>`；request hash含epoch/instance/credential，result含epoch并复核；旧lease_requests保留但不重用，恢复失效旧leases。
 - [ ] 独立handled与真实ACK前缀；expiry receipt不能写acked_at/read_at；每批≤100项、每次推进≤1000seq，progressPending必返；精确重放只继续已证实前缀，不造ACK。
+- [ ] v4持久 ACK cursor 可落后于最大真实连续 ACK 前缀（≤1000 seq推进预算），但自身每一序号必须有真实ACK证明且不得超过持久 handled；v3导入前仍必须等于最大真实连续ACK前缀，初始backfill使用该验证结果，既不更改旧源也不放松导入检查。
+- [ ] trusted internal `auth.withWrite(principal, scope, callback, finalCheck?)`：可选同步 finalCheck(result) 在业务回调和最终刷新时钟、身份/不可变入口scope/active/policy/write gate全部通过之后运行且只运行一次；使用 `guard.current()` 的最终观察时间，不再刷新；仅抛错表示失败，返回值不作为授权输入（thenable拒绝），不是HTTP/body参数。回调不得再刷新时钟或控制事务；其抛错回滚业务并保留安全时钟floor。P3 delivery 后续仅对 ACK/receipt/renew/new acquire 使用当前lease校验；release精确released tuple/历史查询不因此变成新lease授权。
 - [ ] /api/v2严格header/body绑定；**新v4中心** /api/v1固定426；旧独立v1服务仍原行为；不fallback到LAN。
 - [ ] history tombstone保留位置；expiry GET/reply/read拒绝；下载每块重验ACL/epoch/live，已发headers故障断流。
 - [ ] center factory要求active，监听器生命周期仍归调用者；没有自动迁移、自动启动或自动启写。

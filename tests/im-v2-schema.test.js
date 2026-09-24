@@ -402,6 +402,24 @@ test('Q1: handled prefix needs continuous real ACK or exact-scope expired receip
   });
 });
 
+test('Q1: v4 persisted ACK cursor may lag real continuous ACKs, never lead proof', t => {
+  const f = legacy(t, { messages: 3, acks: [true, true, true] });
+  migrateImSchemaV4(f.db, importOptions());
+  assert.equal(f.db.prepare('SELECT acked_through FROM im_receive_state').get().acked_through, 3);
+  f.db.exec('UPDATE im_receive_state SET acked_through=1; UPDATE im_sync_progress SET handled_through=1');
+  validCandidateUnchanged(f.db);
+  f.db.exec('UPDATE im_receive_state SET acked_through=2');
+  rejectedCandidateUnchanged(f.db); // Stored ACK cannot exceed stored handled progress.
+  f.db.exec('UPDATE im_sync_progress SET handled_through=2');
+  validCandidateUnchanged(f.db);
+  f.db.exec('UPDATE im_deliveries SET read_at=NULL,acked_at=NULL WHERE seq=2');
+  rejectedCandidateUnchanged(f.db); // Cannot count an unACKed delivery even if later rows ACKed.
+  f.db.exec('UPDATE im_deliveries SET acked_at=10 WHERE seq=2');
+  validCandidateUnchanged(f.db);
+  f.db.exec('UPDATE im_deliveries SET seq=4 WHERE seq=2');
+  rejectedCandidateUnchanged(f.db); // A missing sequence cannot be crossed.
+});
+
 test('Q2: content deadline is exact safe acceptedAt plus historical 90-day policy', async t => {
   for (const expires of [0, 7776000101]) await t.test(`corrupt deadline ${expires}`, t => {
     const { db } = legacy(t); migrateImSchemaV4(db, importOptions());

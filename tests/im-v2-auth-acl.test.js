@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { initializeImSchemaV4, migrateImSchemaV4 } from '../src/im/v2/migration.js';
 import { assertImSchemaV4 } from '../src/im/v2/schema.js';
 import { createImV2ClockGuard } from '../src/im/v2/clock.js';
@@ -198,6 +202,110 @@ test('prepared state disables, business rollback and final refreshed credential 
     g.setTime(105);
   }), code('INVALID_CREDENTIAL'));
   assert.equal(g.db.prepare('SELECT expires_at FROM im_credentials WHERE credential_id=?').get(g.credentialId).expires_at, null);
+});
+
+test('trusted finalCheck observes final time and result, without sampling after it', t => {
+  let calls = 0, now = 103;
+  const f = fixture(t, { construct: false });
+  const clock = () => { calls++; return now; };
+  const auth = createImV2Auth({ db: f.db, policy: f.policy, clock });
+  const principal = auth.authenticate(f.credential);
+  const value = Object.freeze({ identity: 'same result' });
+  let checked = 0, seenTime;
+  const result = auth.withWrite(principal, f.scope, () => {
+    sentinel(f);
+    now = 104;
+    return value;
+  }, actual => {
+    checked++;
+    assert.equal(actual, value);
+    seenTime = calls;
+    assert.equal(f.db.prepare('SELECT last_observed_at FROM im_clock').get().last_observed_at, 104);
+    assert.equal(f.db.isTransaction, true);
+    return false; // Only throwing signals failure; return values do not grant or deny authority.
+  });
+  assert.equal(result, value);
+  assert.equal(checked, 1);
+  assert.equal(calls, seenTime, 'no clock sampling after finalCheck');
+  assert.equal(f.db.prepare('SELECT display_name FROM im_agents WHERE agent_id=?').get(f.a).display_name, 'business-sentinel');
+});
+
+test('trusted finalCheck rejects async prefix, thenables and thrown falsy failures atomically', t => {
+  const f = fixture(t), principal = f.auth.authenticate(f.credential);
+  const before = businessSnapshot(f.db);
+  let main = 0, final = 0;
+  assert.throws(() => f.auth.withWrite(principal, f.scope, () => { main++; sentinel(f); }, async () => { final++; }), code('INVALID_REQUEST'));
+  assert.equal(main, 0); assert.equal(final, 0);
+  assert.throws(() => f.auth.withWrite(principal, f.scope, () => { main++; sentinel(f); }, null), code('INVALID_REQUEST'));
+  assert.equal(main, 0);
+  assert.throws(() => f.auth.withWrite(principal, f.scope, () => { main++; sentinel(f); }, () => {
+    final++; return { then() {} };
+  }), code('INVALID_REQUEST'));
+  assert.equal(final, 1);
+  assert.deepEqual(businessSnapshot(f.db), before);
+  for (const failure of [false, null, 0]) {
+    let caught = Symbol('not thrown');
+    try { f.auth.withWrite(principal, f.scope, () => { main++; sentinel(f); }, () => { throw failure; }); }
+    catch (error) { caught = error; }
+    assert.equal(caught, failure);
+    assert.deepEqual(businessSnapshot(f.db), before);
+  }
+  assert.equal(f.db.isTransaction, false);
+});
+
+test('trusted finalCheck does not run when final identity or entry gates fail', t => {
+  const f = fixture(t), principal = f.auth.authenticate(f.credential);
+  const before = businessSnapshot(f.db);
+  let final = 0;
+  assert.throws(() => f.auth.withWrite(principal, f.scope, () => {
+    sentinel(f);
+    f.db.prepare('UPDATE im_credentials SET expires_at=104 WHERE credential_id=?').run(f.credentialId);
+    f.setTime(104);
+  }, () => { final++; }), code('INVALID_CREDENTIAL'));
+  assert.equal(final, 0);
+  assert.deepEqual(businessSnapshot(f.db), before);
+  assert.equal(f.db.prepare('SELECT last_observed_at FROM im_clock').get().last_observed_at, 104);
+  f.db.prepare("UPDATE im_settings SET write_mode='paused'").run();
+  let main = 0;
+  assert.throws(() => f.auth.withWrite(principal, f.scope, () => { main++; }, () => { final++; }), code('NEW_WRITES_DISABLED'));
+  assert.equal(main, 0); assert.equal(final, 0);
+});
+
+test('trusted finalCheck expiry failure rolls back business but persists final clock floor', t => {
+  const f = fixture(t), principal = f.auth.authenticate(f.credential);
+  const before = businessSnapshot(f.db);
+  let final = 0;
+  assert.throws(() => f.auth.withWrite(principal, f.scope, () => {
+    sentinel(f);
+    f.setTime(105);
+    return 'operation';
+  }, result => {
+    final++;
+    assert.equal(result, 'operation');
+    assert.equal(f.db.prepare('SELECT last_observed_at FROM im_clock').get().last_observed_at, 105);
+    throw Object.assign(new Error('lease expired'), { code: 'LEASE_EXPIRED' });
+  }), code('LEASE_EXPIRED'));
+  assert.equal(final, 1);
+  assert.deepEqual(businessSnapshot(f.db), before);
+  assert.equal(f.db.prepare('SELECT last_observed_at FROM im_clock').get().last_observed_at, 105);
+});
+
+test('v4 lagging proven ACK cursor survives real-file reopen and fresh auth guard', t => {
+  const f = fixture(t);
+  f.db.exec('UPDATE im_deliveries SET acked_at=103 WHERE seq=1');
+  assert.equal(f.db.prepare('SELECT acked_through FROM im_receive_state').get().acked_through, 0);
+  assert.equal(assertImSchemaV4(f.db), true);
+  const dir = mkdtempSync(join(tmpdir(), 'im-v2-ack-lag-'));
+  const filename = join(dir, 'candidate.sqlite');
+  f.db.exec(`VACUUM INTO '${filename.replaceAll("'", "''")}'`);
+  const reopened = new DatabaseSync(filename);
+  t.after(() => { reopened.close(); rmSync(dir, { recursive: true, force: true }); });
+  reopened.exec('PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL');
+  assert.equal(assertImSchemaV4(reopened), true);
+  const auth = createImV2Auth({ db: reopened, policy: f.policy, clock: f.clock });
+  const principal = auth.authenticate(f.credential);
+  assert.equal(auth.withWrite(principal, f.scope, () => 'reopened'), 'reopened');
+  assert.equal(reopened.prepare('SELECT acked_through FROM im_receive_state').get().acked_through, 0);
 });
 
 test('expired content only after ACL; missing live payload is storage failure', t => {
