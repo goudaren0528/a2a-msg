@@ -16,4 +16,6 @@
 
 **下一步（依赖顺序）：**本地 A/B/C 迁移包维持已验收的限定范围；新增隔离恢复及无宿主互通批次经代码 gen8、PRD exp5、性能/安全 ora3 和独立 QA gen9 审查 **PASS（仅限对应本地测试版本）**。仍须由维护者分别批准生产备份、显式 schema 升级、迁移与真实双模式验收；正式发布仍取决于 WP0–WP4 各门槛及资源/治理决定。物理 purge 等待设计批准；本次不据此启动新服务、变更远端或推送。
 
+**IM v2 NONRELEASE P1 增量（2026-09-24，基于 `61052a3`）：**[冻结的恢复/留存契约](im-recovery-retention-v2-design.md)与[实施计划](im-v2-implementation-plan.md)保持独立；仅隔离 v4 schema、fresh 初始化与显式 v3→v4 导入候选的 P1 本地实现/审查通过。旧 v1–v3 schema 常量、旧 LAN 与现有 WP0–WP4 门槛不变；候选仍 prepared/paused，未实现 P2 wire、启写/激活或物理清除。版本绑定的测试、审查、限制与后续 P2–P7 门禁见 [P1 验证记录](im-v2-p1-validation.md)；这不是 WP0–WP4、整份 PRD 或生产发布验收。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。
