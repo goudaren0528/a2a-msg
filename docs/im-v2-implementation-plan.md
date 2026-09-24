@@ -90,6 +90,8 @@ P1额外固定：mapping准确拼接CHECK、旧v1 storage UUID/hash不变；live
 
 **P4 client 续跑与 HTTP 契约澄清：** 将来本地 `ackPending` continuation 可用 `{partitionId,pendingAfter,confirmedAfter,phase}`，固定扫描预算、不得无限后台轮询，且此结构不是网络字段。JSON 响应以 envelope 内 protocol/epoch 为权威；响应 headers 可选，但如存在必须一致；二进制响应必须具备相应 headers。P3 HTTP 源码无需因该澄清修改。
 
+**P4 storage stamp 前置条件（仅开发，client 后续独立实现）：** journal 同步 `getChangeStamp()` 返回冻结 `{connectionId:string,localChanges:bigint,externalVersion:bigint}`；connectionId 仅同一进程的同一实际 DB 连接共享，不持久化、不是密钥，也不进入 wire/JSON。`total_changes()` 包含本连接原生及 journal 写入（回滚也可能增长，保守失效）；`PRAGMA data_version` 只比较同连接存活期内其他连接提交，不可跨连接比版本。两次 externalVersion 夹住 localChanges，期间不同则固定 `STORAGE_UNAVAILABLE`，不循环、不启读事务；调用必须无外部事务且 FK ON、同步 FULL/EXTRA。SQLite 有限计数器不构成永久密码学变更证明。未来私有 continuation 必须保留四字段 `{partitionId,pendingAfter,confirmedAfter,phase}` 与 stamp；相同值 JSON 副本可接收，伪造、过期或重启后的 token 拒绝。扫描读操作用匹配 stamp 前后夹持；漂移返回 `PLAN_STALE`，不自动无界重启。仅当同一 connectionId 且 externalVersion 不变时，调用方自己的同步 journal 写入可吸收 localChanges 增长，不得吸收外部提交。最后同 stamp 检查是完成判定的线性化点；返回后新工作不包含在本次结果。同步 journal 回调必须纯粹且不得重入或触发无关写入。最多 10 个 list 页及 10 个 mutation 调用；stamp 常量查询单独计费、不算页数，但不宣称整体扫描为 O(1)。本段只准 storage stamp，不授权 client 接入、服务或真实 DB 操作。
+
 **依赖：**P3；P4实现前固定完整journal DDL/FK/manifest/payload bounds。100项/1000seq/10轮预算已裁决，不再待选。
 
 **提案写集合：**`src/im/v2/journal.js`、`client.js`、`client-files.js`；`tests/im-v2-journal.test.js`、`tests/im-v2-client.test.js`、`tests/im-v2-client-recovery.test.js`。

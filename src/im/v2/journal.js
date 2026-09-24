@@ -1,10 +1,12 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ImV2Error, PROTOCOL, normalizeMessageRequest, fingerprintMessage, operationSchema, deliveryRefSchema, messageSchema, tombstoneSchema, dataSchemas } from './contracts.js';
 import { withImmediateTransaction } from '../transaction.js';
 import { JOURNAL_DDL, JOURNAL_CHECKSUM } from './journal-schema.js';
 
 const UUID=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const HASH=/^[0-9a-f]{64}$/;
+// Identity belongs to the actual connection object, not to a facade or the file.
+const CONNECTION_IDS=new WeakMap();
 const fail=code=>{throw new ImV2Error(code);};
 const integer=(n,min=0)=>Number.isSafeInteger(n)&&n>=min;
 const hash=v=>createHash('sha256').update(v).digest('hex');
@@ -229,6 +231,25 @@ export function createImV2Journal({db,limits={},clock=Date.now}={}) {
     }
   }
   try{withImmediateTransaction(db,()=>{reservedUsage();validateStored();});}catch(e){if(e instanceof ImV2Error)throw e;mismatch();}
+  let connectionId=CONNECTION_IDS.get(db);
+  if(connectionId===undefined){connectionId=randomUUID();CONNECTION_IDS.set(db,connectionId);}
+  function getChangeStamp() {
+    connection();
+    try {
+      // Statement-local BigInt mode avoids changing the connection's existing read behavior.
+      // Do not open a read transaction: that would pin data_version across other commits.
+      const changes=db.prepare('SELECT total_changes() AS local_changes');
+      changes.setReadBigInts(true);
+      // Exhaust the pragma cursor; a live .get() statement can retain its SQLite
+      // snapshot and conceal the commit we must notice on the second sample.
+      const readVersion=()=>{const stmt=db.prepare('PRAGMA data_version');stmt.setReadBigInts(true);return stmt.all()[0]?.data_version;};
+      const first=readVersion();
+      const localChanges=changes.get().local_changes;
+      const second=readVersion();
+      if(typeof first!=='bigint'||typeof localChanges!=='bigint'||typeof second!=='bigint'||first!==second)mismatch();
+      return Object.freeze({connectionId,localChanges,externalVersion:second});
+    } catch { mismatch(); }
+  }
   function stageOutgoing(p,request) {
     active(p);
     const v=request?.attachment?.bytes instanceof Uint8Array ? request : normalizeMessageRequest(request);
@@ -311,7 +332,7 @@ export function createImV2Journal({db,limits={},clock=Date.now}={}) {
     const r=receiver(b.partition_id,b.stream_epoch);run('UPDATE im_v2_client_receiver SET server_handled=?,server_acked=? WHERE partition_id=? AND stream_epoch=?',Math.max(r.server_handled,response.handledThrough),Math.max(r.server_acked,response.ackedThrough),b.partition_id,b.stream_epoch);
     return {...advance(b.partition_id,b.stream_epoch,scope),serverHandled:Math.max(r.server_handled,response.handledThrough),serverAcked:Math.max(r.server_acked,response.ackedThrough)};
   }); }
-  const facade={bindIdentity,requireActivePartition:p=>({...active(p)}),markReconciliationRequired:p=>tx(()=>{const r=active(p);run('UPDATE im_v2_client_partitions SET status=? WHERE partition_id=?','reconciliation_required',r.partition_id);return true;}),reconcilePartition,
+  const facade={getChangeStamp,bindIdentity,requireActivePartition:p=>({...active(p)}),markReconciliationRequired:p=>tx(()=>{const r=active(p);run('UPDATE im_v2_client_partitions SET status=? WHERE partition_id=?','reconciliation_required',r.partition_id);return true;}),reconcilePartition,
     stageOutgoing,getOutgoing:(p,op)=>{h(p);operation(op);return outgoing(p,op);},findOutgoing,markAccepted,
     markRemoteUnknown:(p,op)=>{h(p);operation(op);return tx(()=>{const r=outgoing(p,op);if(!r)fail('INVALID_REQUEST');run('UPDATE im_v2_client_outgoing SET reconciliation_state=? WHERE partition_id=? AND origin_epoch=? AND client_message_id=?','remote_unknown',p,op.originEpoch,op.clientMessageId);return outgoing(p,op);});},
     listPendingOutgoing:(p,opts={})=>{h(p);const n=limitOption(opts);return all("SELECT origin_epoch,client_message_id FROM im_v2_client_outgoing WHERE partition_id=? AND acceptance_state='pending' ORDER BY created_at,origin_epoch,client_message_id LIMIT ?",p,n).map(r=>outgoing(p,{originEpoch:r.origin_epoch,clientMessageId:r.client_message_id}));},
