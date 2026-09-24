@@ -17,7 +17,7 @@ function agent(db, agentId) {
 
 test('first migration, repeat migration, manifest and isolated defaults', (t) => {
   const db = database(t);
-  assert.equal(IM_SCHEMA_VERSION, 1);
+  assert.equal(IM_SCHEMA_VERSION, 2);
   assert.equal(migrateImSchema(db), true);
   const before = db.prepare('SELECT * FROM im_schema').get();
   assert.match(before.migration_checksum, /^[0-9a-f]{64}$/);
@@ -27,8 +27,8 @@ test('first migration, repeat migration, manifest and isolated defaults', (t) =>
   assert.deepEqual({ ...db.prepare('SELECT * FROM im_settings').get() }, { singleton: 1, write_mode: 'paused' });
   assert.deepEqual({ ...db.prepare('SELECT * FROM im_clock').get() }, { singleton: 1, last_observed_at: 0 });
   const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'im_%' ORDER BY name").all().map(r => r.name);
-  assert.deepEqual(names, ['im_agents','im_attachments','im_audit','im_clock','im_contacts','im_conversations','im_credentials','im_deliveries','im_lease_requests','im_legacy_bindings','im_messages','im_migration_runs','im_receive_state','im_receiver_leases','im_schema','im_send_keys','im_settings']);
-  assert.throws(() => migrateImSchema(db, { expectedVersion: 2 }), { code: 'IM_SCHEMA_MISMATCH' });
+  assert.deepEqual(names, ['im_agents','im_attachments','im_audit','im_clock','im_contacts','im_conversations','im_credentials','im_deliveries','im_instance_identity','im_lease_requests','im_legacy_bindings','im_messages','im_migration_runs','im_receive_state','im_receiver_leases','im_schema','im_send_keys','im_settings']);
+  assert.throws(() => migrateImSchema(db, { expectedVersion: 1 }), { code: 'IM_SCHEMA_MISMATCH' });
 });
 
 test('foreign keys must be explicitly enabled; no implicit initialization on import', (t) => {
@@ -45,7 +45,7 @@ test('foreign keys must be explicitly enabled; no implicit initialization on imp
 
 test('unknown marker, counterfeit marker, missing column/index, and extra trigger fail closed', (t) => {
   for (const mutation of [
-    "UPDATE im_schema SET version=2",
+    "UPDATE im_schema SET version=99",
     "UPDATE im_schema SET migration_checksum='0' || substr(migration_checksum,2)",
     'DELETE FROM im_schema',
     'DROP INDEX im_messages_conversation',
@@ -53,7 +53,7 @@ test('unknown marker, counterfeit marker, missing column/index, and extra trigge
   ]) {
     const db = database(t);
     migrateImSchema(db);
-    if (mutation.includes('version=2')) db.exec('PRAGMA ignore_check_constraints = ON');
+    if (mutation.includes('version=99')) db.exec('PRAGMA ignore_check_constraints = ON');
     db.exec(mutation);
     db.exec('PRAGMA ignore_check_constraints = OFF');
     assert.throws(() => assertImSchema(db), { code: 'IM_SCHEMA_MISMATCH' }, mutation);

@@ -3,7 +3,7 @@ import { constants, lstatSync, openSync, closeSync, writeFileSync, fsyncSync, li
 import { dirname, basename, join, resolve } from 'node:path';
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
 import { performance } from 'node:perf_hooks';
-import { assertImSchema, IM_SCHEMA_VERSION } from './schema.js';
+import { assertImSchema, SUPPORTED_IM_SCHEMA_VERSIONS } from './schema.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const sha = path => {
@@ -33,7 +33,7 @@ function inspect(path) {
     if (db.prepare('PRAGMA foreign_key_check').all().length) throw fail('BACKUP_VERIFY_FAILED');
     assertImSchema(db);
     const { version, migration_checksum: schemaChecksum } = db.prepare('SELECT version,migration_checksum FROM im_schema').get();
-    if (version !== IM_SCHEMA_VERSION || !hashPattern.test(schemaChecksum)) throw fail('BACKUP_VERIFY_FAILED');
+    if (!SUPPORTED_IM_SCHEMA_VERSIONS.includes(version) || !hashPattern.test(schemaChecksum)) throw fail('BACKUP_VERIFY_FAILED');
     return { schemaVersion: version, schemaChecksum };
   } catch { throw fail('BACKUP_VERIFY_FAILED'); }
   finally { db?.close(); }

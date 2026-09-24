@@ -62,7 +62,7 @@ test('online WAL backup preserves real core message, BLOB, key and ACK; tamper f
   const result = await runner.backup({ destinationPath, approvalId: 'local-approval', sourceId: 'isolated-source' });
   assert.equal(runner.verify(result).ok, true);
   assert.equal(result.durability, process.platform === 'win32' ? 'degraded' : 'durable');
-  assert.equal(result.manifest.schemaVersion, 1);
+  assert.equal(result.manifest.schemaVersion, 2);
   assert.equal(result.manifest.fileHash, hash(readFileSync(destinationPath)));
   assert.equal(JSON.stringify(result.manifest).includes('snapshot message'), false);
   const isolated = join(dir, 'isolated-restore.sqlite');
