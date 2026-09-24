@@ -24,4 +24,6 @@
 
 **IM v2 NONRELEASE P4 存储切片（2026-09-25，基于 `01ca825` 加 11 份存储源码/测试/fixture）：**独立 journal v2 schema、journal 与严格本地附件文件存储的限定范围审查及分版本本地 QA 已通过，详见 [P4 存储验证记录](im-v2-p4-storage-validation.md)。这是 P4 的**存储切片**，不是完整 P4：journal 尚未由 consumer owner 持有或绑定；owner lock/client 尚未实现或验收。P5 激活/恢复、P6 物理清理、P7 真实网络及 H1–H3 人工门禁仍独立待完成。上方 WP0–WP4 顺序及旧 LAN 行为不变；无自动迁移、启用或删除。
 
+**IM v2 NONRELEASE P4 owner 局部增量（2026-09-25，基于 `24b45e7` 加四份 owner 源码/测试/fixture overlay）：**可信离线打开、显式 journal 绑定及单消费者锁已通过限定范围审查和分平台本地验证，详见 [P4 owner 验证记录](im-v2-journal-owner-validation.md)。本增量不自动注册、不包含 consumer client；P4 仍未完成，P5–P7、H1–H3 与上方 WP0–WP4 门槛不变。仅新 v2 client 的严格 owner 限原生 Unix，Windows 拒绝；旧 LAN 不变，未激活、删除或发布。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。
