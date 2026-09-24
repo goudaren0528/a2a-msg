@@ -18,4 +18,6 @@
 
 **IM v2 NONRELEASE P1 增量（2026-09-24，基于 `61052a3`）：**[冻结的恢复/留存契约](im-recovery-retention-v2-design.md)与[实施计划](im-v2-implementation-plan.md)保持独立；仅隔离 v4 schema、fresh 初始化与显式 v3→v4 导入候选的 P1 本地实现/审查通过。旧 v1–v3 schema 常量、旧 LAN 与现有 WP0–WP4 门槛不变；候选仍 prepared/paused，未实现 P2 wire、启写/激活或物理清除。版本绑定的测试、审查、限制与后续 P2–P7 门禁见 [P1 验证记录](im-v2-p1-validation.md)；这不是 WP0–WP4、整份 PRD 或生产发布验收。
 
+**IM v2 NONRELEASE P2 增量（2026-09-24，基于 `8379179` 加八份 P2 源码/测试）：**独立 v2 contracts/config、clock、auth 与 ACL 边界经限定范围本地审查和验证通过；默认 disabled/paused，未开启新服务或写入。此处仅更新 P2 状态，不改变上方 WP0–WP4 的顺序、已存在门槛或旧 LAN/v1–v3 行为。P3 发送/delivery/HTTP、P4 journal、P5 备份恢复/激活、P6 留存维护/物理清理、P7 外部与跨平台验收仍未交付；人工 H1–H3 门禁仍独立待批。证据与局限见 [P2 验证记录](im-v2-p2-validation.md)。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。
