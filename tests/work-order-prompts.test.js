@@ -18,12 +18,25 @@ const docs = read(docsPath);
 const names = ['work-test.json', 'work-bugfix.json', 'work-test-fix.json', 'result-pass.json', 'result-fail.json'];
 const templates = names.map(name => JSON.parse(read(path.join(refs, name))));
 const requirePhrases = (text, phrases) => phrases.forEach(phrase => assert.ok(text.includes(phrase), `Missing instruction: ${phrase}`));
+const skillFrontmatter = /^---\r?\nname: team-mailbox-dispatch\r?\ndescription: [^\r\n]+\r?\n---(?:\r?\n|$)/;
+const commandFrontmatter = /^---\r?\ndescription: [^\r\n]+\r?\n---(?:\r?\n|$)/;
 
 test('Skill/command trigger on explicit intent, load by name and retain whole-folder references', () => {
-  assert.match(skill, /^---\nname: team-mailbox-dispatch\ndescription: .+\n---/);
+  assert.match(skill, skillFrontmatter);
   requirePhrases(skill, ['Do not trigger on keywords alone', 'Ordinary file sharing, long investigation updates and chat', 'not enforcement or server-side detection', 'explicit user authorization to send this preview']);
-  assert.match(command, /^---\ndescription: .+\n---/);
+  assert.match(command, commandFrontmatter);
   requirePhrases(command, ['Load the `team-mailbox-dispatch` skill through the skill tool by name', '$ARGUMENTS', 'including references/', 'and stop', 'not authorization to send']);
+});
+
+test('skill and command frontmatter accept LF/CRLF, not malformed delimiters', () => {
+  for (const [fixture, pattern] of [[skill, skillFrontmatter], [command, commandFrontmatter]]) {
+    for (const eol of ['\n', '\r\n']) {
+      const text = fixture.replace(/\r?\n/g, eol);
+      assert.match(text, pattern);
+      assert.doesNotMatch(text.replace(/^---/, '----'), pattern);
+      assert.doesNotMatch(text.replace(`${eol}---${eol}`, `${eol}----${eol}`), pattern);
+    }
+  }
 });
 
 test('five standalone JSON templates are placeholders, never ready-to-send examples', () => {

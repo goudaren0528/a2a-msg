@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { CONFIG } from '../config.js';
-import { MAX_RECEIVED_ATTACHMENT_BYTES } from '../attachment-save.js';
+
+// Capture the validated startup ceiling; runtime config may only lower it.
+const MAX_RECEIVED_ATTACHMENT_BYTES = CONFIG.maxAttachmentBytes;
 
 // Local, offline adapter only. The host must independently authenticate its caller,
 // establish the live session/member and supply the scoped store credential.

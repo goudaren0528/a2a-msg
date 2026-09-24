@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDutyConsumer } from '../src/duty/consumer.js';
+import { CONFIG } from '../src/config.js';
 
 const bytes=Buffer.from('approved attachment');
 const sha=v=>createHash('sha256').update(v).digest('hex');
@@ -68,6 +69,35 @@ test('size and SHA tampering never save or return body',async t=>{
     await denied(consumer.payload(request()),'DIGEST_MISMATCH');
   }
   assert.equal(f.saves,0);
+});
+
+test('startup receive ceiling remains fixed after config raises; runtime lowering still applies',async t=>{
+  const original=CONFIG.maxAttachmentBytes;
+  let createWithStartupCap;
+  try {
+    CONFIG.maxAttachmentBytes=bytes.length-1;
+    ({createDutyConsumer:createWithStartupCap}=await import(`../src/duty/consumer.js?cap-regression=${randomUUID()}`));
+  } finally {
+    CONFIG.maxAttachmentBytes=original;
+  }
+  const f=await fixture(t);
+  // Use the freshly imported consumer, which captured the lower startup cap.
+  const capped=createWithStartupCap({enabled:true,store:f.store,getTrustedContext:ctx,
+    saveAttachment:f.save,verifySavedAttachment:f.verify});
+  await denied(capped.payload(request()),'DIGEST_MISMATCH');
+  assert.equal(f.saves,0);
+  const small=Buffer.from('ok');
+  f.setPayload({workId:2,messages:[{...message(),attachment:{...message().attachment,
+    size:small.length,sha256:sha(small),data:small}}]});
+  try {
+    CONFIG.maxAttachmentBytes=small.length-1;
+    await denied(capped.payload(request()),'DIGEST_MISMATCH');
+    assert.equal(f.saves,0);
+  } finally {
+    CONFIG.maxAttachmentBytes=original;
+  }
+  assert.equal((await capped.payload(request())).messages[0].attachment.size,small.length);
+  assert.equal(f.saves,1);
 });
 
 test('save failure hides body; successful save precedes body; cleanup warning is success',async t=>{
