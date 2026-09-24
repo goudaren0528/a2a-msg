@@ -86,6 +86,10 @@ P1额外固定：mapping准确拼接CHECK、旧v1 storage UUID/hash不变；live
 
 ### P4：独立 journal v2 与客户端对账
 
+**P4 journal API 增补（不改 schema / 旧接口）：** `getReceivedFact(partitionId,{streamEpoch,seq,kind})` 读取经校验的隔离事实快照（缺失返回 null，不推断 delivered/read，也不读取附件文件）；`listBatches(partitionId,{state,after?,limit?})` 分页读取 pending/confirmed，包括原始批次与由同分区同流同序号 expiry fact 推导的 ACK disposition：`liveItems`、`expiryRequired`、`expiryConfirmed`、`replayAllowed`。只要有 expiry fact 就不可原样重放 ACK；该布尔值仅表示本地资格，不证明远端新鲜度或附件文件。后续剩余 ACK/expiry 必须按正常配额分别创建新 canonical 批次，不覆盖旧批次。分页沿 `(partition_id,state,created_at,batch_id)` 索引，最多读取 limit+1（limit 默认 20、最大 100），cursor 为规范 base64url 编码的 `[2,"batches",partitionId,state,createdAt,batchId]`，绑定查询范围；每页短快照，不保证跨页快照一致。`clearLease(partitionId,{streamEpoch,instanceId,generation})` 只在活动分区内匹配本地 fence 并清空租约三个字段；全 NULL 返回 `cleared:false`，不证明曾释放该 tuple，也不执行远端释放。`findOutgoing({centerOrigin,agentId,originEpoch,clientMessageId})` 只在该 origin/agent 的活动和历史分区内有界查找；两个匹配为歧义冲突，未命中不证明远端安全 404。上述接口在旧 storage PASS 时尚不存在；client 待独立审查后再接入。
+
+**P4 client 续跑与 HTTP 契约澄清：** 将来本地 `ackPending` continuation 可用 `{partitionId,pendingAfter,confirmedAfter,phase}`，固定扫描预算、不得无限后台轮询，且此结构不是网络字段。JSON 响应以 envelope 内 protocol/epoch 为权威；响应 headers 可选，但如存在必须一致；二进制响应必须具备相应 headers。P3 HTTP 源码无需因该澄清修改。
+
 **依赖：**P3；P4实现前固定完整journal DDL/FK/manifest/payload bounds。100项/1000seq/10轮预算已裁决，不再待选。
 
 **提案写集合：**`src/im/v2/journal.js`、`client.js`、`client-files.js`；`tests/im-v2-journal.test.js`、`tests/im-v2-client.test.js`、`tests/im-v2-client-recovery.test.js`。

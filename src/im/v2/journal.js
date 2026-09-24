@@ -9,6 +9,7 @@ const fail=code=>{throw new ImV2Error(code);};
 const integer=(n,min=0)=>Number.isSafeInteger(n)&&n>=min;
 const hash=v=>createHash('sha256').update(v).digest('hex');
 const utf8=v=>Buffer.byteLength(v??'');
+const frozen=v=>{if(v&&typeof v==='object'){for(const child of Object.values(v))frozen(child);Object.freeze(v);}return v;};
 // Reserved logical bytes: 64 per row; fixed widths for identity, enums and mutable
 // fields; only origin and immutable JSON payloads use actual UTF-8 byte lengths.
 const RESERVED=Object.freeze({
@@ -55,7 +56,7 @@ function verifiedBatch(r){
   if(!r||!HASH.test(r.batch_id)||!HASH.test(r.partition_id)||!UUID.test(r.stream_epoch)||!['ack','expiry'].includes(r.kind)||!['pending','confirmed'].includes(r.state)||!integer(r.created_at)||r.state==='pending'&&r.confirmed_at!==null||r.state==='confirmed'&&!integer(r.confirmed_at)||!HASH.test(r.items_hash)||typeof r.items_json!=='string'||utf8(r.items_json)>16384||hash(r.items_json)!==r.items_hash)mismatch();
   let items;try{items=JSON.parse(r.items_json);}catch{mismatch();}
   if(!Array.isArray(items)||items.length<1||items.length>100||items.some(x=>!deliveryRefSchema.safeParse(x).success)||items.some((x,i)=>i>0&&x.seq<=items[i-1].seq)||new Set(items.map(x=>x.messageId)).size!==items.length||JSON.stringify(items)!==r.items_json||hash(JSON.stringify([r.partition_id,r.stream_epoch,r.kind,items]))!==r.batch_id)mismatch();
-  if(r.last_response_json!==null){let response;try{response=JSON.parse(r.last_response_json);}catch{mismatch();}if(!(r.kind==='ack'?dataSchemas.acks:dataSchemas.expiryReceipts).safeParse(response).success||response.streamEpoch!==r.stream_epoch||utf8(r.last_response_json)>4096)mismatch();}
+  if(r.last_response_json!==null){let response;try{response=JSON.parse(r.last_response_json);}catch{mismatch();}if(!(r.kind==='ack'?dataSchemas.acks:dataSchemas.expiryReceipts).safeParse(response).success||response.streamEpoch!==r.stream_epoch||response.ackedThrough>response.handledThrough||utf8(r.last_response_json)>4096||JSON.stringify(response)!==r.last_response_json)mismatch();}
   return items;
 }
 
@@ -87,6 +88,7 @@ export function createImV2Journal({db,limits={},clock=Date.now}={}) {
   const all=(sql,...a)=>db.prepare(sql).all(...a);
   const run=(sql,...a)=>db.prepare(sql).run(...a);
   const tx=fn=>{connection();try{return withImmediateTransaction(db,fn);}catch(e){if(e instanceof ImV2Error)throw e;fail('STORAGE_UNAVAILABLE');} };
+  const snapshot=fn=>{connection();let begun=false;try{db.exec('BEGIN');begun=true;return fn();}catch(e){if(e instanceof ImV2Error)throw e;fail('STORAGE_UNAVAILABLE');}finally{if(begun){try{db.exec('ROLLBACK');}catch{mismatch();}}}};
   function row(p) { h(p); return get('SELECT * FROM im_v2_client_partitions WHERE partition_id=?',p); }
   function trustedPartition(p) { return verifiedPartition(row(p)); }
   function active(p) { const r=row(p);if(!r||r.status!=='active') fail('RECOVERY_RECONCILIATION_REQUIRED');return r; }
@@ -139,6 +141,69 @@ export function createImV2Journal({db,limits={},clock=Date.now}={}) {
     if(r.payload_json!==null){try{request=JSON.parse(r.payload_json);const normalized=normalizeMessageRequest(request);if(JSON.stringify(request)!==r.payload_json||fingerprintMessage(normalized)!==r.fingerprint||normalized.originEpoch!==op.originEpoch||normalized.clientMessageId!==op.clientMessageId||normalized.centerEpoch!==row(p).center_epoch||r.source_protocol!==PROTOCOL) mismatch();}catch{mismatch();}}
     if(!UUID.test(r.origin_epoch)||!UUID.test(r.client_message_id)||!HASH.test(r.fingerprint)||!['a2a-msg.im.v1',PROTOCOL].includes(r.source_protocol)||!['pending','accepted'].includes(r.acceptance_state)||!['none','required','remote_unknown'].includes(r.reconciliation_state)||!integer(r.created_at)||r.acceptance_state==='accepted'&&(!UUID.test(r.message_id)||!integer(r.accepted_at))||r.acceptance_state==='pending'&&(r.message_id!==null||r.accepted_at!==null))mismatch();
     const {payload_json,...rest}=r;return {...rest,request}; }
+  function getReceivedFact(p,options) {
+    exact(options,['streamEpoch','seq','kind']);const {streamEpoch,seq,kind}=options;
+    h(p);id(streamEpoch);if(!integer(seq,1)||!['message','content_expired'].includes(kind))fail('INVALID_REQUEST');
+    return snapshot(()=>{const stored=row(p);if(!stored)fail('INVALID_REQUEST');const scope=verifiedPartition(stored);
+      const r=get('SELECT * FROM im_v2_client_received WHERE partition_id=? AND stream_epoch=? AND seq=? AND kind=?',p,streamEpoch,seq,kind);
+      if(!r)return null;
+      scopedFact(r,scope,{streamEpoch,seq,messageId:r.message_id,kind});
+      return frozen({partitionId:p,streamEpoch,seq,messageId:r.message_id,kind,fact:JSON.parse(r.fact_json),factHash:r.fact_hash,attachmentReceipt:r.attachment_receipt_json===null?null:JSON.parse(r.attachment_receipt_json),recordedAt:r.recorded_at,serverConfirmed:r.server_confirmed===1});
+    });
+  }
+  function listBatches(p,options) {
+    h(p);if(!obj(options,['state','after','limit'])||!Object.hasOwn(options,'state')||!['pending','confirmed'].includes(options.state))fail('INVALID_REQUEST');
+    const {state}=options,n=options.limit===undefined?20:options.limit;
+    if(!integer(n,1)||n>100)fail('INVALID_REQUEST');
+    let after=null;
+    if(options.after!==undefined){const token=options.after;
+      if(typeof token!=='string'||!token.length||utf8(token)>512||!/^[A-Za-z0-9_-]+$/.test(token))fail('INVALID_REQUEST');
+      try{const text=Buffer.from(token,'base64url').toString('utf8');after=JSON.parse(text);
+        if(!Array.isArray(after)||after.length!==6||after[0]!==2||after[1]!=='batches'||after[2]!==p||after[3]!==state||!integer(after[4])||!HASH.test(after[5])||JSON.stringify(after)!==text||Buffer.from(text).toString('base64url')!==token)fail('INVALID_REQUEST');
+      }catch(e){if(e instanceof ImV2Error)throw e;fail('INVALID_REQUEST');}
+    }
+    return snapshot(()=>{const stored=row(p);if(!stored)fail('INVALID_REQUEST');const scope=verifiedPartition(stored);
+      const rows=after?all('SELECT * FROM im_v2_client_batches WHERE partition_id=? AND state=? AND (created_at,batch_id)>(?,?) ORDER BY created_at,batch_id LIMIT ?',p,state,after[4],after[5],n+1):all('SELECT * FROM im_v2_client_batches WHERE partition_id=? AND state=? ORDER BY created_at,batch_id LIMIT ?',p,state,n+1);
+      const items=rows.slice(0,n).map(b=>{const refs=verifiedBatch(b);if(b.partition_id!==p||b.state!==state)mismatch();
+        const liveItems=[],expiryRequired=[],expiryConfirmed=[];
+        for(const ref of refs){const kind=b.kind==='ack'?'message':'content_expired';
+          const fact=scopedFact(get('SELECT * FROM im_v2_client_received WHERE partition_id=? AND stream_epoch=? AND seq=? AND message_id=? AND kind=?',p,b.stream_epoch,ref.seq,ref.messageId,kind),scope,{streamEpoch:b.stream_epoch,seq:ref.seq,messageId:ref.messageId,kind});
+          if(b.state==='confirmed'&&fact.server_confirmed!==1)mismatch();
+          if(b.kind==='ack'){
+            const expiry=get("SELECT * FROM im_v2_client_received WHERE partition_id=? AND stream_epoch=? AND seq=? AND kind='content_expired'",p,b.stream_epoch,ref.seq);
+            if(expiry){scopedFact(expiry,scope,{streamEpoch:b.stream_epoch,seq:ref.seq,messageId:ref.messageId,kind:'content_expired'});(expiry.server_confirmed===1?expiryConfirmed:expiryRequired).push({...ref});}
+            else liveItems.push({...ref});
+          }
+        }
+        return {batchId:b.batch_id,partitionId:p,streamEpoch:b.stream_epoch,kind:b.kind,state:b.state,items:refs.map(x=>({...x})),itemsHash:b.items_hash,createdAt:b.created_at,confirmedAt:b.confirmed_at,lastResponse:b.last_response_json===null?null:JSON.parse(b.last_response_json),ackDisposition:b.kind==='ack'?{liveItems,expiryRequired,expiryConfirmed,replayAllowed:expiryRequired.length===0&&expiryConfirmed.length===0}:null};
+      });
+      const last=rows[n-1];return frozen({items,nextCursor:rows.length>n?Buffer.from(JSON.stringify([2,'batches',p,state,last.created_at,last.batch_id])).toString('base64url'):null});
+    });
+  }
+  function findOutgoing(options) {
+    exact(options,['centerOrigin','agentId','originEpoch','clientMessageId']);const {centerOrigin,agentId,originEpoch,clientMessageId}=options;
+    origin(centerOrigin);id(agentId);id(originEpoch);id(clientMessageId);
+    return snapshot(()=>{const candidates=all('SELECT * FROM im_v2_client_partitions WHERE center_origin=? AND agent_id=? LIMIT ?',centerOrigin,agentId,bounds.maxPartitions+1);
+      if(candidates.length>bounds.maxPartitions)mismatch();let found=null;
+      for(const candidate of candidates){const r=verifiedPartition(candidate);const saved=outgoing(r.partition_id,{originEpoch,clientMessageId});if(!saved)continue;
+        if(found)fail('IDEMPOTENCY_CONFLICT');
+        found={partition:{partitionId:r.partition_id,centerOrigin:r.center_origin,stableInstanceId:r.stable_instance_id,agentId:r.agent_id,centerEpoch:r.center_epoch,status:r.status},outgoing:saved};
+      }
+      return found===null?null:frozen(found);
+    });
+  }
+  function clearLease(p,options) {
+    exact(options,['streamEpoch','instanceId','generation']);const {streamEpoch,instanceId,generation}=options;
+    h(p);id(streamEpoch);id(instanceId);if(!integer(generation,1))fail('INVALID_REQUEST');
+    return tx(()=>{const stored=row(p);if(!stored)fail('INVALID_REQUEST');const scope=verifiedPartition(stored);if(scope.status!=='active')fail('RECOVERY_RECONCILIATION_REQUIRED');
+      const r=receiver(p,streamEpoch);if(!r)fail('INVALID_REQUEST');
+      if(r.instance_id===null){if(r.generation!==null||r.expires_at!==null)mismatch();return {cleared:false};}
+      if(!UUID.test(r.instance_id)||!integer(r.generation,1)||!integer(r.expires_at))mismatch();
+      if(r.instance_id!==instanceId||r.generation!==generation)fail('STALE_FENCE');
+      if(run('UPDATE im_v2_client_receiver SET instance_id=NULL,generation=NULL,expires_at=NULL WHERE partition_id=? AND stream_epoch=? AND instance_id=? AND generation=?',p,streamEpoch,instanceId,generation).changes!==1)mismatch();
+      return {cleared:true};
+    });
+  }
   function validateStored() {
     for(const r of db.prepare('SELECT * FROM im_v2_client_partitions LIMIT ?').iterate(bounds.maxPartitions+1)){
       verifiedPartition(r);
@@ -247,14 +312,14 @@ export function createImV2Journal({db,limits={},clock=Date.now}={}) {
     return {...advance(b.partition_id,b.stream_epoch,scope),serverHandled:Math.max(r.server_handled,response.handledThrough),serverAcked:Math.max(r.server_acked,response.ackedThrough)};
   }); }
   const facade={bindIdentity,requireActivePartition:p=>({...active(p)}),markReconciliationRequired:p=>tx(()=>{const r=active(p);run('UPDATE im_v2_client_partitions SET status=? WHERE partition_id=?','reconciliation_required',r.partition_id);return true;}),reconcilePartition,
-    stageOutgoing,getOutgoing:(p,op)=>{h(p);operation(op);return outgoing(p,op);},markAccepted,
+    stageOutgoing,getOutgoing:(p,op)=>{h(p);operation(op);return outgoing(p,op);},findOutgoing,markAccepted,
     markRemoteUnknown:(p,op)=>{h(p);operation(op);return tx(()=>{const r=outgoing(p,op);if(!r)fail('INVALID_REQUEST');run('UPDATE im_v2_client_outgoing SET reconciliation_state=? WHERE partition_id=? AND origin_epoch=? AND client_message_id=?','remote_unknown',p,op.originEpoch,op.clientMessageId);return outgoing(p,op);});},
     listPendingOutgoing:(p,opts={})=>{h(p);const n=limitOption(opts);return all("SELECT origin_epoch,client_message_id FROM im_v2_client_outgoing WHERE partition_id=? AND acceptance_state='pending' ORDER BY created_at,origin_epoch,client_message_id LIMIT ?",p,n).map(r=>outgoing(p,{originEpoch:r.origin_epoch,clientMessageId:r.client_message_id}));},
     getReceiver:(p,s)=>{h(p);id(s);return receiver(p,s)??null;},
-    setLease:(p,evidence)=>{h(p);if(!dataSchemas.lease.safeParse(evidence).success||evidence.historical)fail('INVALID_REQUEST');return tx(()=>{const r=active(p);if(evidence.centerEpoch!==r.center_epoch)fail('RECOVERY_RECONCILIATION_REQUIRED');if(!receiver(p,evidence.streamEpoch))capacity([['receiver',{}]]);ensureReceiver(p,evidence.streamEpoch);run('UPDATE im_v2_client_receiver SET instance_id=?,generation=?,expires_at=? WHERE partition_id=? AND stream_epoch=?',evidence.instanceId,evidence.generation,evidence.expiresAt,p,evidence.streamEpoch);return receiver(p,evidence.streamEpoch);});},
+    setLease:(p,evidence)=>{h(p);if(!dataSchemas.lease.safeParse(evidence).success||evidence.historical)fail('INVALID_REQUEST');return tx(()=>{const r=active(p);if(evidence.centerEpoch!==r.center_epoch)fail('RECOVERY_RECONCILIATION_REQUIRED');if(!receiver(p,evidence.streamEpoch))capacity([['receiver',{}]]);ensureReceiver(p,evidence.streamEpoch);run('UPDATE im_v2_client_receiver SET instance_id=?,generation=?,expires_at=? WHERE partition_id=? AND stream_epoch=?',evidence.instanceId,evidence.generation,evidence.expiresAt,p,evidence.streamEpoch);return receiver(p,evidence.streamEpoch);});},clearLease,
     recordMessage:(p,{streamEpoch,seq,message,receipt:proof}={})=>fact(p,streamEpoch,seq,'message',message,proof),
     recordExpiry:(p,{streamEpoch,seq,tombstone}={})=>fact(p,streamEpoch,seq,'content_expired',tombstone),
-    prepareBatch:batch,confirmBatch,
+    prepareBatch:batch,confirmBatch,getReceivedFact,listBatches,
     listPendingBatches:(p,opts={})=>{h(p);const n=limitOption(opts);return all("SELECT * FROM im_v2_client_batches WHERE partition_id=? AND state='pending' ORDER BY created_at,batch_id LIMIT ?",p,n).map(r=>({...r,items:verifiedBatch(r)}));}
   };
   return Object.freeze(facade);
