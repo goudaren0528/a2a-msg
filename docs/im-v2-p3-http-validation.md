@@ -1,0 +1,11 @@
+# IM v2 P3-C HTTP 中心本地验证记录（NONRELEASE）
+
+**版本与范围。**证据绑定基线 `5cf5a133b53b8c73354a254e5e3bb420fc7e4b2a` 加四份源码/测试 overlay，不是后来干净提交上的重测声明：`src/im/v2/http.js` SHA-256 `4CF21016A5A458CBB46BEA3D694645ED7641E6AB456193A5A5348C27EEA519AF`、`src/im/v2/server.js` `321B03CB6CF22433DAC933457D80338981EA8456732BF7A96B8C3BC105A1E7D4`、`tests/im-v2-http.test.js` `38E432E24FA0AE50836B28C05C5F893BC666C97FF60E30C08E9348CEAE3B6D7C`、`tests/fixtures/im-v2-http/harness.js` `556C8931A6A9AE18792FD0FBB29FAD7DE3BE0B1D46451CE7B10428FA23A5215D`。参见[路线图](roadmap.md)、[P3 A/B 核心验证](im-v2-p3-core-validation.md)、[冻结契约](im-recovery-retention-v2-design.md)和[实施计划](im-v2-implementation-plan.md)。源码、安全、契约、测试覆盖审查及独立运行时最终 QA（gen38）均为**限定范围 PASS**，非完整 PRD/生产验收。
+
+**实现边界。**`createImV2Handler` 只处理独立 v2 HTTP；新 v4 中心的 `/api/v1` 固定返回 426，不回退旧 LAN。直接模式要求实际 TLS socket，local-test 模式要求两端均为 loopback，不信任转发头；这与测试里的合成 transport fixture 不同。严格核对重复/冲突 header、path/query、协议/epoch、auth、POST schema 与原始字节上限：普通 JSON（含无真实附件的 send）64 KiB，附件发送 envelope 16 MiB。下载按 64 KiB 块复验授权、epoch、有效期与附件元数据，发出 headers 后失败断流。请求及响应的 finish/close 生命周期持有资源，上传中断清理；定时器注册失败直接 fail closed。`createImV2Center` 仅对已有 active 候选校验并组合模块与 handler；不拥有调用者 DB/监听器，不执行 listen、迁移、启写或激活。隔离 active fixture 不构成 H1–H3 人工批准。
+
+**最终目标专项。**Windows Node v24.19.0：`node --test tests/im-v2-http.test.js`，32 pass / 0 fail / 0 skip，原生 Node 退出码 0、外层退出码 0；逻辑运行标识 `p3c-final-066998cfcf1b`，manifest SHA-256 `C4A1AE50ADB3A8B0015B9D2335FF73E0BA4278B4E4CC6E1B52751ECA111C0857`。Linux Node v24.19.0：同一 HTTP 专项 32 pass / 0 fail / 0 skip，原生及外层退出码均为 0；逻辑运行标识 `p3c-final-2X5rKWJd`，manifest SHA-256 `57F9DD95584CE5F996224FBD1F3FE8EF233DA234BAE01266233E77A911029C87`。测试区分真实 loopback TLS socket 与合成 transport fixture；两者不替代公网或真实双机验证。最终两次运行均复用 lockfile 匹配的隔离依赖，不是重新 fresh install。
+
+**先前批次与不可叠加的证据。**逻辑运行标识 `p3c-450beb702c9c`：Windows 隔离 `npm ci` 成功；旧版完整测试 822 pass / 57 skip / 0 fail，插件指定测试 46 pass / 0 skip。这些发生在最后一次仅测试文件增补之前，生产源码和 harness 未变；后续目标专项 32 pass 验证该增补，**未重跑完整套件或插件**，批次计数不相加为互异测试。先前 Linux 专项原生 31 pass，但 CRLF 临时 runner 的外层退出码 2，属于历史失败；最终 LF runner 的原生与外层退出码 0 取代该失败证据，不把旧外层错误隐藏为通过。
+
+**剩余门禁与操作限制。**P4 journal、P5 恢复/激活、P6 留存与物理清理、P7 真实网络/跨框架/跨平台外部验收仍待完成；人工 H1 源隔离/凭据/恢复证明、H2 实际启用/清理/备份 TTL、H3 公网 TLS/DNS/资源费用审批仍独立。未运行生产服务、未触碰生产 DB、未迁移、激活、监听、删除、推送或更改旧 `18787` LAN；无旧入口强制 sunset、许可证决定或仓库 rename。仅本地专项与限定审查通过，不能据此宣称生产可用。
