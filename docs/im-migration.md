@@ -2,7 +2,7 @@
 
 This module is **not** a production migration runner, authentication provider, service activation switch, or deployment procedure. It never copies legacy messages, attachments, tokens, read state, sender access, or `reply_to`, and never creates an IM conversation. A binding is `legacy_ip` metadata only: an IM credential does **not** confer access to old messages or attachments. Legacy and IM endpoints must remain separate and enforce their respective authorization independently.
 
-Before any real rollout, separately approve a recoverable backup and restore rehearsal, verify the v1 schema and policy, establish a trusted administrator authentication boundary, and review every mapping. The local tests use **only isolated in-memory SQLite** and do not constitute a live migration rehearsal. No retention durations, production endpoints, or legacy API cutoff are chosen here.
+Before any real rollout, separately approve a recoverable backup and restore rehearsal, verify the supported schema and policy, establish a trusted administrator authentication boundary, and review every mapping. The lower-level migration tests include isolated in-memory SQLite; the separate trusted local runner also exercises file-backed v2 identity and protected Unix backup registry (see `im-migration-runner.md`). Neither constitutes a live migration rehearsal. No retention durations, production endpoints, or legacy API cutoff are chosen here.
 
 ## API
 

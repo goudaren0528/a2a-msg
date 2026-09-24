@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, lstatSync, openSync, closeSync, writeFileSync, fsyncSync, linkSync, unlinkSync, readFileSync, statSync, readSync } from 'node:fs';
+import { constants, lstatSync, fstatSync, fchmodSync, openSync, closeSync, writeFileSync, fsyncSync, linkSync, unlinkSync, readFileSync, statSync, readSync } from 'node:fs';
 import { dirname, basename, join, resolve } from 'node:path';
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
 import { performance } from 'node:perf_hooks';
@@ -93,7 +93,20 @@ export function createImBackup({ db, authority, clock = Date.now, toolVersion = 
         checkDeadline();
       }
       // SQLite has closed the destination connection; sync its final database bytes before publication.
-      flush(temp);
+      {
+        const fd = openSync(temp, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
+        try {
+          const before = lstatSync(temp), opened = fstatSync(fd);
+          if (!opened.isFile() || (process.platform !== 'win32' && opened.nlink !== 1) || before.dev !== opened.dev || before.ino !== opened.ino ||
+              (typeof process.geteuid === 'function' && opened.uid !== process.geteuid())) throw fail('BACKUP_VERIFY_FAILED');
+          fchmodSync(fd, 0o600);
+          fsyncSync(fd);
+          const after = fstatSync(fd), current = lstatSync(temp);
+          if ((process.platform !== 'win32' && (after.nlink !== 1 || (after.mode & 0o077))) ||
+              after.dev !== current.dev || after.ino !== current.ino)
+            throw fail('BACKUP_VERIFY_FAILED');
+        } finally { closeSync(fd); }
+      }
       checkDeadline();
       const snapshot = inspect(temp);
       checkDeadline();

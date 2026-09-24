@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
-import { IM_SCHEMA_VERSION, assertImSchema, assertInstanceIdentity, migrateImSchema, initInstanceIdentity, getInstanceIdentity } from '../src/im/schema.js';
+import { IM_SCHEMA_VERSION, assertImSchema, assertInstanceIdentity, migrateImSchema, migrateImSchemaV3, initInstanceIdentity, getInstanceIdentity } from '../src/im/schema.js';
 import { createImBackup } from '../src/im/backup.js';
 import { V1_DDL, V1_CHECKSUM } from './fixtures/im-schema/v1.js';
 
@@ -199,7 +199,7 @@ test('v1 upgrade is additive and identity requires one explicit initialization, 
   t.after(() => { db?.close(); rmSync(dir, { recursive: true, force: true }); });
   db.exec('PRAGMA foreign_keys=ON');
   v1(db);
-  assert.equal(IM_SCHEMA_VERSION, 2);
+  assert.equal(IM_SCHEMA_VERSION, 3);
   assert.equal(migrateImSchema(db), true);
   assert.equal(db.prepare('SELECT version FROM im_schema').get().version, 2);
   assert.equal(db.prepare('SELECT count(*) n FROM im_instance_identity').get().n, 0);
@@ -291,4 +291,26 @@ test('uninitialized v2 bootstrap backup verifies its structure without creating 
   assert.equal(result.manifest.schemaVersion, 2);
   assert.equal(runner.verify(result).ok, true);
   assert.throws(() => assertInstanceIdentity(db), { code: 'IM_IDENTITY_MISSING' });
+});
+
+test('initialized and bootstrap v3 backups verify against v3 while retaining v2 backup compatibility', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'im-v3-backup-'));
+  const db = new DatabaseSync(join(dir, 'source.sqlite'));
+  t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+  db.exec('PRAGMA foreign_keys=ON');
+  migrateImSchema(db);
+  const runner = createImBackup({ db, authority: { authorizeAdmin: () => true }, durability: process.platform === 'win32' ? 'best-effort' : 'strict' });
+  const old = await runner.backup({ destinationPath: join(dir, 'v2.sqlite'), approvalId: 'test', sourceId: 'test' });
+  await runner.drain();
+  migrateImSchemaV3(db);
+  const bootstrap = await runner.backup({ destinationPath: join(dir, 'v3-bootstrap.sqlite'), approvalId: 'test', sourceId: 'test' });
+  await runner.drain();
+  assert.equal(bootstrap.manifest.schemaVersion, 3);
+  assert.equal(runner.verify(bootstrap).ok, true);
+  assert.equal(runner.verify(old).schemaVersion, 2);
+  assert.throws(() => getInstanceIdentity(db), { code: 'IM_IDENTITY_MISSING' });
+  initInstanceIdentity(db);
+  const initialized = await runner.backup({ destinationPath: join(dir, 'v3-initialized.sqlite'), approvalId: 'test', sourceId: 'test' });
+  assert.equal(runner.verify(initialized).schemaVersion, 3);
+  assert.equal(runner.verify({ backupPath: bootstrap.backupPath, manifestPath: old.manifestPath }).ok, false);
 });

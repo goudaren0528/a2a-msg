@@ -139,7 +139,66 @@ export function createImClockGuard({ db, clock = Date.now } = {}) {
     throw unavailable();
   }
 
-  const guard = Object.freeze({ runRead, runWrite, current });
+  function refreshCurrent() {
+    if (!scope || !scope.fresh || db.isTransaction !== true) throw new ImError('INVALID_REQUEST');
+    try {
+      const now = sample(Math.max(persisted(), scope.now));
+      highwater = now;
+      if (update.run(now).changes !== 1) throw invalid();
+      scope.now = now;
+      return now;
+    } catch (error) {
+      // A caller cannot turn a failed refresh into a successful business commit
+      // by catching its exception inside the callback.
+      scope.fault = error instanceof ImError ? error : unavailable();
+      throw scope.fault;
+    }
+  }
+
+  function runWriteFresh(fn) {
+    callback(fn);
+    if (scope) throw new ImError('INVALID_REQUEST');
+    ready();
+    // Keep a previously committed lower bound even if this transaction dies.
+    anchor();
+    let businessFailed = false;
+    let businessError;
+    let result;
+    try {
+      withImmediateTransaction(db, () => {
+        // Sample again under the business write lock; another connection may
+        // have advanced the floor since the independent anchor committed.
+        const now = sample(persisted());
+        highwater = now;
+        if (update.run(now).changes !== 1) throw invalid();
+        db.exec('SAVEPOINT im_clock_guard_business');
+        scope = { now, transaction: true, write: true, fresh: true, fault: null };
+        try {
+          result = invoke(fn);
+          if (scope.fault) throw scope.fault;
+          if (db.isTransaction !== true) throw unavailable();
+          db.exec('RELEASE SAVEPOINT im_clock_guard_business');
+        } catch (error) {
+          const fault = scope.fault;
+          if (db.isTransaction !== true) throw unavailable();
+          // Roll back only business effects. Reapply the largest safely sampled
+          // clock value outside the savepoint, then commit the clock alone.
+          db.exec('ROLLBACK TO SAVEPOINT im_clock_guard_business');
+          db.exec('RELEASE SAVEPOINT im_clock_guard_business');
+          if (update.run(highwater).changes !== 1) throw invalid();
+          businessFailed = true;
+          businessError = fault ?? error;
+        } finally { scope = null; }
+      });
+    } catch (error) {
+      if (error instanceof ImError) throw error;
+      throw unavailable();
+    }
+    if (businessFailed) throw businessError;
+    return result;
+  }
+
+  const guard = Object.freeze({ runRead, runWrite, current, runWriteFresh, refreshCurrent });
   coordinators.set(db, { clock, guard });
   return guard;
 }

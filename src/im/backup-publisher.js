@@ -30,9 +30,9 @@ export function createBackupPublisher({ db, registry, writer, artifactDirectory,
     try { registered = registry.getInstance(); }
     catch (error) {
       if (error?.code !== 'REGISTRY_INSTANCE_NOT_FOUND') throw error;
-      registered = writer.registerInstance({ instanceId: identity.instanceId, dbLocation: location, adminContext });
+      registered = writer.registerInstance({ instanceId: identity.instanceId, instanceCreatedAt: identity.createdAt, dbLocation: location, adminContext });
     }
-    if (registered?.instanceId !== identity.instanceId || registered?.registrationGeneration !== 1)
+    if (registered?.instanceId !== identity.instanceId || registered?.instanceCreatedAt !== identity.createdAt || registered?.registrationGeneration !== 1)
       throw fail('BACKUP_IDENTITY_MISMATCH');
 
     const directory = artifactDirectory;
@@ -73,10 +73,11 @@ export function createBackupPublisher({ db, registry, writer, artifactDirectory,
     if (current.instanceId !== identity.instanceId || current.createdAt !== identity.createdAt)
       throw fail('BACKUP_IDENTITY_MISMATCH');
     const stillRegistered = registry.getInstance();
-    if (stillRegistered.instanceId !== identity.instanceId || stillRegistered.registrationGeneration !== registered.registrationGeneration)
+    if (stillRegistered.instanceId !== identity.instanceId || stillRegistered.instanceCreatedAt !== identity.createdAt ||
+        stillRegistered.registrationGeneration !== registered.registrationGeneration)
       throw fail('BACKUP_IDENTITY_MISMATCH');
     const artifactReference = `artifacts/${name}`;
-    const publication = writer.registerPublishedBackup({ instanceId: identity.instanceId,
+    const publication = writer.registerPublishedBackup({ instanceId: identity.instanceId, instanceCreatedAt: identity.createdAt,
       registrationGeneration: registered.registrationGeneration, backupId: manifest.backupId,
       fileHash: manifest.fileHash, schemaVersion: manifest.schemaVersion, schemaChecksum: manifest.schemaChecksum,
       completedAt: manifest.completedAt, executorActorId: actors.executorActorId,

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { withImmediateTransaction } from './transaction.js';
 
-export const IM_SCHEMA_VERSION = 2;
-export const SUPPORTED_IM_SCHEMA_VERSIONS = Object.freeze([1, 2]);
+export const IM_SCHEMA_VERSION = 3;
+export const SUPPORTED_IM_SCHEMA_VERSIONS = Object.freeze([1, 2, 3]);
 const MAX_INT = 9007199254740991;
 const MAX_JSON = 65536;
 const id = (column) => `CHECK(length(${column}) BETWEEN 1 AND 255)`;
@@ -56,6 +56,14 @@ const V2_EXPECTED = manifest(V2_DDL.map((sql) => {
   return { type: type.toLowerCase(), name, tbl_name: type === 'TABLE' ? name : / ON (im_\w+)/.exec(sql)[1], sql };
 }));
 const V2_CHECKSUM = createHash('sha256').update(JSON.stringify(V2_EXPECTED)).digest('hex');
+const V3_INDEX = `CREATE INDEX im_legacy_bindings_run ON im_legacy_bindings(migration_run_id)`;
+const V3_SCHEMA = `CREATE TABLE im_schema (version INTEGER NOT NULL PRIMARY KEY CHECK(version = 3), migration_checksum TEXT NOT NULL CHECK(length(migration_checksum) = 64))`;
+const V3_DDL = [V3_SCHEMA, ...V2_DDL.slice(1), V3_INDEX];
+const V3_EXPECTED = manifest(V3_DDL.map((sql) => {
+  const [, type, name] = /^CREATE (TABLE|INDEX) (im_\w+)/.exec(sql);
+  return { type: type.toLowerCase(), name, tbl_name: type === 'TABLE' ? name : / ON (im_\w+)/.exec(sql)[1], sql };
+}));
+const V3_CHECKSUM = createHash('sha256').update(JSON.stringify(V3_EXPECTED)).digest('hex');
 
 function mismatch() {
   const error = new Error('IM storage schema does not match the supported migration');
@@ -79,12 +87,12 @@ function checkImSchema(db, allowUninitializedIdentity = false) {
   catch { throw mismatch(); }
   if (marker.length !== 1) throw mismatch();
   const { version, migration_checksum: checksum } = marker[0];
-  const expected = version === 1 ? EXPECTED : version === 2 ? V2_EXPECTED : null;
-  const expectedChecksum = version === 1 ? CHECKSUM : version === 2 ? V2_CHECKSUM : null;
+  const expected = version === 1 ? EXPECTED : version === 2 ? V2_EXPECTED : version === 3 ? V3_EXPECTED : null;
+  const expectedChecksum = version === 1 ? CHECKSUM : version === 2 ? V2_CHECKSUM : version === 3 ? V3_CHECKSUM : null;
   if (!expected || checksum !== expectedChecksum || JSON.stringify(manifest(rows)) !== JSON.stringify(expected)) throw mismatch();
   if (db.prepare('SELECT singleton,write_mode FROM im_settings').all().length !== 1 ||
       db.prepare('SELECT singleton,last_observed_at FROM im_clock').all().length !== 1) throw mismatch();
-  if (version === 2) {
+  if (version === 2 || version === 3) {
     const identities = db.prepare('SELECT singleton,instance_id,created_at FROM im_instance_identity').all();
     if ((!allowUninitializedIdentity && identities.length !== 1) || identities.length > 1 || identities.some(row => row.singleton !== 1 ||
         typeof row.instance_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.instance_id) ||
@@ -100,21 +108,23 @@ export function assertImSchema(db) {
 
 export function assertInstanceIdentity(db) {
   assertImSchema(db);
-  if (db.prepare('SELECT version FROM im_schema').get().version !== 2) throw mismatch();
+  if (![2, 3].includes(db.prepare('SELECT version FROM im_schema').get().version)) throw mismatch();
   if (!db.prepare('SELECT 1 FROM im_instance_identity WHERE singleton=1').get())
     throw Object.assign(new Error('Instance identity not initialized'), { code: 'IM_IDENTITY_MISSING' });
   return true;
 }
 
-export function migrateImSchema(db, { expectedVersion = IM_SCHEMA_VERSION } = {}) {
-  if (expectedVersion !== IM_SCHEMA_VERSION) throw mismatch();
+// Legacy explicit v1 -> v2 path: never silently upgrade an existing database to v3.
+export function migrateImSchema(db, { expectedVersion = 2 } = {}) {
+  if (expectedVersion !== 2) throw mismatch();
   requireForeignKeys(db);
   // Both the existence probe and creation must happen under the same write lock.
   return withImmediateTransaction(db, () => {
     if (objects(db).length) {
       checkImSchema(db, true);
       const version = db.prepare('SELECT version FROM im_schema').get().version;
-      if (version === 2) return true;
+       if (version === 2) return true;
+       if (version !== 1) throw mismatch();
       // Preserve the immutable v1 manifest; only the marker table is replaced in v2.
       db.exec('DROP TABLE im_schema');
       db.exec(V2_SCHEMA);
@@ -130,6 +140,30 @@ export function migrateImSchema(db, { expectedVersion = IM_SCHEMA_VERSION } = {}
   });
 }
 
+// Explicit v2 -> v3 only. A fresh database may be initialized directly at v3;
+// existing v1 databases must take the original v1 -> v2 path first.
+export function migrateImSchemaV3(db) {
+  requireForeignKeys(db);
+  return withImmediateTransaction(db, () => {
+    if (!objects(db).length) {
+      for (const sql of V3_DDL) db.exec(sql);
+      db.prepare('INSERT INTO im_schema(version,migration_checksum) VALUES (?,?)').run(3, V3_CHECKSUM);
+      db.exec("INSERT INTO im_settings(singleton,write_mode) VALUES (1,'paused')");
+      db.exec('INSERT INTO im_clock(singleton,last_observed_at) VALUES (1,0)');
+      return checkImSchema(db, true);
+    }
+    checkImSchema(db, true);
+    const version = db.prepare('SELECT version FROM im_schema').get().version;
+    if (version === 3) return true;
+    if (version !== 2) throw mismatch();
+    db.exec(V3_INDEX);
+    db.exec('DROP TABLE im_schema');
+    db.exec(V3_SCHEMA);
+    db.prepare('INSERT INTO im_schema(version,migration_checksum) VALUES (?,?)').run(3, V3_CHECKSUM);
+    return checkImSchema(db, true);
+  });
+}
+
 export function initInstanceIdentity(db, options = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options) ||
       Object.keys(options).some(key => key !== 'clock') || Object.getOwnPropertySymbols(options).length)
@@ -139,7 +173,7 @@ export function initInstanceIdentity(db, options = {}) {
     throw Object.assign(new Error('Invalid identity initialization clock'), { code: 'IM_IDENTITY_INPUT_INVALID' });
   return withImmediateTransaction(db, () => {
     checkImSchema(db, true);
-    if (db.prepare('SELECT version FROM im_schema').get().version !== 2) throw mismatch();
+    if (![2, 3].includes(db.prepare('SELECT version FROM im_schema').get().version)) throw mismatch();
     if (db.prepare('SELECT 1 FROM im_instance_identity').get()) throw Object.assign(new Error('Instance identity already initialized'), { code: 'IM_IDENTITY_EXISTS' });
     const createdAt = clock();
     if (!Number.isSafeInteger(createdAt) || createdAt < 0) throw Object.assign(new Error('Invalid identity time'), { code: 'IM_IDENTITY_TIME_INVALID' });

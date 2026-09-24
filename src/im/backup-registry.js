@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getInstanceIdentity } from './schema.js';
 import { createImBackup } from './backup.js';
 import { createBackupPublisher } from './backup-publisher.js';
+import { createRegistryLock } from './registry-lock.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -15,8 +16,8 @@ const exists = path => { try { lstatSync(path); return true; } catch (error) { i
 const shape = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const validTime = value => Number.isSafeInteger(value) && value >= 0;
-const instanceKeys = ['recordVersion', 'instanceId', 'dbLocation', 'registrationGeneration'];
-const backupKeys = ['recordVersion', 'instanceId', 'registrationGeneration', 'backupId', 'fileHash', 'schemaVersion',
+const instanceKeys = ['recordVersion', 'instanceId', 'instanceCreatedAt', 'dbLocation', 'registrationGeneration'];
+const backupKeys = ['recordVersion', 'instanceId', 'instanceCreatedAt', 'registrationGeneration', 'backupId', 'fileHash', 'schemaVersion',
   'schemaChecksum', 'completedAt', 'executorActorId', 'backupApprovalId', 'backupApproverId', 'toolVersion',
   'artifactReference', 'manifestHash', 'publicationState', 'registeredAt'];
 const revocationKeys = ['recordVersion', 'backupId', 'revokedAt'];
@@ -98,12 +99,11 @@ function hashFile(path, platform) {
   } finally { if (fd !== undefined) closeSync(fd); }
 }
 
-function buildRegistry({ dir, authority, clock = Date.now, fault, platform = defaultPlatform } = {}) {
+function buildRegistry({ dir, authority, clock = Date.now, fault } = {}) {
   if (typeof dir !== 'string' || !dir || typeof clock !== 'function') throw fail('REGISTRY_INVALID_INPUT');
-  if (!platform || !['privateDirectory', 'protectedPath', 'checkOpened', 'syncDirectory'].every(key => typeof platform[key] === 'function'))
-    throw fail('REGISTRY_PERMISSION_UNVERIFIED');
+  const platform = defaultPlatform;
   const root = platform.privateDirectory(dir);
-  const uses = new Map(), waiters = new Set();
+  const coordinator = createRegistryLock(root, platform);
   const checkRoot = () => platform.privateDirectory(root);
   const requireAdmin = context => {
     let allowed = false;
@@ -171,14 +171,14 @@ function buildRegistry({ dir, authority, clock = Date.now, fault, platform = def
   const instance = () => {
     // Generation one is immutable; re-registration is deliberately not offered by this isolated module.
     const data = record('instance-1.json', 'REGISTRY_INSTANCE_NOT_FOUND');
-    if (!shape(data, instanceKeys) || data.recordVersion !== 1 || !ID.test(data.instanceId) ||
+    if (!shape(data, instanceKeys) || data.recordVersion !== 2 || !ID.test(data.instanceId) || !validTime(data.instanceCreatedAt) ||
         !text(data.dbLocation) || data.registrationGeneration !== 1) invalid();
     return data;
   };
   const publication = backupId => {
     if (!ID.test(backupId)) throw fail('REGISTRY_INVALID_INPUT');
     const data = record(`backup-${backupId}.json`);
-    if (!shape(data, backupKeys) || data.recordVersion !== 1 || data.backupId !== backupId ||
+    if (!shape(data, backupKeys) || data.recordVersion !== 2 || data.backupId !== backupId || !validTime(data.instanceCreatedAt) ||
         data.publicationState !== 'published' || !ID.test(data.instanceId) ||
         data.registrationGeneration !== 1 || !HASH.test(data.fileHash) || !HASH.test(data.schemaChecksum) ||
         !HASH.test(data.manifestHash) || !Number.isSafeInteger(data.schemaVersion) || data.schemaVersion < 1 ||
@@ -192,25 +192,26 @@ function buildRegistry({ dir, authority, clock = Date.now, fault, platform = def
     if (!shape(data, revocationKeys) || data.recordVersion !== 1 || data.backupId !== id || !validTime(data.revokedAt)) invalid();
     return true;
   };
-  const busy = id => { if (uses.has(id)) throw fail('REGISTRY_IN_USE'); };
-
-  function registerInstance({ instanceId, dbLocation, adminContext } = {}) {
+  function registerInstance({ instanceId, instanceCreatedAt, dbLocation, adminContext } = {}) {
     requireAdmin(adminContext);
-    if (!ID.test(instanceId) || !text(dbLocation)) throw fail('REGISTRY_INVALID_INPUT');
-    const value = { recordVersion: 1, instanceId, dbLocation, registrationGeneration: 1 };
-    publish('instance-1.json', value);
-    return { instanceId, registrationGeneration: 1 }; // never disclose dbLocation in public returns
+    if (!ID.test(instanceId) || !validTime(instanceCreatedAt) || !text(dbLocation)) throw fail('REGISTRY_INVALID_INPUT');
+    const value = { recordVersion: 2, instanceId, instanceCreatedAt, dbLocation, registrationGeneration: 1 };
+    coordinator.withLock(() => publish('instance-1.json', value));
+    return { instanceId, instanceCreatedAt, registrationGeneration: 1 }; // never disclose dbLocation in public returns
   }
   function getInstance() {
-    const { instanceId, registrationGeneration } = instance();
-    return { instanceId, registrationGeneration };
+    return coordinator.withLock(() => {
+      const { instanceId, instanceCreatedAt, registrationGeneration } = instance();
+      return { instanceId, instanceCreatedAt, registrationGeneration };
+    });
   }
-  function registerPublishedBackup({ instanceId, registrationGeneration, backupId, fileHash, schemaVersion,
+  function registerPublishedBackup({ instanceId, instanceCreatedAt, registrationGeneration, backupId, fileHash, schemaVersion,
     schemaChecksum, completedAt, executorActorId, backupApprovalId, backupApproverId, toolVersion,
     artifactReference, manifestHash, adminContext } = {}) {
     requireAdmin(adminContext);
+    return coordinator.withLock(() => {
     const current = instance();
-    if (instanceId !== current.instanceId || registrationGeneration !== current.registrationGeneration) throw fail('REGISTRY_INSTANCE_MISMATCH');
+    if (instanceId !== current.instanceId || instanceCreatedAt !== current.instanceCreatedAt || registrationGeneration !== current.registrationGeneration) throw fail('REGISTRY_INSTANCE_MISMATCH');
     if (!ID.test(backupId) || !HASH.test(fileHash) || !HASH.test(schemaChecksum) || !HASH.test(manifestHash) ||
         !Number.isSafeInteger(schemaVersion) || schemaVersion < 1 || !Number.isSafeInteger(completedAt) || completedAt < 0 ||
         ![executorActorId, backupApprovalId, backupApproverId, toolVersion].every(text)) throw fail('REGISTRY_INVALID_INPUT');
@@ -230,59 +231,118 @@ function buildRegistry({ dir, authority, clock = Date.now, fault, platform = def
     try {
       copy = new DatabaseSync(path, { readOnly: true });
       copy.exec('PRAGMA foreign_keys=ON');
-      if (getInstanceIdentity(copy).instanceId !== instanceId ||
+      const copied = getInstanceIdentity(copy);
+      if (copied.instanceId !== instanceId || copied.createdAt !== instanceCreatedAt ||
           createImBackup({ db: copy }).verify({ backupPath: path, manifestPath: `${path}.manifest.json` }).ok !== true)
         throw fail('REGISTRY_ARTIFACT_MISMATCH');
     } catch { throw fail('REGISTRY_ARTIFACT_MISMATCH'); }
     finally { copy?.close(); }
-    const value = { recordVersion: 1, instanceId, registrationGeneration, backupId, fileHash, schemaVersion, schemaChecksum,
+    const value = { recordVersion: 2, instanceId, instanceCreatedAt, registrationGeneration, backupId, fileHash, schemaVersion, schemaChecksum,
       completedAt, executorActorId, backupApprovalId, backupApproverId, toolVersion, artifactReference,
       manifestHash, publicationState: 'published', registeredAt: clock() };
     if (!Number.isSafeInteger(value.registeredAt) || value.registeredAt < 0) throw fail('REGISTRY_INVALID_INPUT');
     publish(`backup-${backupId}.json`, value);
     return { ...value, durability: 'durable' };
+    });
   }
-  function resolveForMigration({ backupId, expected } = {}) {
-    if (!ID.test(backupId) || !expected || typeof expected !== 'object') throw fail('REGISTRY_INVALID_INPUT');
+  function metadataLocked({ backupId, expected } = {}) {
+    if (!expected || typeof expected !== 'object' || typeof expected.fileHash !== 'string' || !HASH.test(expected.fileHash) ||
+        typeof expected.manifestHash !== 'string' || !HASH.test(expected.manifestHash) ||
+        !Number.isSafeInteger(expected.schemaVersion) || expected.schemaVersion < 1 ||
+        typeof expected.schemaChecksum !== 'string' || !HASH.test(expected.schemaChecksum)) throw fail('REGISTRY_INVALID_INPUT');
+    const data = boundPublicationLocked(backupId, expected);
+    matchApprovedEvidence(data, expected);
+    return data;
+  }
+  function boundPublicationLocked(backupId, expectedIdentity) {
+    if (typeof backupId !== 'string' || !ID.test(backupId) || !expectedIdentity ||
+        typeof expectedIdentity !== 'object' || typeof expectedIdentity.instanceId !== 'string' ||
+        !ID.test(expectedIdentity.instanceId) || !validTime(expectedIdentity.instanceCreatedAt) ||
+        expectedIdentity.registrationGeneration !== 1) throw fail('REGISTRY_INVALID_INPUT');
     const data = publication(backupId);
     if (revoked(backupId)) throw fail('REGISTRY_REVOKED');
     const current = instance();
-    if (data.instanceId !== current.instanceId || data.registrationGeneration !== current.registrationGeneration ||
-        expected.instanceId !== data.instanceId || expected.registrationGeneration !== data.registrationGeneration) throw fail('REGISTRY_INSTANCE_MISMATCH');
+    if (data.instanceId !== current.instanceId || data.instanceCreatedAt !== current.instanceCreatedAt ||
+        data.registrationGeneration !== current.registrationGeneration || expectedIdentity.instanceId !== data.instanceId ||
+        expectedIdentity.instanceCreatedAt !== data.instanceCreatedAt || expectedIdentity.registrationGeneration !== data.registrationGeneration) throw fail('REGISTRY_INSTANCE_MISMATCH');
+    return data;
+  }
+  function matchApprovedEvidence(data, expected) {
     if (expected.fileHash !== data.fileHash) throw fail('REGISTRY_HASH_MISMATCH');
+    if (expected.manifestHash !== data.manifestHash) throw fail('REGISTRY_HASH_MISMATCH');
     if (expected.schemaVersion !== data.schemaVersion || expected.schemaChecksum !== data.schemaChecksum) throw fail('REGISTRY_SCHEMA_MISMATCH');
+  }
+  function resolveLocked(input) {
+    const data = metadataLocked(input);
     const path = location(data.artifactReference);
     if (hashFile(path, platform) !== data.fileHash || hashFile(`${path}.manifest.json`, platform) !== data.manifestHash) throw fail('REGISTRY_ARTIFACT_MISMATCH');
     return { ...data }; // path is controlled and relative; no DB location or credential
   }
+  function verifyRecordLocked(data) {
+    const path = location(data.artifactReference);
+    if (hashFile(path, platform) !== data.fileHash || hashFile(`${path}.manifest.json`, platform) !== data.manifestHash) throw fail('REGISTRY_ARTIFACT_MISMATCH');
+    const manifestPath = `${path}.manifest.json`;
+    let manifest, copy;
+    try {
+      manifest = JSON.parse(readProtected(manifestPath, platform).toString('utf8'));
+      if (manifest.sourceId !== data.instanceId || manifest.backupId !== data.backupId ||
+          manifest.fileHash !== data.fileHash || manifest.schemaVersion !== data.schemaVersion ||
+          manifest.schemaChecksum !== data.schemaChecksum || manifest.completedAt !== data.completedAt ||
+          manifest.toolVersion !== data.toolVersion || manifest.approvalId !== data.backupApprovalId ||
+          hashFile(manifestPath, platform) !== data.manifestHash ||
+          createImBackup({}).verify({ backupPath: path, manifestPath }).ok !== true) throw Error('invalid backup');
+      copy = new DatabaseSync(path, { readOnly: true });
+      copy.exec('PRAGMA foreign_keys=ON');
+      const identity = getInstanceIdentity(copy);
+      if (identity.instanceId !== data.instanceId || identity.createdAt !== data.instanceCreatedAt) throw Error('wrong copy');
+    } catch { throw fail('REGISTRY_ARTIFACT_MISMATCH'); }
+    finally { copy?.close(); }
+    return Object.freeze({ backupId: data.backupId, instanceId: data.instanceId,
+      instanceCreatedAt: data.instanceCreatedAt, registrationGeneration: data.registrationGeneration,
+      fileHash: data.fileHash, manifestHash: data.manifestHash, schemaVersion: data.schemaVersion,
+      schemaChecksum: data.schemaChecksum });
+  }
+  function verifiedScope(input, callback, discover) {
+    if (typeof callback !== 'function') throw fail('REGISTRY_INVALID_INPUT');
+    if (Object.prototype.toString.call(callback) === '[object AsyncFunction]') throw fail('REGISTRY_ASYNC_CALLBACK');
+    const supplied = discover ? input?.expectedIdentity : input?.expected;
+    const snapshot = { backupId: input?.backupId, expected: { instanceId: supplied?.instanceId,
+      instanceCreatedAt: supplied?.instanceCreatedAt, registrationGeneration: supplied?.registrationGeneration,
+      ...(!discover && { fileHash: supplied?.fileHash, manifestHash: supplied?.manifestHash,
+        schemaVersion: supplied?.schemaVersion, schemaChecksum: supplied?.schemaChecksum }) } };
+    return coordinator.withLock(() => {
+      let active = true;
+      try {
+        const data = discover ? boundPublicationLocked(snapshot.backupId, snapshot.expected) : metadataLocked(snapshot);
+        const verified = verifyRecordLocked(data);
+        const bound = { backupId: verified.backupId, expected: { ...verified } };
+        const evidence = Object.freeze({ ...verified, recheck: () => {
+          if (!active) throw fail('REGISTRY_USE_EXPIRED');
+          const current = metadataLocked(bound);
+          for (const key of ['backupId', 'instanceId', 'instanceCreatedAt', 'registrationGeneration',
+            'fileHash', 'manifestHash', 'schemaVersion', 'schemaChecksum'])
+            if (current[key] !== verified[key]) throw fail('REGISTRY_UNTRUSTED_RECORD');
+          return verified;
+        } });
+        return callback(evidence);
+      } finally { active = false; }
+    });
+  }
+  function withVerifiedBackup(input, callback) { return verifiedScope(input, callback, false); }
+  function withDiscoveredBackup(input, callback) { return verifiedScope(input, callback, true); }
+  function resolveForMigration(input) { return coordinator.withLock(() => resolveLocked(input)); }
   function revokeBackup({ backupId, adminContext } = {}) {
     requireAdmin(adminContext);
+    return coordinator.withLock(() => {
     publication(backupId);
-    busy(backupId);
     const revokedAt = clock();
     if (!validTime(revokedAt)) throw fail('REGISTRY_INVALID_INPUT');
     publish(`revoked-${backupId}.json`, { recordVersion: 1, backupId, revokedAt });
-  }
-  function beginUse(backupId) {
-    if (!ID.test(backupId)) throw fail('REGISTRY_INVALID_INPUT');
-    publication(backupId);
-    if (revoked(backupId)) throw fail('REGISTRY_REVOKED');
-    const token = Symbol('backup use');
-    if (!uses.has(backupId)) uses.set(backupId, new Set());
-    uses.get(backupId).add(token);
-    let released = false;
-    return Object.freeze({ backupId, end: () => {
-      if (released) return;
-      released = true;
-      const active = uses.get(backupId);
-      active.delete(token);
-      if (active.size === 0) uses.delete(backupId);
-      if (uses.size === 0) { for (const done of waiters) done(); waiters.clear(); }
-    } });
+    });
   }
   function cleanupBackup({ backupId, adminContext } = {}) {
     requireAdmin(adminContext);
-    busy(backupId);
+    return coordinator.withLock(() => {
     if (!revoked(backupId)) throw fail('REGISTRY_NOT_REVOKED');
     const path = location(publication(backupId).artifactReference, true);
     let changed = false;
@@ -297,10 +357,9 @@ function buildRegistry({ dir, authority, clock = Date.now, fault, platform = def
       throw fail('REGISTRY_CLEANUP_INCOMPLETE');
     }
     if (changed) syncDir(dirname(path));
+    });
   }
-  const drain = () => uses.size ? new Promise(resolve => waiters.add(resolve)) : Promise.resolve();
-  const registry = Object.freeze({ getInstance, resolveForMigration, revokeBackup, beginUse, cleanupBackup, drain,
-    status: () => Object.freeze({ activeUses: uses.size }) });
+  const registry = Object.freeze({ getInstance, resolveForMigration, withVerifiedBackup, withDiscoveredBackup, revokeBackup, cleanupBackup });
   return { registry, writer: Object.freeze({ registerInstance, registerPublishedBackup }), artifactDirectory: join(root, 'artifacts') };
 }
 
@@ -308,8 +367,8 @@ function buildRegistry({ dir, authority, clock = Date.now, fault, platform = def
 export function createBackupRegistry(options) { return buildRegistry(options).registry; }
 
 // The sole supported minting path. Do not expose the closure-held writer or the backup primitive.
-export function createTrustedBackupServices({ db, dir, authority, platform, clock, fault } = {}) {
-  const { registry, writer, artifactDirectory } = buildRegistry({ dir, authority, platform, clock, fault });
+export function createTrustedBackupServices({ db, dir, authority, clock, fault } = {}) {
+  const { registry, writer, artifactDirectory } = buildRegistry({ dir, authority, clock, fault });
   const backup = createImBackup({ db, authority, clock });
   const publisher = createBackupPublisher({ db, registry, writer, artifactDirectory, backup, authority });
   return Object.freeze({ publisher, registry });
