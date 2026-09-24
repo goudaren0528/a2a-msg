@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { getInstanceIdentity } from './schema.js';
+import { createImBackup } from './backup.js';
+import { createBackupPublisher } from './backup-publisher.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -94,7 +98,7 @@ function hashFile(path, platform) {
   } finally { if (fd !== undefined) closeSync(fd); }
 }
 
-export function createBackupRegistry({ dir, authority, clock = Date.now, fault, platform = defaultPlatform } = {}) {
+function buildRegistry({ dir, authority, clock = Date.now, fault, platform = defaultPlatform } = {}) {
   if (typeof dir !== 'string' || !dir || typeof clock !== 'function') throw fail('REGISTRY_INVALID_INPUT');
   if (!platform || !['privateDirectory', 'protectedPath', 'checkOpened', 'syncDirectory'].every(key => typeof platform[key] === 'function'))
     throw fail('REGISTRY_PERMISSION_UNVERIFIED');
@@ -216,11 +220,21 @@ export function createBackupRegistry({ dir, authority, clock = Date.now, fault, 
     let manifest;
     try { manifest = JSON.parse(readProtected(`${path}.manifest.json`, platform).toString('utf8')); }
     catch { throw fail('REGISTRY_ARTIFACT_MISMATCH'); }
-    if (!manifest || typeof manifest !== 'object' || manifest.backupId !== backupId || manifest.fileHash !== fileHash || manifest.schemaVersion !== schemaVersion ||
+    if (!manifest || typeof manifest !== 'object' || manifest.sourceId !== instanceId || manifest.backupId !== backupId || manifest.fileHash !== fileHash || manifest.schemaVersion !== schemaVersion ||
         manifest.schemaChecksum !== schemaChecksum || manifest.completedAt !== completedAt ||
         manifest.toolVersion !== toolVersion || manifest.approvalId !== backupApprovalId ||
         manifest.verification?.integrityCheck !== true || manifest.verification?.foreignKeyCheck !== true ||
         manifest.verification?.schemaCheck !== true || manifest.verification?.hashCheck !== true) throw fail('REGISTRY_ARTIFACT_MISMATCH');
+    // Defense in depth, not a provenance proof: only the closure-held writer can reach here.
+    let copy;
+    try {
+      copy = new DatabaseSync(path, { readOnly: true });
+      copy.exec('PRAGMA foreign_keys=ON');
+      if (getInstanceIdentity(copy).instanceId !== instanceId ||
+          createImBackup({ db: copy }).verify({ backupPath: path, manifestPath: `${path}.manifest.json` }).ok !== true)
+        throw fail('REGISTRY_ARTIFACT_MISMATCH');
+    } catch { throw fail('REGISTRY_ARTIFACT_MISMATCH'); }
+    finally { copy?.close(); }
     const value = { recordVersion: 1, instanceId, registrationGeneration, backupId, fileHash, schemaVersion, schemaChecksum,
       completedAt, executorActorId, backupApprovalId, backupApproverId, toolVersion, artifactReference,
       manifestHash, publicationState: 'published', registeredAt: clock() };
@@ -285,6 +299,18 @@ export function createBackupRegistry({ dir, authority, clock = Date.now, fault, 
     if (changed) syncDir(dirname(path));
   }
   const drain = () => uses.size ? new Promise(resolve => waiters.add(resolve)) : Promise.resolve();
-  return Object.freeze({ registerInstance, getInstance, registerPublishedBackup, resolveForMigration,
-    revokeBackup, beginUse, cleanupBackup, drain });
+  const registry = Object.freeze({ getInstance, resolveForMigration, revokeBackup, beginUse, cleanupBackup, drain,
+    status: () => Object.freeze({ activeUses: uses.size }) });
+  return { registry, writer: Object.freeze({ registerInstance, registerPublishedBackup }), artifactDirectory: join(root, 'artifacts') };
+}
+
+// Reader facade cannot mint provenance, including when reopened independently.
+export function createBackupRegistry(options) { return buildRegistry(options).registry; }
+
+// The sole supported minting path. Do not expose the closure-held writer or the backup primitive.
+export function createTrustedBackupServices({ db, dir, authority, platform, clock, fault } = {}) {
+  const { registry, writer, artifactDirectory } = buildRegistry({ dir, authority, platform, clock, fault });
+  const backup = createImBackup({ db, authority, clock });
+  const publisher = createBackupPublisher({ db, registry, writer, artifactDirectory, backup, authority });
+  return Object.freeze({ publisher, registry });
 }
