@@ -30,4 +30,6 @@
 
 **IM v2 NONRELEASE P5-A 备份存储局部增量（2026-09-25，基于 `f3d1709` 加 23 份限定 overlay）：**独立 v4 原生备份、私有 record-v3 仓库、可信注册 v3 独立副本与持久 hold/prepare 绑定完成限定范围审查和隔离验证；详情及旧 WAL artifact-read 收紧见 [P5-A 备份验证记录](im-v2-p5-backup-validation.md)。这是 P5-A 存储切片，**不是**完整 P5 或生产恢复批准；清理始终禁用，未公开 release writer。P5-B stage/plan/prepare/status、P5-C verify/seal/activate/release、P5-D 崩溃矩阵，以及 P6/P7、H1–H3 和 30 天备份保留确认仍待完成。上方 WP0–WP4 顺序、旧 LAN `18787` 和原有门槛不变；未启用新监听、自动删除、恢复切换或发布。
 
+**IM v2 NONRELEASE P5-B 恢复准备局部增量（2026-09-25，基于 `2085da6` 与 27 份限定 overlay）：**隔离恢复候选的 stage / preview / prepare / readonly status 已完成限定范围本地实现、审查与分平台验证；详见 [P5-B 恢复准备验证记录](im-v2-p5-prepare-validation.md)。这是 P5-B 本地切片，不代表 P5 全生命周期或生产恢复批准。候选保持 prepared/paused，不创建监听、不自动启用；P5-C seal/activation/release、P5-D 完整故障矩阵、P6 物理清理、P7 真实网络验收与 H1–H3 人工批准仍待完成。此增量不变更旧 LAN 或上方 WP0–WP4 门槛；前述 P5-A 段落记录其当时快照，勿将其“P5-B 待完成”误作当前状态。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。

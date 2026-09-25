@@ -10,6 +10,8 @@ import { authorize, canonical, decode, deepFreeze, directoryEntries, exists, fai
   protectedPath, publishBytes, publishPending, readBytes, reserve, same, sha, shape, storage,
   ref, rejectThenable, resyncPublished, streamFile, time, uuid, writeAll } from './recovery-records.js';
 
+const trustedRegistries = new WeakMap();
+
 function oldRecord(bytes) {
   // Preserve historical bytes, but reapply its exact recordVersion=2 shape on
   // every reopen. This parser grants no provenance; only the genuine bridge can.
@@ -136,36 +138,38 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     authorize(authority, context);
     if (typeof callback !== 'function' || Object.prototype.toString.call(callback) === '[object AsyncFunction]') invalid();
     const budget = operationBudget(bounds);
-    let sinkFailure;
-    const callbackFailure = fail('RECOVERY_CALLBACK_FAILED');
+    return verifiedScope(backupId, budget, callback);
+  }
+  function verifiedScope(backupId, budget, callback, prepare = undefined) {
+    let active = true;
+    let callerFailure;
+    const callerSentinel = fail('RECOVERY_CALLBACK_FAILED');
     try { return store.withLock(() => {
-      const verified = verifyLocked(backupId, budget), expectedHash = verified.record.fileHash;
-      let active = true;
-      try {
-        const result = callback(Object.freeze({ ...verified, copyTo(writeChunk) {
-          if (!active) throw fail('RECOVERY_INVALID');
-          if (typeof writeChunk !== 'function' || Object.prototype.toString.call(writeChunk) === '[object AsyncFunction]') invalid();
-          streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
-            let result;
-            try { result = writeChunk(Buffer.from(chunk)); }
-            catch (error) { sinkFailure = { error }; throw error; }
-            try { rejectThenable(result); } catch (e) { active = false; throw e; }
-          }, budget);
-          if (fileHash(leaf('artifacts', backupId, '.sqlite'), budget) !== expectedHash) invalid();
-        } }));
-        rejectThenable(result);
-        verifyLocked(backupId, budget);
-        return result;
-      } catch (error) {
-        // The caller already owns its sink exception. Carry only our private
-        // sentinel through storage sanitization, then restore it after unlock.
-        if (sinkFailure && Object.is(error, sinkFailure.error)) throw callbackFailure;
-        throw error;
-      } finally { active = false; }
+    const verified = verifyLocked(backupId, budget), expectedHash = verified.record.fileHash;
+    const { hold, binding } = prepare ? prepare(budget) : {};
+    const copyTo = writeChunk => {
+      if (!active) throw fail('RECOVERY_INVALID');
+      if (typeof writeChunk !== 'function' || Object.prototype.toString.call(writeChunk) === '[object AsyncFunction]') invalid();
+      streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
+        let result;
+        try { result = writeChunk(Buffer.from(chunk)); }
+        catch (error) { callerFailure = { error }; throw error; }
+        try { rejectThenable(result); } catch (e) { active = false; throw e; }
+      }, budget);
+      if (fileHash(leaf('artifacts', backupId, '.sqlite'), budget) !== expectedHash) invalid();
+    };
+      const proof = Object.freeze({ ...verified, ...(hold === undefined ? {} : { hold, binding }), copyTo });
+      let result;
+      try { result = callback(proof); }
+      catch (error) { if (error !== callerSentinel) callerFailure = { error }; throw callerSentinel; }
+      rejectThenable(result);
+      callerFailure = undefined;
+      verifyLocked(backupId, budget);
+      return result;
     }); } catch (error) {
-      if (error === callbackFailure) throw sinkFailure.error;
+      if (callerFailure && (error === callerSentinel || error?.code === 'RECOVERY_EVIDENCE_MISMATCH')) throw callerFailure.error;
       throw error;
-    }
+    } finally { active = false; }
   }
   function holdLocked(holdId, budget, cache) {
     const hold = read('holds', holdId, 'hold', undefined, budget);
@@ -197,36 +201,120 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     authorize(authority, context); shape(input, ['backupId', 'recoveryRunId', 'stageHash']);
     if (!uuid(input.backupId) || !uuid(input.recoveryRunId) || !hash(input.stageHash)) invalid();
     const budget = operationBudget(bounds);
-    return store.withLock(() => {
-      const cache = new Map();
-      verifyLocked(input.backupId, budget, cache);
-      const matches = scanHolds(budget, cache).filter(({ hold }) => hold.recoveryRunId === input.recoveryRunId);
-      if (matches.length > 1) invalid();
-      if (matches.length) {
-        const { hold } = matches[0];
-        if (hold.backupId !== input.backupId || hold.stageHash !== input.stageHash) invalid();
-        resyncPublished(leaf('holds', hold.holdId), budget);
-        return hold;
-      }
-      const hold = { version: 1, holdId: randomUUID(), backupId: input.backupId,
-        recoveryRunId: input.recoveryRunId, stageHash: input.stageHash, createdAt: now() };
-      write('holds', hold.holdId, 'hold', hold, undefined, budget); return hold;
-    });
+    return store.withLock(() => createStageHoldLocked(input, budget));
+  }
+  function createStageHoldLocked(input, budget) {
+    const cache = new Map();
+    verifyLocked(input.backupId, budget, cache);
+    const matches = scanHolds(budget, cache).filter(({ hold }) => hold.recoveryRunId === input.recoveryRunId);
+    if (matches.length > 1) invalid();
+    if (matches.length) {
+      const { hold } = matches[0];
+      if (hold.backupId !== input.backupId || hold.stageHash !== input.stageHash) invalid();
+      resyncPublished(leaf('holds', hold.holdId), budget);
+      return deepFreeze(hold);
+    }
+    const hold = { version: 1, holdId: randomUUID(), backupId: input.backupId,
+      recoveryRunId: input.recoveryRunId, stageHash: input.stageHash, createdAt: now() };
+    write('holds', hold.holdId, 'hold', hold, undefined, budget); return deepFreeze(hold);
   }
   function bindPrepareHold(input, context) {
     authorize(authority, context); shape(input, ['holdId', 'preparePlanHash']);
     if (!uuid(input.holdId) || !hash(input.preparePlanHash)) invalid();
     const budget = operationBudget(bounds);
-    return store.withLock(() => {
-      const { hold, binding } = holdLocked(input.holdId, budget);
-      if (binding) {
-        if (binding.preparePlanHash !== input.preparePlanHash) invalid();
-        resyncPublished(leaf('holds', hold.holdId, '.binding.json'), budget); return binding;
-      }
-      const value = { version: 1, holdId: hold.holdId, stageHash: hold.stageHash, preparePlanHash: input.preparePlanHash, boundAt: now() };
-      if (value.boundAt < hold.createdAt) invalid();
-      write('holds', hold.holdId, 'binding', value, '.binding.json', budget); return value;
+    return store.withLock(() => bindPrepareHoldLocked(input, budget));
+  }
+  function bindPrepareHoldLocked(input, budget) {
+    const { hold, binding } = holdLocked(input.holdId, budget);
+    if (binding) {
+      if (binding.preparePlanHash !== input.preparePlanHash) invalid();
+      resyncPublished(leaf('holds', hold.holdId, '.binding.json'), budget); return deepFreeze(binding);
+    }
+    const value = { version: 1, holdId: hold.holdId, stageHash: hold.stageHash, preparePlanHash: input.preparePlanHash, boundAt: now() };
+    if (value.boundAt < hold.createdAt) invalid();
+    write('holds', hold.holdId, 'binding', value, '.binding.json', budget); return deepFreeze(value);
+  }
+  function withRecoverySourceLocked(input, context, callback) {
+    authorize(authority, context);
+    shape(input, ['backupId', 'recoveryRunId', 'stageHash', 'preparePlanHash']);
+    if (!uuid(input.backupId) || !uuid(input.recoveryRunId) || !hash(input.stageHash) ||
+        (input.preparePlanHash !== null && !hash(input.preparePlanHash)) ||
+        typeof callback !== 'function' || Object.prototype.toString.call(callback) === '[object AsyncFunction]') invalid();
+    const budget = operationBudget(bounds);
+    return verifiedScope(input.backupId, budget, callback, () => {
+      const hold = createStageHoldLocked(input, budget);
+      const binding = input.preparePlanHash === null ? null : bindPrepareHoldLocked({ holdId: hold.holdId, preparePlanHash: input.preparePlanHash }, budget);
+      return { hold, binding };
     });
+  }
+  function withRecoverySourceIntentLocked(input, context, callback) {
+    authorize(authority, context);
+    shape(input, ['backupId']);
+    if (!uuid(input.backupId) || typeof callback !== 'function' ||
+        Object.prototype.toString.call(callback) === '[object AsyncFunction]') invalid();
+    const backupId = input.backupId, budget = operationBudget(bounds);
+    let state = 'open-unestablished', established, identity, latched, sinkFailure;
+    const callbackSentinel = fail('RECOVERY_CALLBACK_FAILED');
+    const latch = error => { latched ??= { error }; state = 'poisoned'; };
+    const trustedFailure = error => error?.code?.startsWith('RECOVERY_') ? error : fail('RECOVERY_EVIDENCE_MISMATCH');
+    const copyTo = (expectedHash, writeChunk) => {
+      if (state !== 'established') throw fail('RECOVERY_INVALID');
+      if (typeof writeChunk !== 'function' || Object.prototype.toString.call(writeChunk) === '[object AsyncFunction]') invalid();
+      streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
+        let result;
+        try { result = writeChunk(Buffer.from(chunk)); }
+        catch (error) { sinkFailure = { error }; throw callbackSentinel; }
+        try { rejectThenable(result); } catch (error) { latch(error); throw error; }
+      }, budget);
+      if (fileHash(leaf('artifacts', backupId, '.sqlite'), budget) !== expectedHash) invalid();
+    };
+    try {
+      return store.withLock(() => {
+        const verified = verifyLocked(backupId, budget);
+        const establish = value => {
+          if (state === 'expired' || state === 'poisoned') throw fail('RECOVERY_INVALID');
+          if (state === 'establishing') {
+            const error = fail('RECOVERY_EVIDENCE_MISMATCH'); latch(error); throw error;
+          }
+          try {
+            shape(value, ['recoveryRunId', 'stageHash', 'preparePlanHash']);
+            if (!uuid(value.recoveryRunId) || !hash(value.stageHash) ||
+                (value.preparePlanHash !== null && !hash(value.preparePlanHash))) invalid();
+            // Snapshot before any callback-controlled clock or filesystem work.
+            const requested = { recoveryRunId: value.recoveryRunId, stageHash: value.stageHash,
+              preparePlanHash: value.preparePlanHash };
+            if (state === 'established') {
+              if (Object.keys(requested).some(key => requested[key] !== identity[key])) invalid();
+              return established;
+            }
+            state = 'establishing';
+            const hold = createStageHoldLocked({ backupId, recoveryRunId: requested.recoveryRunId, stageHash: requested.stageHash }, budget);
+            const binding = requested.preparePlanHash === null ? null :
+              bindPrepareHoldLocked({ holdId: hold.holdId, preparePlanHash: requested.preparePlanHash }, budget);
+            if (latched) throw latched.error;
+            const proof = Object.freeze({ ...verified, hold, binding, copyTo: chunk => copyTo(verified.record.fileHash, chunk) });
+            identity = requested; established = proof; state = 'established';
+            return proof;
+          } catch (error) {
+            const safe = trustedFailure(error);
+            latch(safe); throw latched.error;
+          }
+        };
+        let result;
+        try { result = callback(Object.freeze({ ...verified, establish })); }
+        catch (error) { if (!latched) latched = { error: sinkFailure && error === callbackSentinel ? sinkFailure.error : error }; throw callbackSentinel; }
+        try { rejectThenable(result); }
+        catch (error) { latch(error); throw error; }
+        if (latched) throw callbackSentinel;
+        verifyLocked(backupId, budget);
+        if (latched) throw callbackSentinel;
+        return result;
+      });
+    } catch (error) {
+      if (latched && error === callbackSentinel) throw latched.error;
+      if (sinkFailure && error?.code === 'RECOVERY_EVIDENCE_MISMATCH') throw sinkFailure.error;
+      throw error;
+    } finally { state = 'expired'; }
   }
   function getHold({ holdId } = {}, context) {
     authorize(authority, context); const budget = operationBudget(bounds);
@@ -243,10 +331,21 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     });
   }
   const registry = Object.freeze({ verify, withVerifiedBackup, createStageHold, bindPrepareHold, getHold, checkCleanup });
+  trustedRegistries.set(registry, Object.freeze({ withRecoverySourceLocked, withRecoverySourceIntentLocked }));
   return { registry, store, leaf, bounds, commitLocked };
 }
 
 export function createImV2BackupRegistry(options) { return build(options).registry; }
+
+export function withRecoverySource(registry, input, context, callback) {
+  if (!trustedRegistries.has(registry)) invalid();
+  return trustedRegistries.get(registry).withRecoverySourceLocked(input, context, callback);
+}
+
+export function withRecoverySourceIntent(registry, input, context, callback) {
+  if (!trustedRegistries.has(registry)) invalid();
+  return trustedRegistries.get(registry).withRecoverySourceIntentLocked(input, context, callback);
+}
 
 export function createTrustedImV2BackupServices(options = {}) {
   const { registry, store, leaf, bounds, commitLocked } = build(options);
