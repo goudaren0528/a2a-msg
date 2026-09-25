@@ -6,6 +6,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createImV2RecoveryServices } from '../src/im/v2/recovery.js';
 import { sha } from '../src/im/v2/recovery-records.js';
+import { hashRecoveryRecord } from '../src/im/v2/recovery-plan.js';
+import { observe } from './fixtures/im-v2-recovery-release/observer.js';
 import { fixture, unsupported } from './fixtures/im-v2-backup/helpers.js';
 import { policy } from './fixtures/im-v2-schema/helpers.js';
 import { setup, context, query, tree, business, typedBusiness, snapshot } from './fixtures/im-v2-recovery-activate/helpers.js';
@@ -25,7 +27,7 @@ test('C1 Windows strict protection is unsupported without platform overrides', {
   const f = fixture(t);
   assert.throws(() => createImV2RecoveryServices({ root: f.root, sourceCatalog: {}, policy: policy() }), { code: 'RECOVERY_UNSUPPORTED' });
 });
-for (const route of ['fresh', 'closed-v3', 'registered-v3', 'snapshot']) test(`C1 real ${route} verify/preview/activate, expired completed retry and strict v1 status`, native, async t => {
+for (const route of ['fresh', 'closed-v3', 'registered-v3', 'snapshot']) test(`C1 real ${route} verify/preview/activate, expired completed retry and ordered v2 status`, native, async t => {
   const s = await setup(t, route), initial = business(s.path), typed = typedBusiness(s.path), source = snapshot(s.f.db);
   const bytes = s.sourcePath && readFileSync(s.sourcePath), registry = tree(s.f.registryRoot);
   s.state.now += 400000; // original prepare TTL is obsolete after approved prepare.
@@ -51,7 +53,19 @@ for (const route of ['fresh', 'closed-v3', 'registered-v3', 'snapshot']) test(`C
   const before = tree(s.root), clock = floor(s);
   assert.deepEqual(s.open().activateRecovery(input, context), result);
   const status = s.open().getRecoveryStatus({ runId: s.staged.runId }, context);
-  assert.equal(status.state, 'active'); assert.equal(status.nextAction, 'NONE'); assert.equal(Object.hasOwn(status, 'version'), false);
+  assert.equal(status.state, 'active'); assert.equal(status.version, 2);
+  assert.deepEqual(Object.keys(status), ['version', 'runId', 'candidateReference', 'state', 'stageHash', 'preparePlanHash', 'newEpoch', 'holdId', 'writeMode', 'nextAction', 'releasePlan', 'releasePlanHash']);
+  if (['registered-v3', 'snapshot'].includes(route)) {
+    assert.equal(status.nextAction, 'APPROVE_RELEASE_HOLD');
+    const completion = JSON.parse(readFileSync(join(s.dir, 'activation-complete.json')));
+    assert.deepEqual(status.releasePlan, { version: 1, runId: s.staged.runId, holdId: s.staged.holdId,
+      backupId: s.preview.preparePlan.backupId, stageHash: status.stageHash, preparePlanHash: s.preview.preparePlanHash,
+      activationCompletionHash: hashRecoveryRecord('activationCompletion', completion), terminalState: 'active',
+      candidateReference: s.staged.candidateReference, newEpoch: s.preview.preparePlan.newEpoch });
+    assert.equal(status.releasePlanHash, hashRecoveryRecord('releasePlan', status.releasePlan));
+  } else {
+    assert.equal(status.nextAction, 'NONE'); assert.equal(status.releasePlan, null); assert.equal(status.releasePlanHash, null);
+  }
   assert.equal(s.open().prepareRecovery(s.prepareInput, context).status, 'active');
   assert.deepEqual(tree(s.root), before); assert.equal(floor(s), clock);
   assert.deepEqual(snapshot(s.f.db), source); assert.deepEqual(tree(s.f.registryRoot), registry);
@@ -123,12 +137,25 @@ for (const phase of ['late-approval', 'final-expiry', 'final-rollback']) test(`C
   assert.equal(run(s).status, 'verified'); assert.deepEqual(business(s.path), before);
 });
 test('C1 completion missing: readonly status is conservative, exact activate alone repairs without DB rewrite', native, async t => {
-  const s = await setup(t), { input } = planned(s);
+  const s = await setup(t, 'snapshot'), { input } = planned(s);
   const result = s.api.activateRecovery(input, context);
   const file = join(s.dir, 'activation-complete.json'), completion = readFileSync(file);
   unlinkSync(file); // isolated response-loss fixture only
   const before = tree(s.root), dbHash = sha(readFileSync(s.path));
-  assert.equal(s.api.getRecoveryStatus({ runId: s.staged.runId }, context).state, 'indeterminate');
+  const watch = observe({ ...s, completion: file, marker: join(s.f.registryRoot, 'registry/releases', `${s.staged.holdId}.json`),
+    locks: [join(s.f.registryRoot, 'coordination.sqlite'), join(s.root, 'requests/coordination.sqlite'), join(s.dir, 'coordination.sqlite')] }, { readonly: true });
+  try {
+    const status = s.api.getRecoveryStatus({ runId: s.staged.runId }, context);
+    assert.equal(status.state, 'active'); assert.equal(status.nextAction, 'RETRY_ACTIVATE');
+    assert.equal(status.releasePlan, null); assert.equal(status.releasePlanHash, null);
+    assert.deepEqual(watch.events, []); assert.deepEqual(watch.markerIO, []);
+  } finally { watch.restore(); }
+  const approvals = s.options.approvalAuthority;
+  s.options.approvalAuthority = { authorizeApproval: () => true };
+  try {
+    assert.throws(() => s.open().releaseRecoveryHold({ runId: s.staged.runId, holdId: s.staged.holdId,
+      releasePlanHash: 'a'.repeat(64), approvalRef: 'release-ok' }, context), { code: 'RECOVERY_INDETERMINATE' });
+  } finally { s.options.approvalAuthority = approvals; }
   assert.deepEqual(tree(s.root), before);
   assert.throws(() => s.api.activateRecovery({ ...input, activationApprovalRef: 'other' }, context), { code: 'RECOVERY_EVIDENCE_MISMATCH' });
   s.state.now += 900000; s.state.activate = false;

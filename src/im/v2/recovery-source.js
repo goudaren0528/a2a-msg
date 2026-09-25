@@ -64,7 +64,7 @@ export function closureProof(authority, binding, context, original) {
   adapter(authority, 'authorizeSourceClosedEvidence', [proof, context], 'RECOVERY_EVIDENCE_MISMATCH');
   return proof;
 }
-export function sourceTable(catalog, evidenceAuthority, now) {
+export function sourceTable(catalog, evidenceAuthority, now, createReleaser) {
   if (!catalog || Object.getPrototypeOf(catalog) !== Object.prototype) invalid();
   const entries = new Map();
   for (const key of Reflect.ownKeys(catalog)) {
@@ -78,6 +78,17 @@ export function sourceTable(catalog, evidenceAuthority, now) {
       if (value.kind !== 'closed-v3' || !actual || actual.sourceRef !== key) invalid();
       entries.set(key, Object.freeze({ ...value }));
     }
+  }
+  const releasers = new Map();
+  if (createReleaser) for (const entry of entries.values()) {
+    if (entry.kind !== 'registered-backup' || releasers.has(entry.registry)) continue;
+    const refs = Object.freeze([...entries].filter(([, value]) => value.registry === entry.registry).map(([key]) => key));
+    releasers.set(entry.registry, createReleaser(entry.registry, refs));
+  }
+  function release(stage, operation, ctx) {
+    const entry = entries.get(stage.sourceRef);
+    if (entry?.kind !== 'registered-backup' || stage.sourceEvidence?.backupId !== entry.backupId) invalid();
+    return releasers.get(entry.registry)({ backupId: entry.backupId, ...operation }, ctx);
   }
   function isolation(input, ctx) {
     if (input.candidateKind === 'fresh_bootstrap') return;
@@ -140,5 +151,5 @@ export function sourceTable(catalog, evidenceAuthority, now) {
     if (JSON.stringify(actual.hold) !== JSON.stringify(receipt) || actual.release !== null) invalid();
     return deepFreeze(actual);
   }
-  return Object.freeze({ withSource, isolation, getHold });
+  return Object.freeze({ withSource, isolation, getHold, release });
 }

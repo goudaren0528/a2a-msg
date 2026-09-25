@@ -1,10 +1,11 @@
 # P5-C verify / activation / hold-release implementation handoff
 
 **Status: approved finite behavior contract with parent-approved C1 durability
-correction; NONRELEASE only; corrected runtime acceptance pending.**
+and C2 publication-time corrections; NONRELEASE only; runtime acceptance pending.**
 Checked source baseline: `9e3bca504f93c2b1f40762e0d582c72bd4bc379d`.
-C0 interfaces in §10 are frozen. Following the four terminal C1 reviews, the
-parent approved the narrow retry/observation semantics in §§6/8/9 below. This
+C0 interfaces in §10 are frozen except for the explicitly parent-approved C2
+private publisher minimum-time amendment below. Following the four terminal C1
+reviews, the parent approved the narrow retry/observation semantics in §§6/8/9 below. This
 correction does not grant runtime acceptance, P5 completion or release approval.
 
 References: [design §6](im-recovery-retention-v2-design.md),
@@ -328,9 +329,17 @@ Use the A capability in §8 to publish the existing ordered marker format:
 Here `stateEvidenceHash=activationCompletionHash`, and the path is the existing
 `registry/releases/<holdId>.json`. A fixes identity to the actual current hold and
 timestamps internally; C supplies terminal verification while controls are held.
+The private publisher also receives mandatory `minimumReleasedAt`, derived from
+the verified actual completion's `activatedAt`. A's single timestamp sample must
+meet both that minimum and the actual prepare binding's `boundAt` before any
+pending or final marker write. A lagging clock fails with
+`RECOVERY_EVIDENCE_MISMATCH`; retry may succeed once the clock catches up, without
+leaving an immutable bad-time marker. No clamping or separate preflight clock
+sample substitutes for checking the actual publication timestamp.
 Exact same approval/evidence retry preserves original releasedAt/bytes and
-resyncs file/directory. Different approval reference or evidence conflicts, even
-if separately authorized. Malformed/uncertain proof is conservatively held, not
+resyncs file/directory. It checks the retained timestamp against both bounds and
+does not sample the current clock. Different approval reference or evidence
+conflicts, even if separately authorized. Malformed/uncertain proof is conservatively held, not
 cleanup permission. Return only `{runId,holdId,state:'released',releasePlanHash}`.
 Never delete the hold/binding or source backup. `checkCleanup().allowed` remains
 false; release is neither automatic cleanup nor permission to enable cleanup.
@@ -453,27 +462,39 @@ same-process JavaScript from importing a trusted factory.
 
 ### Q2. Scoped publisher fields and terminal verifier result
 
-**Frozen, matching A's existing marker encoder**:
+**Frozen with parent-approved C2 minimum-time amendment; A's marker encoder is unchanged**:
 
 ```text
-publish({stateEvidenceHash}) -> private frozen publicationReceipt
+publish({stateEvidenceHash,minimumReleasedAt}) -> private frozen publicationReceipt
 verifyTerminal(heldEvidence,operation,context,publish) -> that same receipt
 release(...) -> frozen {releaseMarker}
 ```
 
 C derives `stateEvidenceHash` solely from the rebuilt completion and proves it
-matches the input releasePlanHash while candidate control is held. A fixes
-version, current holdId/recoveryRunId, terminalState active and approvalRef from
-actual hold/operation, using A's existing internal clock for releasedAt. Existing
-exact marker retry keeps its timestamp. A independently enforces admin and the
-literal-true release approval bound to operation hash/ref at publication. The
+matches the input releasePlanHash while candidate control is held. It derives
+`minimumReleasedAt` from that verified actual completion's `activatedAt`. This
+mandatory nonnegative safe integer is trusted verifier evidence, not caller
+policy: the public release operation has no minimum/time override, and a missing
+minimum has no backward-compatible zero default. A snapshots both publisher
+fields immutably before its clock, authorization callbacks or filesystem work.
+A fixes version, current holdId/recoveryRunId, terminalState active and approvalRef from
+actual hold/operation, using A's existing internal clock for releasedAt. First
+publication samples that clock exactly once and requires the sampled safe integer
+to be at least both actual `binding.boundAt` and `minimumReleasedAt` before any
+marker/pending-file write. Invalid or too-early time fails with fixed
+`RECOVERY_EVIDENCE_MISMATCH`; it is neither clamped nor published for later repair.
+Existing exact marker retry checks its retained `releasedAt` against both bounds
+without sampling the current clock, preserves bytes/inode/time and still resyncs
+file/directory. A bad existing timestamp is refused unchanged, never corrected or
+deleted. A independently enforces admin and the literal-true release approval
+bound to operation hash/ref at publication. The
 receipt is private identity, valid only for this scope's successful publication;
 it is not a caller terminal boolean, portable proof or generic write capability.
 C maps verified result to the public §2 DTO. Receipt is opaque frozen identity
 with no setter or mutable fields; verifier must return that exact receipt.
-Exact same-scope publication repeats return the same receipt. Changed hash,
-malformed arguments, reentrancy, unexpected thenables and invalid verifier returns
-poison/refuse outer success, even when caught. Capabilities expire on exit. Reject
+Exact same-scope two-field publication repeats return the same receipt. Changing
+either hash or minimum, malformed arguments, reentrancy, unexpected thenables and
+invalid verifier returns poison/refuse outer success, even when caught. Capabilities expire on exit. Reject
 known async callbacks/adapters before executing their prefix; observe unexpected
 promise rejection. Falsy throws are failures, never truthiness-based success.
 A enforces its own admin authority and independent release-hold approval bound
@@ -639,3 +660,14 @@ fault probes and B expectation updates. Source syntax/whitespace/hash checks are
 not native runtime acceptance; final code/oracle/QA review and native execution
 follow terminal source and test writers. C2 release/statusV2, full P5-D and
 production approval remain separate gates.
+
+Following the four terminal C2 reviews, the parent approved a narrow publication
+chronology correction in `backup-registry.js`, `recovery.js` and this contract.
+The private publisher's mandatory `minimumReleasedAt` closes the case where A's
+clock is at or after prepare binding but before actual activation. The actual
+publication sample is checked before writing; a post-return consistency check
+is only defense in depth. The public release API and persisted marker format
+remain unchanged. Independent test ownership updates trusted C0 publisher
+callsites to supply the mandatory minimum and verifies the chronology, retry and
+poison cases. This amendment declares neither C2/P5 acceptance nor production
+approval; independent original-code/oracle closeout remains pending.

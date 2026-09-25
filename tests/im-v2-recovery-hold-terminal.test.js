@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { join,dirname } from 'node:path';
 import { createImV2BackupRegistry,createRecoveryHoldReleaser,withRecoveryHold,withRecoverySource } from '../src/im/v2/backup-registry.js';
-import { setup,terminal,wrap,thrown,deeplyFrozen,directoryState,authority,approvalAuthority,context,unsupported,evidenceHash,planHash } from './fixtures/im-v2-recovery-hold-terminal/helpers.js';
+import { setup,terminal,publication,wrap,thrown,deeplyFrozen,directoryState,authority,approvalAuthority,context,unsupported,evidenceHash,planHash } from './fixtures/im-v2-recovery-hold-terminal/helpers.js';
 import { processes } from './fixtures/im-v2-recovery-hold-terminal/processes.js';
 import { fail } from '../src/im/v2/recovery-records.js';
 const invalid={code:'RECOVERY_INVALID'},mismatch={code:'RECOVERY_EVIDENCE_MISMATCH'};
@@ -18,6 +18,77 @@ function fixedFailure(error,code) {
   assert(error instanceof Error);assert.equal(error.name,'Error');assert.equal(error.code,code);
   assert.equal(error.message,code);assert.doesNotMatch(error.stack,/TEST_ONLY_SECRET|TypeError|startsWith is not a function/);
 }
+
+for (const kind of ['missing','undefined','null','negative','fraction','unsafe','string','nan','infinity'])
+test(`C0 mandatory safeinteger minimum ${kind} refuses before publication`,{skip:unsupported},async t=>{
+  const f=await setup(t),before=directoryState(join(f.registryRoot,'registry'));let calls=0,links=0,syncs=0;
+  const values={undefined:undefined,null:null,negative:-1,fraction:1.5,unsafe:Number.MAX_SAFE_INTEGER+1,string:'1',nan:NaN,infinity:Infinity};
+  const input={stateEvidenceHash:evidenceHash};if(kind!=='missing')input.minimumReleasedAt=values[kind];
+  const registry=createImV2BackupRegistry({...f.options,clock:()=>{calls++;return Date.now();}});
+  const restore=wrap({linkSync:real=>(...args)=>{links++;return real(...args);},fsyncSync:real=>fd=>{syncs++;return real(fd);}});
+  try {assert.throws(()=>invoke(f,(p,o,c,publish)=>publish(input),{registry}),mismatch);} finally {restore();}
+  assert.equal(calls,0);assert.equal(links,0);assert.equal(syncs,0);assert.equal(fs.existsSync(f.releasePath),false);
+  assert.deepEqual(directoryState(join(f.registryRoot,'registry')),before);f.unchanged();
+});
+
+for (const change of ['hash','minimum','both']) test(`C0 caught changed ${change} after durable receipt poisons exact scope`,{skip:unsupported},async t=>{
+  const f=await setup(t),before=protectedState(f);let receipt,returned,marker,published=false;
+  assert.throws(()=>invoke(f,(p,o,c,publish)=>{
+    const input=publication(p);receipt=publish(input);marker=fileState(f.releasePath);published=true;
+    assert.strictEqual(publish({...input}),receipt,'both unchanged fields return identical receipt');
+    const changed={...input};if(change!=='minimum')changed.stateEvidenceHash='f'.repeat(64);
+    if(change!=='hash')changed.minimumReleasedAt++;
+    assert.throws(()=>publish(changed),mismatch);returned=receipt;return receipt;
+  }),mismatch);
+  assert.equal(published,true);assert.strictEqual(returned,receipt);assert.deepEqual(fileState(f.releasePath),marker);
+  assert.deepEqual(protectedState(f),before);f.unchanged();
+});
+
+test('C0 existing marker at binding but below trusted minimum refuses without clock, rewrite, delete or sync',{skip:unsupported},async t=>{
+  const f=await setup(t),bound=f.held.binding.boundAt;
+  let clockCalls=0;const registry=createImV2BackupRegistry({...f.options,clock:()=>{clockCalls++;return bound;}});
+  const initial=invoke(f,terminal,{registry});assert.equal(initial.releaseMarker.releasedAt,bound);assert.equal(clockCalls,1);
+  const before=directoryState(join(f.registryRoot,'registry')),marker=fileState(f.releasePath);clockCalls=0;
+  const operations=[];
+  const restore=wrap(Object.fromEntries(['writeSync','linkSync','unlinkSync','fsyncSync'].map(name=>[name,real=>(...args)=>{operations.push(name);return real(...args); }])));
+  try {assert.throws(()=>invoke(f,(p,o,c,publish)=>publish({...publication(p),minimumReleasedAt:bound+1}),{registry}),mismatch);} finally {restore();}
+  assert.equal(clockCalls,0);assert.deepEqual(operations,[]);assert.deepEqual(fileState(f.releasePath),marker);
+  assert.deepEqual(directoryState(join(f.registryRoot,'registry')),before);f.unchanged();
+});
+
+test('C0 publication input snapshots both fields before registry clock and approval callback effects',{skip:unsupported},async t=>{
+  const f=await setup(t),minimum=f.held.binding.boundAt,input=publication(f.held);let calls=0;
+  const registry=createImV2BackupRegistry({...f.options,clock:()=>{calls++;input.minimumReleasedAt=Number.MAX_SAFE_INTEGER;input.stateEvidenceHash='f'.repeat(64);return minimum;}});
+  const result=invoke(f,(p,o,c,publish)=>{
+    const receipt=publish(input);assert.strictEqual(publish(publication(p)),receipt);return receipt;
+  },{registry,approvalAuthority:{authorizeApproval:()=>{if(calls)input.minimumReleasedAt=-1;return true;}}});
+  assert.equal(calls,1);assert.equal(result.releaseMarker.releasedAt,minimum);assert.equal(result.releaseMarker.stateEvidenceHash,evidenceHash);
+  assert.equal(input.minimumReleasedAt,-1);f.unchanged();
+});
+
+for (const floor of ['binding','completion']) test(`C0 actual registry sample below ${floor} floor refuses all marker mutation`,{skip:unsupported},async t=>{
+  const f=await setup(t),bound=f.held.binding.boundAt;
+  const minimum=floor==='binding'?bound-1:bound+2,clockValue=floor==='binding'?bound-1:bound+1;
+  assert(bound>0);let calls=0;
+  const registry=createImV2BackupRegistry({...f.options,clock:()=>{calls++;return clockValue;}});
+  const before=directoryState(join(f.registryRoot,'registry')),operations=[];
+  const restore=wrap(Object.fromEntries(['writeSync','linkSync','unlinkSync','fsyncSync'].map(name=>[name,real=>(...args)=>{operations.push(name);return real(...args); }])));
+  try {assert.throws(()=>invoke(f,(p,o,c,publish)=>publish({...publication(p),minimumReleasedAt:minimum}),{registry}),mismatch);} finally {restore();}
+  assert.equal(calls,1);assert.deepEqual(operations,[]);assert.equal(fs.existsSync(f.releasePath),false);
+  assert.deepEqual(directoryState(join(f.registryRoot,'registry')),before);f.unchanged();
+});
+
+for (const kind of ['getter','proxy']) test(`C0 caught hostile minimum ${kind} after durable receipt preserves poison`,{skip:unsupported},async t=>{
+  const f=await setup(t);let reached=0,marker,receipt,returned;
+  assert.throws(()=>invoke(f,(p,o,c,publish)=>{
+    receipt=terminal(p,o,c,publish);marker=fileState(f.releasePath);
+    const hostile=kind==='getter'?{stateEvidenceHash:evidenceHash,get minimumReleasedAt(){reached++;throw null;}}:
+      new Proxy(publication(p),{get(target,key){if(key==='minimumReleasedAt'){reached++;throw false;}return Reflect.get(target,key);}});
+    assert.throws(()=>publish(hostile),mismatch);returned=receipt;return receipt;
+  }),mismatch);
+  assert.equal(reached,kind==='getter'?0:1,'descriptor rejection must not invoke an accessor; data-shaped proxy traps are exercised');
+  assert.strictEqual(returned,receipt);assert.deepEqual(fileState(f.releasePath),marker);f.unchanged();
+});
 
 for (const kind of ['non-string-code','throwing-code-getter','null','false','zero','empty','undefined','genuine-recovery'])
   test(`C poison after genuine durable publication: ${kind}`,{skip:unsupported},async t=>{
@@ -45,7 +116,7 @@ for (const kind of ['non-string-code','throwing-code-getter','null','false','zer
         if(kind==='throwing-code-getter')value={get code(){codeCalls++;throw Error('TEST_ONLY_SECRET classifier');}};
         if(kind==='null')value=null;if(kind==='false')value=false;if(kind==='zero')value=0;if(kind==='empty')value='';
         if(kind==='genuine-recovery')value=fail('RECOVERY_INVALID');
-        const input={stateEvidenceHash:evidenceHash,get then(){thenCalls++;throw value;}};
+        const input={...publication(proof),get then(){thenCalls++;throw value;}};
         try {publish(input);} catch(error) {secondary=error;}
         returnedReceipt=receipt;return receipt;
       });} catch(error) {outerFailed=true;outer=error;}
@@ -61,7 +132,7 @@ for (const kind of ['non-string-code','throwing-code-getter','null','false','zer
       fixedFailure(secondary,code);fixedFailure(outer,code);
       assert.deepEqual(fileState(f.releasePath),marker);assert.deepEqual(protectedState(f),before);
       assert.deepEqual(directoryState(join(f.registryRoot,'registry')),registryAfterPublish);assert.equal(links,1);
-      assert.throws(()=>escaped({stateEvidenceHash:evidenceHash}),invalid);assert.deepEqual(rejections,[]);f.unchanged();
+      assert.throws(()=>escaped(publication(f.held)),invalid);assert.deepEqual(rejections,[]);f.unchanged();
       t.diagnostic(JSON.stringify({kind,phase:'durable-publish -> throwing-then -> caught -> original-receipt -> outer-refusal',thenCalls,codeCalls,links,outerCode:outer.code}));
     } finally {process.off('unhandledRejection',observe);}
   });
@@ -122,12 +193,12 @@ for (const v3 of [false,true]) test(`C held read and exact release retry on real
   let escaped,receipt;
   const result=invoke(f,(proof,op,ctx,publish)=>{
     deeplyFrozen(proof);deeplyFrozen(op);assert.deepEqual(op,f.operation);escaped=publish;
-    receipt=terminal(proof,op,ctx,publish);assert.strictEqual(publish({stateEvidenceHash:evidenceHash}),receipt);
+    receipt=terminal(proof,op,ctx,publish);assert.strictEqual(publish(publication(proof)),receipt);
     assert.equal(Object.getPrototypeOf(receipt),null);assert(Object.isFrozen(receipt));assert.deepEqual(Reflect.ownKeys(receipt),[]);return receipt;
   });
   deeplyFrozen(result);assert.deepEqual(Object.keys(result),['releaseMarker']);
   assert.equal(result.releaseMarker.terminalState,'active');assert.equal(result.releaseMarker.stateEvidenceHash,evidenceHash);
-  assert.throws(()=>escaped({stateEvidenceHash:evidenceHash}),invalid);
+  assert.throws(()=>escaped(publication(f.held)),invalid);
   const bytes=fs.readFileSync(f.releasePath),st=fs.statSync(f.releasePath);
   const after=directoryState(join(f.registryRoot,'registry'));
   const stop=wrap({fsyncSync:real=>fd=>{fsyncs++;return real(fd);}});fsyncs=0;
@@ -149,7 +220,7 @@ test('C genuine registry identity, strict operation snapshots and unbound refusa
   for (const input of [null,{}, {...f.operation,extra:1},{...f.operation,path:f.root},{...f.operation,runId:'bad'}]) assert.throws(()=>api.release(input,context),invalid);
   const input={...f.operation};
   const mutate={authorizeAdmin:()=>{input.runId='bad';input.releasePlanHash='bad';return true;}};
-  f.make((p,op,c,publish)=>{assert.equal(op.runId,f.operation.runId);assert.equal(op.releasePlanHash,planHash);return publish({stateEvidenceHash:evidenceHash});},{authority:mutate}).release(input,context);
+  f.make((p,op,c,publish)=>{assert.equal(op.runId,f.operation.runId);assert.equal(op.releasePlanHash,planHash);return publish(publication(p));},{authority:mutate}).release(input,context);
   assert.equal(calls,0);assert.deepEqual(names(f),before);
   const unbound=await setup(t,{bound:false});assert.equal(read(unbound,p=>p.binding),null);
   assert.throws(()=>invoke(unbound),mismatch);assert.equal(fs.existsSync(unbound.releasePath),false);unbound.unchanged();
@@ -166,7 +237,7 @@ test('C independent approval/admin gates, revocation and known async zero-prefix
     thrown(()=>invoke(f,terminal,{[gate]:{[method]:()=>value}}));
   }
   const approval={authorizeApproval:()=>approved};
-  assert.throws(()=>invoke(f,(p,o,c,publish)=>{approved=false;return publish({stateEvidenceHash:evidenceHash});},{approvalAuthority:approval}),{code:'RECOVERY_APPROVAL_DENIED'});
+  assert.throws(()=>invoke(f,(p,o,c,publish)=>{approved=false;return publish(publication(p));},{approvalAuthority:approval}),{code:'RECOVERY_APPROVAL_DENIED'});
   assert.equal(prefixes,0);assert.equal(fs.existsSync(f.releasePath),false);f.unchanged();
 });
 test('C mismatched current hold/run/hash, failed proof and changed exact-retry refs refuse',{skip:unsupported},async t=>{
@@ -174,9 +245,9 @@ test('C mismatched current hold/run/hash, failed proof and changed exact-retry r
   for (const bad of [{...f.operation,runId:f.operation.backupId},{...f.operation,holdId:f.operation.runId},{...f.operation,backupId:f.operation.runId},{...f.operation,releasePlanHash:'f'.repeat(64)}]) thrown(()=>f.make(()=>{calls++;}).release(bad,context));
   assert.equal(calls,0);
   thrown(()=>invoke(f,()=>({terminalState:'failed',stateEvidenceHash:evidenceHash})));assert.equal(fs.existsSync(f.releasePath),false);
-  thrown(()=>invoke(f,(p,o,c,pub)=>pub({stateEvidenceHash:evidenceHash,terminalState:'failed'})));assert.equal(fs.existsSync(f.releasePath),false);
+  thrown(()=>invoke(f,(p,o,c,pub)=>pub({...publication(p),terminalState:'failed'})));assert.equal(fs.existsSync(f.releasePath),false);
   invoke(f);const original=fs.readFileSync(f.releasePath);
-  thrown(()=>invoke(f,(p,o,c,pub)=>pub({stateEvidenceHash:'f'.repeat(64)})));
+  thrown(()=>invoke(f,(p,o,c,pub)=>pub({...publication(p),stateEvidenceHash:'f'.repeat(64)})));
   thrown(()=>f.make(terminal,{approvalAuthority:{authorizeApproval:()=>true}}).release({...f.operation,approvalRef:'different'},context));
   assert.deepEqual(fs.readFileSync(f.releasePath),original);f.unchanged();
 });
@@ -184,19 +255,19 @@ test('C publication receipt identity, caught poison and escaped capability expir
   const f=await setup(t);let escaped,prior;
   for (const after of ['changed','malformed','counterfeit','prior','falsy']) {
     thrown(()=>invoke(f,(p,o,c,publish)=>{
-      escaped=publish;const receipt=publish({stateEvidenceHash:evidenceHash});
-      if(after==='changed')thrown(()=>publish({stateEvidenceHash:'f'.repeat(64)}));
-      if(after==='malformed')thrown(()=>publish({stateEvidenceHash:evidenceHash,extra:true}));
+      escaped=publish;const receipt=publish(publication(p));
+      if(after==='changed')thrown(()=>publish({...publication(p),stateEvidenceHash:'f'.repeat(64)}));
+      if(after==='malformed')thrown(()=>publish({...publication(p),extra:true}));
       if(after==='counterfeit')return Object.freeze(Object.create(null));
       if(after==='prior')return prior;
       if(after==='falsy')return false;
       prior=receipt;return receipt;
     }));
-    assert.throws(()=>escaped({stateEvidenceHash:evidenceHash}),invalid);
+    assert.throws(()=>escaped(publication(f.held)),invalid);
     assert.equal(fs.existsSync(f.releasePath),true,'published evidence is retained after verifier failure');
     assert.deepEqual(read(f,p=>p.release),JSON.parse(fs.readFileSync(f.releasePath)));
   }
-  for (const bad of [null,{}, {stateEvidenceHash:'bad'}]) thrown(()=>invoke(f,(p,o,c,pub)=>{thrown(()=>pub(bad));thrown(()=>pub({stateEvidenceHash:evidenceHash}));return prior;}));
+  for (const bad of [null,{}, {...publication(f.held),stateEvidenceHash:'bad'}]) thrown(()=>invoke(f,(p,o,c,pub)=>{thrown(()=>pub(bad));thrown(()=>pub(publication(p)));return prior;}));
   assert.doesNotThrow(()=>invoke(f));f.unchanged();
 });
 test('C all falsy throws are failures; read callback preserves thrown identity, release sanitizes',{skip:unsupported},async t=>{
@@ -204,7 +275,7 @@ test('C all falsy throws are failures; read callback preserves thrown identity, 
   for (const value of [null,false,0,'',undefined]) {
     thrown(()=>read(f,()=>{throw value;}),error=>error===value);
     assert.throws(()=>invoke(f,()=>{throw value;}),{code:'RECOVERY_CALLBACK_FAILED'});
-    assert.throws(()=>invoke(f,(p,o,c,pub)=>{pub({stateEvidenceHash:evidenceHash});throw value;}),{code:'RECOVERY_CALLBACK_FAILED'});
+    assert.throws(()=>invoke(f,(p,o,c,pub)=>{pub(publication(p));throw value;}),{code:'RECOVERY_CALLBACK_FAILED'});
     assert.equal(fs.existsSync(f.releasePath),true);
     for (const gate of ['authority','approvalAuthority']) {
       const key=gate==='authority'?'authorizeAdmin':'authorizeApproval';
@@ -227,32 +298,32 @@ test('C unexpected promises are observed; malformed promise publisher poisons ev
 });
 test('C rejection after durable publish refuses outer success and preserves the exact marker',{skip:unsupported},async t=>{
   const f=await setup(t);let escaped;
-  thrown(()=>invoke(f,(p,o,c,pub)=>{escaped=pub;pub({stateEvidenceHash:evidenceHash});return Promise.reject(Error('TEST_ONLY post-publication rejection'));}));
+  thrown(()=>invoke(f,(p,o,c,pub)=>{escaped=pub;pub(publication(p));return Promise.reject(Error('TEST_ONLY post-publication rejection'));}));
   const bytes=fs.readFileSync(f.releasePath),ino=fs.statSync(f.releasePath).ino;
   await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));
-  assert.throws(()=>escaped({stateEvidenceHash:evidenceHash}),invalid);
+  assert.throws(()=>escaped(publication(f.held)),invalid);
   invoke(f);assert.deepEqual(fs.readFileSync(f.releasePath),bytes);assert.equal(fs.statSync(f.releasePath).ino,ino);f.unchanged();
 });
 test('C registry own admin gate is rechecked at publication independently of composition admin',{skip:unsupported},async t=>{
   const f=await setup(t);let permitted=true;
   const registry=createImV2BackupRegistry({...f.options,authority:{authorizeAdmin:()=>permitted}});
-  assert.throws(()=>invoke(f,(p,o,c,pub)=>{permitted=false;return pub({stateEvidenceHash:evidenceHash});},{registry}),{code:'RECOVERY_AUTH_DENIED'});
+  assert.throws(()=>invoke(f,(p,o,c,pub)=>{permitted=false;return pub(publication(p));},{registry}),{code:'RECOVERY_AUTH_DENIED'});
   assert.equal(fs.existsSync(f.releasePath),false);assert.equal(names(f).length,2);f.unchanged();
 });
 for (const at of ['clock','publication']) test(`C caught reentrant ${at} poisons even if publication has durable bytes`,{skip:unsupported},async t=>{
   const f=await setup(t);let publish,reentered=false;
-  const reenter=()=>{if(!reentered){reentered=true;thrown(()=>publish({stateEvidenceHash:evidenceHash}));}};
+  const reenter=()=>{if(!reentered){reentered=true;thrown(()=>publish(publication(f.held)));}};
   const registry=at==='clock'?createImV2BackupRegistry({...f.options,clock:()=>{reenter();return Date.now();}}):f.registry;
   const restore=wrap({linkSync:real=>(...args)=>{const result=real(...args);if(at==='publication'&&dirname(args[1])===dirname(f.releasePath))reenter();return result;}});
-  try {thrown(()=>invoke(f,(p,o,c,pub)=>{publish=pub;try{return pub({stateEvidenceHash:evidenceHash});}catch{return {};}},{registry}));} finally {restore();}
-  assert.equal(reentered,true);assert.throws(()=>publish({stateEvidenceHash:evidenceHash}),invalid);
+  try {thrown(()=>invoke(f,(p,o,c,pub)=>{publish=pub;try{return pub(publication(p));}catch{return {};}},{registry}));} finally {restore();}
+  assert.equal(reentered,true);assert.throws(()=>publish(publication(f.held)),invalid);
   assert.equal(fs.existsSync(f.releasePath),at==='publication');assert.doesNotThrow(()=>invoke(f));f.unchanged();
 });
 for (const faultAt of ['file','directory']) test(`C real ${faultAt} fsync failure: persistent refusal, same-inode/time durable retry`,{skip:unsupported},async t=>{
   const f=await setup(t),holds=names(f);let fault=true,failed=0,resynced=0,linked=0;
   // First leave a genuine durable marker behind a verifier exception; retry is
   // the same protected final inode for both file and directory fault injection.
-  thrown(()=>invoke(f,(p,o,c,pub)=>{pub({stateEvidenceHash:evidenceHash});throw null;}));
+  thrown(()=>invoke(f,(p,o,c,pub)=>{pub(publication(p));throw null;}));
   const bytes=fs.readFileSync(f.releasePath),identity=fs.statSync(f.releasePath),dir=fs.statSync(dirname(f.releasePath));
   const matches=s=>s.ino===(faultAt==='file'?identity:dir).ino&&s.dev===(faultAt==='file'?identity:dir).dev;
   const restore=wrap({linkSync:real=>(...args)=>{linked++;return real(...args);},fsyncSync:real=>fd=>{const result=real(fd);if(matches(fs.fstatSync(fd))){if(fault){failed++;throw Error('TEST_ONLY after real fsync');}resynced++;}return result;}});

@@ -54,8 +54,9 @@ test('Windows recovery strict protection reports unsupported', { skip: !unsuppor
 
 test('fresh actual P1 staging, immutable preview, prepare binding and expired readonly exact retry', { skip: unsupported }, t => {
   const f = fixture(t), s = setup(f), api = s.open();
-  assert.deepEqual(Object.keys(api), ['stageCandidate', 'previewRecovery', 'prepareRecovery', 'getRecoveryStatus', 'verifyRecovery', 'previewActivation', 'activateRecovery']);
+  assert.deepEqual(Object.keys(api), ['stageCandidate', 'previewRecovery', 'prepareRecovery', 'getRecoveryStatus', 'verifyRecovery', 'previewActivation', 'activateRecovery', 'releaseRecoveryHold']);
   assert.ok(Object.isFrozen(api));
+  for (const name of ['path', 'writer', 'db', 'cleanup', 'registry', 'publisher']) assert.equal(Object.hasOwn(api, name), false);
   const staged = api.stageCandidate(stageInput(), context);
   assert.equal(staged.holdId, null); assert.ok(Object.isFrozen(staged));
   assert.deepEqual(s.open().stageCandidate(stageInput(), context), staged);

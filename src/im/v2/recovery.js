@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { validationLimits } from './backup.js';
+import { createRecoveryHoldReleaser } from './backup-registry.js';
 import { adapter, closureBinding, closureProof, recordCopy, sourceTable } from './recovery-source.js';
 export { createClosedV3Source } from './recovery-source.js';
 import { assertStaged, candidateFacts, completed, directory, lock, prepareDatabase, putRecord, readRecord, stageDatabase, standalone, transitionDatabase } from './recovery-candidate.js';
-import { activeEvidence, readActivation, readSeal, sealEvidence, sealReference } from './recovery-terminal.js';
+import { activeEvidence, readActivation, readSeal, releaseEvidence, sealEvidence, sealReference } from './recovery-terminal.js';
 import { assertRecoveryActivationPlanFresh, assertRecoveryPlanFresh, hashRecoveryRecord, hashRecoveryRequestInput, hashRecoveryRequestRef,
   validateRecoverySealBindings, validateRecoveryActivationPlanBindings,
   validateRecoveryLocator, validateRecoveryNormalizationBindings, validateRecoveryPauseBindings, validateRecoveryPlanBindings } from './recovery-plan.js';
@@ -29,7 +30,28 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
   const policy = policyCopy(suppliedPolicy), policyHash = sha(JSON.stringify(policy)), bounds = validationLimits(limits);
   if (typeof clock !== 'function' || Object.prototype.toString.call(clock) === '[object AsyncFunction]') throw fail('RECOVERY_INVALID');
   const now = () => { const value = adapter({ clock }, 'clock', [], 'RECOVERY_INVALID', false); if (!time(value)) throw fail('RECOVERY_INVALID'); return value; };
-  const sources = sourceTable(sourceCatalog, evidenceAuthority, now);
+  const sources = sourceTable(sourceCatalog, evidenceAuthority, now, (registry, sourceRefs) => {
+    // A sanitizes callback failures. Preserve our own fixed local failure across
+    // that boundary, without accepting errors or verifiers from operation inputs.
+    // Frames are synchronous and invocation-local, including reentrant denial.
+    let frame;
+    const releaser = createRecoveryHoldReleaser({ registry, authority, approvalAuthority,
+      verifyTerminal(held, operation, ctx, publish) {
+        try { return verifyTerminal(held, operation, ctx, publish, sourceRefs, completion => { frame.completion = completion; }); }
+        catch (error) { frame.failure = error; throw error; }
+      } });
+    return (operation, ctx) => {
+      const previous = frame, current = {}; frame = current;
+      try {
+        const result = releaser.release(operation, ctx);
+        if (!current.completion || result.releaseMarker.releasedAt < current.completion.activatedAt ||
+            result.releaseMarker.stateEvidenceHash !== hashRecoveryRecord('activationCompletion', current.completion)) invalid();
+        return result;
+      }
+      catch (error) { throw current.failure ?? error; }
+      finally { frame = previous; }
+    };
+  });
   const requests = join(root, 'requests'), runs = join(root, 'runs');
   const runPath = id => join(runs, id);
   const locatorPath = requestRef => join(requests, `${hashRecoveryRequestRef(requestRef)}.json`);
@@ -177,37 +199,42 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
     if (data.plan) putRecord(join(dir, `prepare-${data.planHash}.json`), 'preparePlan', data.plan, budget);
   }
   function observedBinding(data, held) {
-    // Only A's observed getHold/binding has authority. In particular STAGED is
+    // Only A's held scope/binding has authority. In particular STAGED is
     // not permission to fabricate a replacement plan after binding response loss.
     if (held?.binding && (!data.plan || held.binding.preparePlanHash !== data.planHash)) invalid();
     if (data.actual.run && held !== null && held.binding?.preparePlanHash !== data.planHash) invalid();
     return data;
   }
-  function readScope(locator, ctx, budget, consume, allowCompletionRepair = false) {
+  function readScope(locator, ctx, budget, consume, allowCompletionRepair = false, classify = error => { throw error; }) {
     const receipt = holdReceipt(locator, budget);
     const registered = locator.stage.sourceEvidence?.kind === 'registered-backup';
     if (registered ? !receipt : receipt !== null) throw fail('RECOVERY_INDETERMINATE');
     return sources.withSource(locator.stage, ctx, budget, registered ? 'held' : 'read', { sourceEvidence: locator.stage.sourceEvidence, receipt }, proof => {
       const held = registered ? proof : null;
       bindingCheck(locator, proof, ctx);
-      return workspace(false, () => {
-        const current = byRun(locator.runId, budget);
-        if (JSON.stringify(current) !== JSON.stringify(locator)) invalid();
-        return lock(runPath(locator.runId), false, () => {
-          if (JSON.stringify(holdReceipt(current, budget)) !== JSON.stringify(receipt)) invalid();
-          if (!exists(join(runPath(locator.runId), 'candidate.sqlite'))) throw fail('RECOVERY_INDETERMINATE');
-          const identity = protectedPath(join(runPath(locator.runId), 'candidate.sqlite'));
-          const data = observedBinding(validated(current, budget), held);
-          if (data.actual.run?.status === 'active') {
-            const evidence = activeEvidence(root, data, held, budget);
-            // Visible matching evidence is an observation, not proof of a prior
-            // successful fsync. Only explicit activation reestablishes durability.
-            if (!evidence.stored && !allowCompletionRepair) throw fail('RECOVERY_INDETERMINATE');
-          } else if (held?.release) invalid();
-          const result = consume({ ...data, candidateIdentity: identity }, held);
-          if (!same(identity, protectedPath(join(runPath(locator.runId), 'candidate.sqlite')))) invalid();
-          return result;
-        });
+      try { return candidateScope(locator, receipt, held, budget, consume, allowCompletionRepair); }
+      catch (error) { return classify(error); }
+    });
+  }
+  function candidateScope(locator, receipt, held, budget, consume, allowCompletionRepair = false) {
+    return workspace(false, () => {
+      const current = byRun(locator.runId, budget);
+      if (JSON.stringify(current) !== JSON.stringify(locator)) invalid();
+      if (!exists(join(runPath(locator.runId), 'stage.json'))) throw fail('RECOVERY_RETRY_STAGE');
+      return lock(runPath(locator.runId), false, () => {
+        if (JSON.stringify(holdReceipt(current, budget)) !== JSON.stringify(receipt)) invalid();
+        if (!exists(join(runPath(locator.runId), 'candidate.sqlite'))) throw fail('RECOVERY_INDETERMINATE');
+        const identity = protectedPath(join(runPath(locator.runId), 'candidate.sqlite'));
+        const data = observedBinding(validated(current, budget), held);
+        if (data.actual.run?.status === 'active') {
+          const evidence = activeEvidence(root, data, held, budget);
+          // Visible matching evidence is an observation, not proof of a prior
+          // successful fsync. Only explicit activation reestablishes durability.
+          if (!evidence.stored && !allowCompletionRepair) throw fail('RECOVERY_INDETERMINATE');
+        } else if (held?.release) invalid();
+        const result = consume({ ...data, candidateIdentity: identity }, held);
+        if (!same(identity, protectedPath(join(runPath(locator.runId), 'candidate.sqlite')))) invalid();
+        return result;
       });
     });
   }
@@ -443,30 +470,68 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
   }); }
   function getRecoveryStatus(value, ctx) { return boundary(() => {
     const input = runInput(value, ctx), budget = operationBudget(bounds), locator = byRun(input.runId, budget);
-    const partial = action => recordCopy('status', { runId: input.runId, candidateReference: locator.stage.candidateReference,
-      state: 'indeterminate', stageHash: locator.stageHash, preparePlanHash: null, newEpoch: null, holdId: null, writeMode: null, nextAction: action });
-    // Authenticate the complete locator/source proof before classifying partials.
-    const receipt = holdReceipt(locator, budget);
-    sources.withSource(locator.stage, ctx, budget, receipt ? 'held' : 'read', { sourceEvidence: locator.stage.sourceEvidence, receipt }, proof => {
-      bindingCheck(locator, proof, ctx);
-    });
-      try {
-        if (!exists(join(runPath(input.runId), 'stage.json'))) return partial('RETRY_STAGE');
-        return readScope(locator, ctx, budget, (data, held) => {
-          const state = data.plan ? completed(data.plan, data.planHash, data.actual) ?? 'staged' : 'staged';
-          if (state !== 'staged' && held !== null && held.binding?.preparePlanHash !== data.planHash) invalid();
-          const actions = { prepared: 'P5C_VERIFY_REQUIRED', verified: 'P5C_SEAL_ACTIVATION_REQUIRED', active: 'NONE', failed: 'MANUAL_RECONCILIATION' };
-          const nextAction = state === 'staged' ? !data.plan ? 'PREVIEW_PREPARE' : now() >= data.plan.expiresAt ? 'PLAN_EXPIRED' : 'APPROVE_PREPARE' : actions[state];
-          return recordCopy('status', { runId: input.runId, candidateReference: locator.stage.candidateReference, state,
-            stageHash: locator.stageHash, preparePlanHash: data.planHash, newEpoch: data.plan?.newEpoch ?? null,
-            holdId: held?.hold.holdId ?? null, writeMode: data.actual.writeMode, nextAction });
-        });
-      } catch (error) {
-        if (['RECOVERY_INDETERMINATE', 'RECOVERY_EVIDENCE_MISMATCH', 'RECOVERY_RETRY_STAGE'].includes(error?.code))
-          return partial(error.code === 'RECOVERY_RETRY_STAGE' ? 'RETRY_STAGE' : 'MANUAL_RECONCILIATION');
-        throw error;
+    const partial = action => recordCopy('statusV2', { version: 2, runId: input.runId, candidateReference: locator.stage.candidateReference,
+      state: 'indeterminate', stageHash: locator.stageHash, preparePlanHash: null, newEpoch: null, holdId: null, writeMode: null,
+      nextAction: action, releasePlan: null, releasePlanHash: null });
+    return readScope(locator, ctx, budget, (data, held) => {
+      const state = data.plan ? completed(data.plan, data.planHash, data.actual) ?? 'staged' : 'staged';
+      if (state !== 'staged' && held !== null && held.binding?.preparePlanHash !== data.planHash) invalid();
+      const actions = { prepared: 'P5C_VERIFY_REQUIRED', verified: 'P5C_SEAL_ACTIVATION_REQUIRED', active: 'NONE', failed: 'MANUAL_RECONCILIATION' };
+      let nextAction = state === 'staged' ? !data.plan ? 'PREVIEW_PREPARE' : now() >= data.plan.expiresAt ? 'PLAN_EXPIRED' : 'APPROVE_PREPARE' : actions[state];
+      let pair = { releasePlan: null, releasePlanHash: null };
+      if (state === 'active') {
+        const evidence = activeEvidence(root, data, held, budget);
+        if (!evidence.stored) nextAction = 'RETRY_ACTIVATE';
+        else if (held) {
+          pair = releaseEvidence(data, held, evidence);
+          nextAction = held.release ? 'NONE' : 'APPROVE_RELEASE_HOLD';
+        }
       }
+      return recordCopy('statusV2', { version: 2, runId: input.runId, candidateReference: locator.stage.candidateReference, state,
+        stageHash: locator.stageHash, preparePlanHash: data.planHash, newEpoch: data.plan?.newEpoch ?? null,
+        holdId: held?.hold.holdId ?? null, writeMode: data.actual.writeMode, nextAction, ...pair });
+    }, true, error => {
+      if (['RECOVERY_INDETERMINATE', 'RECOVERY_EVIDENCE_MISMATCH', 'RECOVERY_RETRY_STAGE'].includes(error?.code))
+        return partial(error.code === 'RECOVERY_RETRY_STAGE' ? 'RETRY_STAGE' : 'MANUAL_RECONCILIATION');
+      throw error;
+    });
+  }); }
+  function verifyTerminal(held, operation, ctx, publish, sourceRefs, rememberCompletion) {
+    const budget = operationBudget(bounds), locator = byRun(operation.runId, budget);
+    if (!sourceRefs.includes(locator.stage.sourceRef) || locator.stage.sourceEvidence?.kind !== 'registered-backup' ||
+        locator.stage.sourceEvidence.backupId !== operation.backupId || held.hold.holdId !== operation.holdId ||
+        held.hold.recoveryRunId !== operation.runId || held.hold.stageHash !== locator.stageHash) invalid();
+    const receipt = holdReceipt(locator, budget);
+    if (JSON.stringify(receipt) !== JSON.stringify(held.hold)) invalid();
+    bindingCheck(locator, { sourceEvidence: held.sourceEvidence, sourceBinding: closureBinding(locator.stage, held.sourceEvidence) }, ctx);
+    reauthorize(locator, ctx);
+    return candidateScope(locator, receipt, held, budget, data => {
+      const evidence = activeEvidence(root, data, held, budget), pair = releaseEvidence(data, held, evidence);
+      if (pair.releasePlanHash !== operation.releasePlanHash) invalid();
+      if (held.release?.approvalRef !== undefined && held.release.approvalRef !== operation.approvalRef) invalid();
+      reauthorize(locator, ctx);
+      if (!same(data.candidateIdentity, protectedPath(candidatePath(data)))) invalid();
+      const current = activeEvidence(root, observedBinding(validated(locator, budget), held), held, budget);
+      if (!current.stored || releaseEvidence(data, held, current).releasePlanHash !== pair.releasePlanHash) invalid();
+      // All candidate readers have closed. Reestablish durability on EVERY exact
+      // attempt, including a new process observing an already-visible marker.
+      closedHash(data, budget, true);
+      const completionPath = join(runPath(operation.runId), 'activation-complete.json');
+      resyncPublished(completionPath, budget);
+      rememberCompletion(current.completion);
+      // Return A's opaque identity, not a terminal object. Publication (and A's
+      // final independent approval) occurs inside source/workspace/candidate.
+      return publish({ stateEvidenceHash: pair.releasePlan.activationCompletionHash,
+        minimumReleasedAt: current.completion.activatedAt });
+    });
+  }
+  function releaseRecoveryHold(value, ctx) { return boundary(() => {
+    const input = runInput(value, ctx, ['runId', 'holdId', 'releasePlanHash', 'approvalRef']);
+    if (!uuid(input.holdId)) throw fail('RECOVERY_INVALID');
+    const budget = operationBudget(bounds), locator = byRun(input.runId, budget);
+    sources.release(locator.stage, input, ctx);
+    return Object.freeze({ runId: input.runId, holdId: input.holdId, state: 'released', releasePlanHash: input.releasePlanHash });
   }); }
   return Object.freeze({ stageCandidate, previewRecovery, prepareRecovery, getRecoveryStatus,
-    verifyRecovery, previewActivation, activateRecovery });
+    verifyRecovery, previewActivation, activateRecovery, releaseRecoveryHold });
 }

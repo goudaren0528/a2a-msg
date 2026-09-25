@@ -385,7 +385,7 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     adminGate(authority,context); adminGate(releaseAuthority,context);
     approvalGate(approvalAuthority,operation,context);
     const budget=operationBudget(bounds);
-    let state='open', fault, receipt, publishedHash, marker;
+    let state='open', fault, receipt, publishedInput, marker;
     const poison=error=>{
       if (fault) return fault.error;
       // Latch before inspecting a thrown value: even descriptor/proxy traps may
@@ -417,18 +417,26 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
         state='publishing';
         try {
           rejectThenable(value);
-          shape(value,['stateEvidenceHash']);
-          const requested=value.stateEvidenceHash;
-          if (!hash(requested)) invalid();
-          if (receipt) { if (requested!==publishedHash) invalid(); state='published'; return receipt; }
+          shape(value,['stateEvidenceHash','minimumReleasedAt']);
+          const requested=Object.freeze({stateEvidenceHash:value.stateEvidenceHash,minimumReleasedAt:value.minimumReleasedAt});
+          if (!hash(requested.stateEvidenceHash)||!time(requested.minimumReleasedAt)) invalid();
+          if (receipt) {
+            if (requested.stateEvidenceHash!==publishedInput.stateEvidenceHash||requested.minimumReleasedAt!==publishedInput.minimumReleasedAt) invalid();
+            state='published'; return receipt;
+          }
           const previous=proof.release;
-          if (previous&&(previous.stateEvidenceHash!==requested||previous.approvalRef!==operation.approvalRef)) invalid();
-          if (!synchronous(clock)) throw fail('RECOVERY_INVALID');
+          if (previous&&(previous.stateEvidenceHash!==requested.stateEvidenceHash||previous.approvalRef!==operation.approvalRef)) invalid();
           let releasedAt;
           if (previous) releasedAt=previous.releasedAt;
-          else { releasedAt=clock(); rejectThenable(releasedAt); if (!time(releasedAt)||releasedAt<proof.binding.boundAt) invalid(); }
+          else {
+            if (!synchronous(clock)) throw fail('RECOVERY_INVALID');
+            releasedAt=clock(); rejectThenable(releasedAt);
+          }
+          // The actual single publication sample (or retained retry timestamp)
+          // must meet both verified bounds before any pending/final marker write.
+          if (!time(releasedAt)||releasedAt<proof.binding.boundAt||releasedAt<requested.minimumReleasedAt) invalid();
           marker=deepFreeze({version:1,holdId:proof.hold.holdId,recoveryRunId:proof.hold.recoveryRunId,
-            terminalState:'active',stateEvidenceHash:requested,approvalRef:operation.approvalRef,releasedAt});
+            terminalState:'active',stateEvidenceHash:requested.stateEvidenceHash,approvalRef:operation.approvalRef,releasedAt});
           // Recheck source and all gates immediately before publication, while C
           // still owns its workspace/candidate controls inside verifyTerminal.
           verifyLocked(operation.backupId,budget);
@@ -437,7 +445,7 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
           if (fault) throw fault.error;
           write('releases',proof.hold.holdId,'release',marker,undefined,budget);
           if (fault) throw fault.error;
-          publishedHash=requested; receipt=Object.freeze(Object.create(null)); state='published';
+          publishedInput=requested; receipt=Object.freeze(Object.create(null)); state='published';
           return receipt;
         } catch (error) { throw poison(error); }
       };

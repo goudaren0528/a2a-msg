@@ -3,7 +3,7 @@
 import { join } from 'node:path';
 import { readRecord as readProtectedRecord } from './recovery-candidate.js';
 import { encodeRecoveryRecord, hashRecoveryRecord, validateRecoverySealBindings, validateRecoveryActivationPlanBindings,
-  validateRecoveryCompletionBindings } from './recovery-plan.js';
+  validateRecoveryCompletionBindings, validateRecoveryReleasePlanBindings } from './recovery-plan.js';
 import { invalid, hash } from './recovery-records.js';
 
 function readRecord(path, kind, budget) {
@@ -65,10 +65,21 @@ export function activeEvidence(root, data, held, budget, input = null) {
     sealHash: plan.sealHash, candidateReference: data.plan.candidateReference, instanceId: data.actual.identity.instance_id,
     instanceCreatedAt: data.actual.identity.created_at, newEpoch: data.plan.newEpoch,
     recoveryCounter: data.actual.epoch.recovery_counter, activatedAt: r.activated_at, writeMode: 'paused' };
-  const owned = validateRecoveryCompletionBindings(completion, { ...chain, prepareApprovalRef: r.approval_ref, actual: projection(data.actual) });
+  const completionEvidence = { ...chain, prepareApprovalRef: r.approval_ref, actual: projection(data.actual) };
+  const owned = validateRecoveryCompletionBindings(completion, completionEvidence);
   const stored = readRecord(join(root, 'runs', data.stage.runId, 'activation-complete.json'), 'activationCompletion', budget);
   if (stored && !encodeRecoveryRecord('activationCompletion', stored).equals(encodeRecoveryRecord('activationCompletion', owned))) invalid();
-  if (held?.release && (!stored || held.release.terminalState !== 'active' ||
+  if (held?.release && (!stored || held.release.holdId !== held.hold.holdId ||
+      held.release.recoveryRunId !== data.stage.runId || held.release.terminalState !== 'active' ||
       held.release.stateEvidenceHash !== hashRecoveryRecord('activationCompletion', owned) || held.release.releasedAt < owned.activatedAt)) invalid();
-  return { completion: owned, stored };
+  return { completion: owned, completionEvidence, stored };
+}
+export function releaseEvidence(data, held, evidence) {
+  if (!held?.hold || !held.binding || !evidence.stored) invalid();
+  const releasePlan = validateRecoveryReleasePlanBindings({ version: 1, runId: data.stage.runId,
+    holdId: held.hold.holdId, backupId: held.hold.backupId, stageHash: hashRecoveryRecord('stage', data.stage),
+    preparePlanHash: data.planHash, activationCompletionHash: hashRecoveryRecord('activationCompletion', evidence.completion),
+    terminalState: 'active', candidateReference: data.plan.candidateReference, newEpoch: data.plan.newEpoch },
+  { completion: evidence.completion, completionEvidence: evidence.completionEvidence, hold: held.hold, binding: held.binding });
+  return { releasePlan, releasePlanHash: hashRecoveryRecord('releasePlan', releasePlan) };
 }

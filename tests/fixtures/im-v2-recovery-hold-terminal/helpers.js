@@ -11,6 +11,11 @@ import { setup as sourceSetup,hash } from '../im-v2-recovery-source-intent/helpe
 export { thrown,deeplyFrozen,directoryState } from '../im-v2-recovery-source-intent/helpers.js';
 export { authority,context,unsupported } from '../im-v2-backup/helpers.js';
 export const evidenceHash='c'.repeat(64),planHash='d'.repeat(64);
+// C0 models the trusted terminal verifier only (no candidate completion). Its
+// lawful fixture minimum is the actual binding time. Real completion fixtures
+// must instead supply their verified completion.activatedAt.
+export const publication = (proof, completion) => ({stateEvidenceHash:evidenceHash,
+  minimumReleasedAt:completion ? completion.activatedAt : proof.binding.boundAt});
 export const approvalAuthority={authorizeApproval:(input,ctx)=>ctx===context&&input.kind==='release-hold'&&input.planHash===planHash&&input.approvalRef==='release-approved'};
 export async function setup(t,{v3=false,bound=true}={}) {
   const f=await sourceSetup(t,{v3}),runId=randomUUID();
@@ -26,7 +31,7 @@ export function terminal(proof,operation,ctx,publish) {
   assert.equal(ctx,context);assert.equal(proof.record.backupId,operation.backupId);
   assert.equal(proof.hold.recoveryRunId,operation.runId);assert.ok(proof.binding);
   assert.equal(operation.releasePlanHash,planHash);
-  return publish({stateEvidenceHash:evidenceHash});
+  return publish(publication(proof));
 }
 export function wrap(replacements) {
   const original={};
