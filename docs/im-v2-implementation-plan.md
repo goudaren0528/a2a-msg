@@ -1,19 +1,19 @@
 # IM v2 NONRELEASE 实施计划（P0–P7）
 
-本计划对应 [恢复与留存契约](im-recovery-retention-v2-design.md)，源码核对基线`9b5ef8f`，本轮HEAD为`61052a3`（旧兼容测试独立提交）。**用户已批准开发，Oracle最终要求的v3_import备份/RPO修正已落实，`P1/P2-FROZEN-1`生效。未授权真实服务、迁移、恢复、切换或删除。**这是冻结的实施契约，不代表功能已实现或交付；父会话阅读修正章节后分派P1。
+本计划对应 [恢复与留存契约](im-recovery-retention-v2-design.md)，原源码基线 `9b5ef8f`；本次 P5 文档交接核对 HEAD `f3d17094106c1833a2d0019a4c3cb19b25918fe7`。**用户已批准继续 NONRELEASE 开发，P5 技术裁决已批准、尚未完成；`P1/P2-FROZEN-1` 与已批准 P1–P4 语义保持。**生产恢复/activation/源隔离、实际删除、公网/DNS/成本、push 均未授权。父会话阅读本交接后分派 P5-A；本轮不重新评定 P1–P4 历史完成证据，旧复选框不是当前完成账本。
 
 ## 1. 范围、所有权和停机门禁
 
 - 本轮 contractauthor 只修改 `docs/im-recovery-retention-v2-design.md`、`docs/im-v2-implementation-plan.md`。父会话负责核对和冻结；Oracle 裁决不由实现者临场重定义。
 - **父会话当前 job board 指定的兼容 lane 独占** `tests/legacy-lan-compatibility.test.js`、`fixtures/legacy-lan-compatibility/*`（及其实际 tests 子目录版本）和相关 harness。本文不固化过期job编号；本lane不编辑这些路径，接收其最终证据。
 - 已有工作树改动是其他工作，不能还原/覆盖。后续文件清单是父会话可分配的**提案 write-set**，不是本文授予现在写源码的许可。
-- 不改原 PRD/roadmap、历史 v1–v3 DDL/checksum、原 exports、旧18787/DB/API/config、包名、LICENSE、Git远端；不自动 commit/push。
-- 实现优先新增 `src/im/v2/` 和 `tests/im-v2-*.test.js`，避免“全局换版本”影响原 v3 publisher/runner。每个包一个 writer；测试 reviewer 只读/独立证据，不与实现者抢写。
-- 同一个包失败则阻断其后继。T1–T7已裁决，剩余具体门禁仅为P4完整journal DDL、P5 seal/hold与版本化adapter故障验证、P6 planner/hash/forward-jump实现细节。H1–H3仍是实际操作授权，缺失不影响隔离测试，阻止真实操作。
+- 不改原 PRD/roadmap、历史 v1–v3 DDL/checksum、既有 exports 语义、旧18787/DB/API/config、包名、LICENSE、Git远端；P5-A 最小 capability 扩展仅按下条范围，不自动 commit/push。
+- 实现优先新增 `src/im/v2/` 和 `tests/im-v2-*.test.js`，避免“全局换版本”影响原 v3 publisher/runner。P5-A 唯一旧文件例外是 `src/im/backup-registry.js` 的最小 protected-copy capability；不是本次文档 lane 的写权限。每个包一个 writer；测试 reviewer 只读/独立证据，不与实现者抢写。
+- 同一个包失败则阻断其后继。T1–T7及 P5 技术决定已裁决；P5 剩余是 A/B 精确 capability/完整记录编码交接与 C/D 实现故障证据，详见下文，不笼统重开 P5 方案。P4 历史 journal 门禁和 P6 planner/hash/forward-jump 范围保持。H1–H3 仍阻止未经授权的真实操作。
 
 ## 2. 有序工作包
 
-### P0：契约门禁（当前包）
+### P0：原契约门禁（历史工作包）
 
 **依赖：**已批准 NONRELEASE 方向、只读 Oracle 基线、本地源码核查。
 
@@ -24,9 +24,9 @@
 - [x] 将用户已批准、技术待审、人工操作待确认分别标注；明确无强制旧入口下线。
 - [x] 纳入Oracle T1–T7裁决，修订准确schema、wire、候选nullable/双审批与阶段门禁。
 - [x] 按Oracle最终条件修正v3_import：真实备份四字段全有/全无、始终RPO/隔离、持久完整preparePlan；`P1/P2-FROZEN-1`生效。
-- [ ] 父会话阅读修正章节后分派P1单写者，生成固定DDL/checksum golden，不能伪造未计算checksum。
+- [ ] 原 P0 交接要求：父会话阅读修正章节后分派 P1 单写者，生成固定 DDL/checksum golden；本次 P5 交接不以此历史条目要求重新分派 P1。
 
-**验证/完成：**UTF-8、相对文档链接、`git diff --check`及定点约束核对；只修两份文档，不跑测试、不创建运行数据。本轮不实施P1，由父会话另行分派。
+**文档验证/完成：**UTF-8、相对文档链接、`git diff --check` 及定点约束核对；当前交接仍只修两份文档，不跑运行测试、不创建运行数据、不 stage/commit/push。下一实施包是 P5-A。
 
 ### P1：独立 v4 schema 与显式候选迁移
 
@@ -106,25 +106,69 @@ P1额外固定：mapping准确拼接CHECK、旧v1 storage UUID/hash不变；live
 
 **必须验证：**commit前/后/ACK响应丢失/expiry receipt响应丢失的重启；文件被替换/长度hash不符不ACK；同message后变tombstone不覆盖旧事实；本地accepted远端UNKNOWN仍保留accepted；重复seq/message跨epoch不碰撞；scope forged拒绝；manual reconcile前零mutation；新分区历史已知ID不自动ACK；旧v1 journal文件字节/manifest不变。
 
-### P5：备份版本分派与恢复候选状态机
+### P5：技术已批准的备份与恢复交接（未完成）
 
-**依赖：**P1/P3/P4；P5实现前冻结seal/hold/release规范编码、sourceEvidence与持久计划证据、v3/v4 adapter故障矩阵。三种candidate kind与双审批已裁决，不阻塞P1表定义。
+**依赖与顺序：**沿用 P1/P3/P4 前置成果，不改其 schema、wire/journal 或旧 LAN。严格 **P5-A → P5-B → P5-C → P5-D**；父会话确认上一 owner terminal、阅读完成契约/证据后才分派下一 owner。同一 recovery.js 的 B/C 必须顺序单写者。具体契约以 [设计文档](im-recovery-retention-v2-design.md)第 6 节为准。
 
-**提案写集合：**`src/im/v2/backup.js`、`backup-registry.js`、`recovery.js`、`recovery-plan.js`；`tests/im-v2-backup.test.js`、`tests/im-v2-recovery.test.js`、`tests/im-v2-recovery-process.test.js`、`tests/fixtures/im-v2-recovery/*`。
+#### P5-A：保护层 + 版本化 backup + 私有 registry + v3 bridge（单一 owner）
 
-- [ ] 版本化v4 verifier/publisher，v3 source采用原v3验证；不能修改旧全局version或把旧registry格式当v4支持。
-- [ ] 三种candidate kind准确绑定preparation/真实来源；fresh无假backup/isolation/RPO；v3_import始终有RPO/隔离且old_epoch=NULL，真实备份四字段全有/确无备份时全无，拒绝partial。可信管理层判定来源，调用者不得把备份来源降格NULL；snapshot只接有epoch的v4来源。
-- [ ] v3_import未知差异status=unknown、计数NULL不是0；备份来源snapshotCompletedAt取真实completedAt，无备份且未知快照时间才可NULL。无备份实际关闭源仍需protected persisted sourceEvidence，不冒充注册备份。
-- [ ] prepare approval绑定完整来源/candidate/RPO/隔离，整份preparePlan含sourceEvidence受保护持久保存并可读回验证hash=approved_plan_hash；第二份activation plan绑定runId/preparePlanHash/sealHash/candidate/newEpoch/authReview/isolation/时间/activationRef，active记录保存activation_plan_hash/activation_approval_ref；verify不能activate。
-- [ ] 所有备份支持候选（含v3_import）执行artifact验证、copy前持久hold、源隔离、exclusive copy与修改前basehash验证；candidate_base_hash=已验证原备份file hash。原备份immutable，无备份源不伪造backup/hold。
-- [ ] prepared→verified→active、candidate_base_hash与外部closed-DB seal分工；写verified后成功checkpoint WAL→main、关全部连接；BUSY/不明WAL或SHM拒绝seal，不删除未知侧文件。
-- [ ] 先exclusive控制再验sealHash/DB hash，reopen后小状态+activation事务仍paused；active exact retry匹配完成记录，不再要求active DB hash等于旧seal；监听另一步。
-- [ ] registry→candidate锁顺序；copy前no-replace/fsync持久hold，显式durable release marker，completed/failed不自动release；坏hold拒绝cleanup。旧v3 cleanup不认识hold，必须可信源保护或新protected registry copy，不能作为v4清理路由。
-- [ ] 每个状态边界可故障注入、同runId/activationRef幂等；状态不确定时保留证据，禁止自动删锁/覆盖源。
+**提案写集合：**`src/im/v2/backup.js`、`src/im/v2/backup-registry.js`；`src/im/backup-registry.js` 仅最小 protected-copy capability；`tests/im-v2-backup.test.js` 及对应批准的 recovery fixtures。需要额外保护层文件时由父会话先明确文件归属，不默认扩写旧模块。
 
-**必须验证：**backup/manifest/candidate hash任一篡改拒绝；candidate路径已存在/别名/软硬链接拒绝；旧writer关闭前无candidate mutation；prepare/verify/seal/activate前后kill/crash可续查且不换epoch；activation响应丢失无第二activation；verify后候选变化失败；source不可得报告RPO unknown不作0；备份后新增凭据/撤销无法证明时activation需manual review；原备份与原源accepted行未覆盖；本地竞争锁失败。跨机器旧writer隔离只能报告人工边界，不通过测试宣称global fencing。
+- [ ] 先冻结 A 的完整 manifest `formatVersion:2`、registry `recordVersion:3` 编码和 bridge capability 签名/生命周期；与 B 明确 sourceCatalog capability shape，不能让后续按猜测写 consumer。sourceId/createdAt 来自实际 DB，manifest 绑定 schema/hash/time/approval metadata；record 字段和 publicationKind 按设计第 6.3 节。
+- [ ] root 0700、files 0600、euid/可信祖先、无 symlink/稳定普通文件单链接；`coordination.sqlite` 与 `registry/{artifacts,records,holds,releases}` 布局；同 inode 持 SQLite 锁时禁止 raw fd close，允许 coarse lock。全程顺序旧 source verified scope→新 registry→candidate→业务事务。
+- [ ] canonical metadata：固定字段序普通对象 JSON.stringify、UTF-8 无 BOM/格式空白/尾换行、≤64KiB、严格 shape+重编码 bytes 相等、SHA-256 raw canonical bytes。exclusive pending→file sync→hard-link no-replace→owned temp unlink→dir sync；不确定失败保留证据，不假称干净回滚。
+- [ ] 真实 v4 snapshot 用 P1 full validator；旧 backup 支持 1–3、旧 publisher current=3 不变。新 writer 私有闭包，只能实际 snapshot/verified bridge mint provenance，无 public registerArtifact/path accessor。
+- [ ] registered v3 只能经旧 registry 真实 withVerifiedBackup/withDiscoveredBackup 锁内 protected copy，锁持续至独立 bytes 副本验证完成；禁止跨 root hardlink/泄露源路径与 writer。新副本进新 registry 后再持有 recovery hold；旧 cleanup 可删旧 artifact，不能删新副本。未注册 v3 只作为 closed-source，不能冒充注册 provenance。
+- [ ] 实现/交付 durable stageHold、不可变 prepareBinding 和 releaseMarker 存储能力；未绑定 hold 同样阻 cleanup；不自动释放/删除 hold、不引入 P5 TTL/cleanup executor。
 
-**平台门禁：**Windows原生严格registry失败是预期，不得改为best-effort成功；Linux/WSL原生ext4执行真实保护/fsync/no-replace/跨进程锁测试。未支持平台写明unsupported，skip不能计为PASS。
+**A 前置接缝与交接：**当前旧 registry callback 仅 metadata/recheck，protected-copy 尚不存在，正是本包唯一批准的旧模块扩展。须明确 importedRecordHash/sourceEvidenceHash 的原始取证字节及无自引用生成顺序；完整 manifest approval metadata、stage/binding/terminal proof 文件编码不能临场发明。P1 公共 validator 无 limits 参数，较低预算接入核实已有内部 validator/budget，不改 P1 public API。以上有限冻结可由 A 作者随包完成；没有要求改旧 schema 或等待整项 P5 重新批准的冲突。
+
+**A 验证：**真实 v4 snapshot/validator、registered v3 bridge、hash/manifest/identity 不符拒绝；real lock 中跨进程 old cleanup 不能越过 copy；old cleanup 后新副本仍有效；权限/链接/no-replace/fsync 失败保留正确证据；legacy 常量与 publisher/registry 原行为回归。与 D 合并的进程证据必须绑定实际源码树，不提前标 PASS。
+
+#### P5-B：plan / stage / prepare / status（依赖 A）
+
+**提案写集合：**`src/im/v2/recovery-plan.js`、`src/im/v2/recovery.js`；`tests/im-v2-recovery.test.js`、对应 recovery fixtures。承接 A 实际产物后，先冻结 sourceCatalog/admin/approval/evidence capability 精确参数、stage/status/release DTO、stage intent/比较证据/terminal proof 编码与 sourceClosedEvidenceRef 绑定，再实现消费方。
+
+- [ ] 冻结 facade `createImV2RecoveryServices({root,sourceCatalog,authority,approvalAuthority,evidenceAuthority,policy,clock,limits})` 和八个方法；操作不接 raw paths/自报来源 metadata/预选 IDs。admin、prepare|activate|release-hold approvals、isolation/authReview adapters 同步 literal true，refs 不替代授权；内部所有 candidate/coordinator/只读 source DB 生命周期，无 network admin/listener/autowrite。
+- [ ] stageCandidate({requestRef,sourceRef,kind,isolationAckRef},ctx)：fresh sourceRef/isolation=null，非 fresh 要可信隔离；唯一 durable intent+内部 runId/candidateReference，exact requestRef 幂等、不同参数冲突。backup 先独立复制到新 registry→hold 新副本→candidate copy；hold 绑定 stageHash 不预需 prepare hash。
+- [ ] fresh 真实 P1 initializer；v3 只暂停新 candidate（记录动作）后显式 P1 migration，使用内部生成持久 initial/import epochs；snapshot 关闭保留旧 marker 到 prepare。staged 为外部状态，不能改 P1 DB enum；fresh 无假 backup。
+- [ ] previewRecovery({runId}) 只有 snapshot 生成内部新 epoch并持久完整 canonical plan；prepareRecovery({runId,preparePlanHash,approvalRef}) 读 protected plan/校验审批，DB approved_plan_hash 绑定完整计划。所有 sourceEvidence 严格按设计 tagged unions；v3 真实备份四字段全有、closed v3 才全 null。
+- [ ] RPO 只有完整稳定且有界 messages/key/ACK/read 身份事实集合比较可 measured；禁止 count subtraction。不可得/不稳定/超预算→unknown/null counts+comparison hash；authChanges 默认 unknown、独立 manual review。上限 10000 messages/100MiB/10000 other/10s soft，只可降。
+- [ ] prepare 绑定 immutable hold binding；fresh/import 使用 P1 initial epoch；snapshot 安全更高 counter/new epoch，保留旧 epochs/requests、失效 leases，progress 取真实 ACK 最大连续前缀，不借旧 expiry receipts。source messages/keys/ACK/read 不改。
+- [ ] status 对账持久 refs/state/holds/nextAction，无 paths/secrets，显式 staged/prepared/verified/active/failed/indeterminate；仅本地 RECOVERY_* 错误，准确集合见设计第 6.9 节，不增加 wire codes。
+
+**B 验证：**四类 source 分派、request exact retry/冲突/跨重启、source kind 降格拒绝、无 fake bootstrap 证据、stage hold 先于 candidate copy、enabled v3 仅新副本 pause、snapshot staged 不提前改旧 marker、prepare hash/expiry/审批篡改、RPO 等行数不同身份也能检测、源不可用/预算耗尽 unknown、只读 status 不泄密。P1 内部 Date.now/随机 ID 按实际结果取值，不假装 facade clock 能预选 P1 身份时间。
+
+#### P5-C：seal / activation / release（同 recovery 文件顺序 owner，依赖 B）
+
+**提案写集合：**承接 `src/im/v2/recovery.js`、必要的 `src/im/v2/recovery-plan.js` 与 `tests/im-v2-recovery.test.js`；A/B owner 必须 terminal，无并行写同文件。
+
+- [ ] 锁内核验 prepared/run/hold/P1 content，同事务 run+center verified/paused；checkpoint BUSY 或不明 writers 拒绝，关闭全部候选连接，main 数据完整且 file/dir sync 后 closed-file hash；不手删 WAL/SHM。
+- [ ] seal 按设计完整字段/verification 四个 true canonical 编码，文件名 sealHash；外部 no-replace durable 发布，不把 sealHash 写回 DB。
+- [ ] previewActivation({runId,sealReference,authReviewRef,isolationAckRef,activationRef},ctx) 持久独立 activation plan，绑定最终 sealHash/refs/newEpoch/TTL；activateRecovery({activationPlanHash,activationApprovalRef,sealReference},ctx) 只读回 protected plan，不收调用者 plan。
+- [ ] 先 exclusive lock，再 closed seal/file hash，之后才任何 clock anchor/guard write；open 点查后 fresh transaction 重验 approval/epoch/state/expiry，active fields/audit 原子，最终 expiry check 后 commit、close/persist，write_mode 仍 paused。
+- [ ] anchor 已提交但 activation 失败→RECOVERY_REVERIFY_REQUIRED，重新 verify+新 seal/plan+新 approval；不忽略 hash、不回退 clock。active commit 响应丢失→exclusive 只读 completed proof exact retry 原结果，无旧 preactivation hash 要求，无第二 epoch/activation；不得 active→failed 或擦 active fact。
+- [ ] releaseRecoveryHold 必须 admin+独立 release-hold approval+candidate active/failed stateEvidenceHash；持久 release marker，不删 hold、不自动释放，坏/不明证据 fail closed；未确定状态保持 indeterminate。
+
+**C 验证：**seal replace/候选改变/错误审批拒绝；hash 校验前零 guard write；anchor 后失败必须新审批；最终 expiry rollback；commit lost response 正确重放；verify/seal 中断可对账；release 无 candidate proof/错 terminal/hash/批准均拒绝，失败 hold 仍保留。
+
+#### P5-D：四来源真实进程 fault matrix（依赖 A–C）
+
+**提案写集合：**`tests/im-v2-recovery-process.test.js`、`tests/fixtures/im-v2-recovery/*`，必要专项由父会话明确归属。实现修改须退回所属 owner 顺序处理，不抢写 recovery.js。
+
+| 来源 | 必须证明 |
+| --- | --- |
+| fresh | 无 source/backup/hold 假证明；P1 initial epoch；完整 stage→active 仍 paused |
+| registered v3 | old verified lock 内 bridge、new independent registry、hold 后 copy；enabled artifact 不改而新 candidate pause/import |
+| closed v3 | 真实 closed-source evidence/隔离、无伪 registered backup、RPO unknown/measured 合法边界 |
+| registered v4 snapshot | 保留 stage 旧 marker，prepare 新 epoch/counter；备份后 source 新增接受/ACK/read/凭据变化不被覆盖，旧未知发送仍 UNKNOWN |
+
+- [ ] 每个持久化阶段真实进程 crash/kill 与响应丢失：intent、独立 artifact/manifest/record、stage hold、candidate copy/pause/migration、prepare plan/binding/commit、verified commit、checkpoint/close/sync、seal publish、activation plan/anchor/commit/close、release marker。记录进程重启对账结果与 no-replace/file/dir sync fault；无不明文件自动清除。
+- [ ] 跨进程未绑定/已绑定 hold 均阻 cleanup；source copy 锁和新 registry 锁竞争；seal replacement、candidate 别名/软硬链接/文件调包；coordination inode fd 生命周期不会使锁失效。
+- [ ] 原 source 的备份后更新、原 backup bytes/manifest/registry 证据、旧 journals 保持原事实，候选变更只在新工作区；old cleanup 后新独立副本不受影响。生产源隔离与跨机器全局 fencing 不由测试证明。
+- [ ] Windows native strict **UNSUPPORTED** 为预期，不能 best-effort/fake platform 转 PASS；WSL/Linux **原生 ext4** 提供真实权限、fsync/no-replace、跨进程持久 hold/恢复证据，挂载 Windows/网络盘不算。skip/NOT RUN 不计 PASS；进程崩溃测试不称硬件断电证明。
+
+**P5 完成门禁：**A/B 完整编码/API 交接已落定、C 行为与 D 四来源 fault matrix 有真实证据并审查通过，父会话才可称 P5 NONRELEASE 完成。无 P5 TTL/自动清理，P6 旧备份 30 天仍未确认；生产恢复、activation、源隔离、旧 LAN 18787/runtime 均未由此授权。
 
 ### P6：留存预览与原子维护
 
@@ -180,7 +224,7 @@ P1额外固定：mapping准确拼接CHECK、旧v1 storage UUID/hash不变；live
 
 ## 4. 失败与退出准则
 
-- 父会话若发现具体字段/约束与裁决冲突，先修两份契约再交P1单写者；不重新泛化讨论T1–T7，也不让fixer临场改PK/CHECK/版本目标。P4/P5/P6各自后续门禁按准确产物关闭。
+- 父会话若发现具体字段/约束与裁决冲突，先列出准确接缝并修这两份契约，再交对应单写者；不重开 T1–T7、不临场改 PK/CHECK/版本目标。当前先交 P5-A，A/B 编码与 capability 交接按本节关闭；P4/P6 历史门禁范围保持。
 - schema/manifest、候选hash、权限或clock不可信：fail closed，保存源与候选证据；不能“修好再说”原运行DB。
 - 停止新功能时：停新写/新监听器/维护，保留全部新accepted、key、ACK/receipt、journal、完成证明。旧服务独立继续不是把新DB回滚成旧DB。
 - 技术实现全部通过仍只是NONRELEASE；真实LAN双机/公网不同网络、恢复切换、实际删除、TLS资源/DNS/费用、备份保留窗口、许可证/仓库治理仍各有人工门禁。

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import * as legacySchema from '../src/im/schema.js';
@@ -19,7 +19,7 @@ const { initializeImSchemaV4, migrateImSchemaV4 } = migration;
 const checkFailure = error => error.code === 'ERR_SQLITE_ERROR' && /CHECK constraint failed/i.test(error.message);
 const v4Manifest = JSON.parse(readFileSync(new URL('./fixtures/im-v2-schema/v4-manifest.json', import.meta.url), 'utf8'));
 
-test('F1: public exports exact; immutable legacy source, publisher and runner remain at committed baseline', () => {
+test('F1: public exports exact; immutable legacy schema and runner plus reviewed publisher baseline', () => {
   assert.deepEqual(Object.keys(schema).sort(), ['IM_V2_SCHEMA_VERSION', 'SUPPORTED_IM_V2_SCHEMA_VERSIONS', 'assertImSchemaV4'].sort());
   assert.deepEqual(Object.keys(migration).sort(), ['initializeImSchemaV4', 'migrateImSchemaV4'].sort());
   assert.equal(schema.IM_V2_SCHEMA_VERSION, 4);
@@ -27,10 +27,14 @@ test('F1: public exports exact; immutable legacy source, publisher and runner re
   assert.ok(Object.isFrozen(schema.SUPPORTED_IM_V2_SCHEMA_VERSIONS));
   assert.equal(legacySchema.IM_SCHEMA_VERSION, 3);
   assert.deepEqual(legacySchema.SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3]);
-  for (const path of ['src/im/schema.js', 'src/im/backup-publisher.js', 'src/im/migration-runner.js']) {
+  for (const path of ['src/im/schema.js', 'src/im/migration-runner.js']) {
     const committed = execFileSync('git', ['show', `61052a3:${path}`], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
     assert.equal(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n'), committed.replace(/\r\n/g, '\n'), path);
   }
+  // Approved P5 standalone-WAL artifact-read adapter exception; pin every other publisher byte too.
+  const publisher = readFileSync(new URL('../src/im/backup-publisher.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  assert.equal(createHash('sha256').update(publisher).digest('hex'),
+    'bb37b40b891e7a17716ab0d25524ac27ba36649b6d9cc4358545272f181ebc37', 'reviewed publisher source');
   for (const file of readdirSync(new URL('../src/im/v2/', import.meta.url)).filter(name => /^(schema(?:-history|-internal)?|migration)\.js$/.test(name))) {
     const source = readFileSync(new URL(`../src/im/v2/${file}`, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /(?:from\s*|import\s*\()\s*['"]\.\.\/(?:schema|contracts|delivery|messages)\.js['"]/, `${file} must not depend on mutable legacy validators`);

@@ -13,6 +13,7 @@ import * as publisherModule from '../src/im/backup-publisher.js';
 import { createAdminAuthority } from '../src/im/keystore.js';
 import { createImBackup } from '../src/im/backup.js';
 import { getInstanceIdentity, initInstanceIdentity, migrateImSchemaV3 } from '../src/im/schema.js';
+import { isolated } from './fixtures/im-v2-backup/isolated.js';
 
 const denied = code => error => error?.code === code;
 // TEST DOUBLE ONLY: these callbacks do not establish ACL or crash durability on Windows.
@@ -109,7 +110,7 @@ test('reader facade and trusted services return no general registration writer o
       assert.ok(!['writer', 'backup', 'artifactDirectory', 'directory', 'registerInstance', 'registerPublishedBackup'].includes(key));
     }
   }
-  assert.deepEqual(Reflect.ownKeys(registryModule).filter(key => typeof key === 'string').sort(), ['createBackupRegistry', 'createTrustedBackupServices']);
+  assert.deepEqual(Reflect.ownKeys(registryModule).filter(key => typeof key === 'string').sort(), ['createBackupRegistry', 'createTrustedBackupServices', 'withProtectedBackupCopy']);
   assert.deepEqual(Reflect.ownKeys(publisherModule).filter(key => typeof key === 'string'), ['createBackupPublisher']);
   for (const module of [registryModule, publisherModule])
     assert.deepEqual(Reflect.ownKeys(module).filter(key => typeof key === 'symbol'), [Symbol.toStringTag]);
@@ -197,6 +198,12 @@ test('native Windows registry remains fail closed', { skip: !onWindows }, t => {
   assert.throws(() => createBackupRegistry({ dir: root }), denied('REGISTRY_PERMISSION_UNVERIFIED'));
   assert.throws(() => createTrustedBackupServices({ dir: root, platform }), denied('REGISTRY_PERMISSION_UNVERIFIED'));
 });
+
+test('legacy genuine protected-copy rejects async prefixes and consumes rejected sink/outer promises',
+  { skip: onWindows, timeout: 30000 }, async () => {
+    await isolated('callbacks-old');
+    await isolated('callbacks-old', { rejectionObserver: true });
+  });
 
 test('caller cannot request duplicate backupId; pre-existing record untouched and duplicate revocation refused', async t => {
   if (onWindows) return t.skip('native registry unavailable on Windows');

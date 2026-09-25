@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { performance } from 'node:perf_hooks';
+import { withClosedBackupSnapshot } from './backup-snapshot.js';
 import { getInstanceIdentity } from './schema.js';
 import { createImBackup } from './backup.js';
 import { createBackupPublisher } from './backup-publisher.js';
@@ -22,6 +23,8 @@ const backupKeys = ['recordVersion', 'instanceId', 'instanceCreatedAt', 'registr
   'artifactReference', 'manifestHash', 'publicationState', 'registeredAt'];
 const revocationKeys = ['recordVersion', 'backupId', 'revokedAt'];
 const invalid = () => { throw fail('REGISTRY_UNTRUSTED_RECORD'); };
+// Authentic facade membership for the narrowly scoped independent-copy bridge.
+const protectedCopies = new WeakMap();
 
 // The default capability checks real OS protection. Overrides are exclusively for isolated tests.
 function protectedPath(path, directory = false) {
@@ -227,16 +230,14 @@ function buildRegistry({ dir, authority, clock = Date.now, fault } = {}) {
         manifest.verification?.integrityCheck !== true || manifest.verification?.foreignKeyCheck !== true ||
         manifest.verification?.schemaCheck !== true || manifest.verification?.hashCheck !== true) throw fail('REGISTRY_ARTIFACT_MISMATCH');
     // Defense in depth, not a provenance proof: only the closure-held writer can reach here.
-    let copy;
     try {
-      copy = new DatabaseSync(path, { readOnly: true });
-      copy.exec('PRAGMA foreign_keys=ON');
-      const copied = getInstanceIdentity(copy);
-      if (copied.instanceId !== instanceId || copied.createdAt !== instanceCreatedAt ||
-          createImBackup({ db: copy }).verify({ backupPath: path, manifestPath: `${path}.manifest.json` }).ok !== true)
-        throw fail('REGISTRY_ARTIFACT_MISMATCH');
+      withClosedBackupSnapshot(path, copy => {
+        const copied = getInstanceIdentity(copy);
+        if (copied.instanceId !== instanceId || copied.createdAt !== instanceCreatedAt ||
+            createImBackup({ db: copy }).verify({ backupPath: path, manifestPath: `${path}.manifest.json` }).ok !== true)
+          throw fail('REGISTRY_ARTIFACT_MISMATCH');
+      });
     } catch { throw fail('REGISTRY_ARTIFACT_MISMATCH'); }
-    finally { copy?.close(); }
     const value = { recordVersion: 2, instanceId, instanceCreatedAt, registrationGeneration, backupId, fileHash, schemaVersion, schemaChecksum,
       completedAt, executorActorId, backupApprovalId, backupApproverId, toolVersion, artifactReference,
       manifestHash, publicationState: 'published', registeredAt: clock() };
@@ -282,7 +283,7 @@ function buildRegistry({ dir, authority, clock = Date.now, fault } = {}) {
     const path = location(data.artifactReference);
     if (hashFile(path, platform) !== data.fileHash || hashFile(`${path}.manifest.json`, platform) !== data.manifestHash) throw fail('REGISTRY_ARTIFACT_MISMATCH');
     const manifestPath = `${path}.manifest.json`;
-    let manifest, copy;
+    let manifest;
     try {
       manifest = JSON.parse(readProtected(manifestPath, platform).toString('utf8'));
       if (manifest.sourceId !== data.instanceId || manifest.backupId !== data.backupId ||
@@ -291,12 +292,11 @@ function buildRegistry({ dir, authority, clock = Date.now, fault } = {}) {
           manifest.toolVersion !== data.toolVersion || manifest.approvalId !== data.backupApprovalId ||
           hashFile(manifestPath, platform) !== data.manifestHash ||
           createImBackup({}).verify({ backupPath: path, manifestPath }).ok !== true) throw Error('invalid backup');
-      copy = new DatabaseSync(path, { readOnly: true });
-      copy.exec('PRAGMA foreign_keys=ON');
-      const identity = getInstanceIdentity(copy);
-      if (identity.instanceId !== data.instanceId || identity.createdAt !== data.instanceCreatedAt) throw Error('wrong copy');
+      withClosedBackupSnapshot(path, copy => {
+        const identity = getInstanceIdentity(copy);
+        if (identity.instanceId !== data.instanceId || identity.createdAt !== data.instanceCreatedAt) throw Error('wrong copy');
+      });
     } catch { throw fail('REGISTRY_ARTIFACT_MISMATCH'); }
-    finally { copy?.close(); }
     return Object.freeze({ backupId: data.backupId, instanceId: data.instanceId,
       instanceCreatedAt: data.instanceCreatedAt, registrationGeneration: data.registrationGeneration,
       fileHash: data.fileHash, manifestHash: data.manifestHash, schemaVersion: data.schemaVersion,
@@ -360,7 +360,142 @@ function buildRegistry({ dir, authority, clock = Date.now, fault } = {}) {
     });
   }
   const registry = Object.freeze({ getInstance, resolveForMigration, withVerifiedBackup, withDiscoveredBackup, revokeBackup, cleanupBackup });
+  protectedCopies.set(registry, (input, consume) => {
+    if (!input || Object.getPrototypeOf(input) !== Object.prototype || Reflect.ownKeys(input).some(key =>
+      !['backupId', 'adminContext', 'limits', 'tick'].includes(key) ||
+      !Object.hasOwn(Object.getOwnPropertyDescriptor(input, key), 'value'))) throw fail('REGISTRY_INVALID_INPUT');
+    const { backupId, adminContext, limits = {}, tick: outerTick } = input;
+    if (!limits || Object.getPrototypeOf(limits) !== Object.prototype || Reflect.ownKeys(limits).some(key =>
+      !['maxFileBytes', 'maxElapsedMs'].includes(key) ||
+      !Object.hasOwn(Object.getOwnPropertyDescriptor(limits, key), 'value')) ||
+      (outerTick !== undefined && typeof outerTick !== 'function')) throw fail('REGISTRY_INVALID_INPUT');
+    const bounds = { maxFileBytes: 134217728, maxElapsedMs: 10000, ...limits };
+    for (const key of Object.keys(bounds)) if (!Number.isSafeInteger(bounds[key]) || bounds[key] < 1 ||
+      bounds[key] > (key === 'maxFileBytes' ? 134217728 : 10000)) throw fail('REGISTRY_INVALID_INPUT');
+    const start = performance.now();
+    const tick = () => {
+      if (performance.now() - start > bounds.maxElapsedMs) throw fail('REGISTRY_BUSY');
+      outerTick?.();
+    };
+    const rejectPromise = value => {
+      if (value && typeof value.then === 'function') {
+        void Promise.resolve(value).catch(() => {});
+        throw fail('REGISTRY_ASYNC_CALLBACK');
+      }
+    };
+    requireAdmin(adminContext);
+    if (typeof consume !== 'function' || Object.prototype.toString.call(consume) === '[object AsyncFunction]')
+      throw fail('REGISTRY_INVALID_INPUT');
+    return coordinator.withLock(() => {
+      const data = boundPublicationLocked(backupId, instance());
+      if (data.schemaVersion !== 3) throw fail('REGISTRY_SCHEMA_MISMATCH');
+      const path = location(data.artifactReference);
+      const checkSize = () => { tick(); if (platform.protectedPath(path).size > bounds.maxFileBytes) throw fail('REGISTRY_BUSY'); };
+      checkSize();
+      const noSidecars = () => {
+        if (['-wal', '-shm', '-journal'].some(suffix => exists(`${path}${suffix}`))) throw fail('REGISTRY_ARTIFACT_MISMATCH');
+      };
+      noSidecars();
+      const recordBytes = readProtected(join(root, `backup-${backupId}.json`), platform, 65536);
+      const manifestBytes = readProtected(`${path}.manifest.json`, platform, 65536);
+      const sourceHash = () => {
+        checkSize();
+        const before = platform.protectedPath(path), digest = createHash('sha256');
+        let fd;
+        try {
+          fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+          platform.checkOpened(path, before, fstatSync(fd));
+          const buffer = Buffer.allocUnsafe(65536); let count, total = 0;
+          while (true) {
+            tick(); count = readSync(fd, buffer, 0, buffer.length, null); if (!count) break;
+            total += count; if (total > bounds.maxFileBytes) throw fail('REGISTRY_BUSY');
+            digest.update(buffer.subarray(0, count)); tick();
+          }
+          const after = fstatSync(fd); platform.checkOpened(path, before, after);
+          if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) invalid();
+          const result = digest.digest('hex'); tick(); return result;
+        } finally { if (fd !== undefined) closeSync(fd); }
+      };
+      const verifyClosedSnapshot = () => {
+        noSidecars(); checkSize();
+        if (sourceHash() !== data.fileHash || createHash('sha256').update(manifestBytes).digest('hex') !== data.manifestHash)
+          throw fail('REGISTRY_ARTIFACT_MISMATCH');
+        try {
+          const manifest = JSON.parse(manifestBytes.toString('utf8'));
+          if (manifest.sourceId !== data.instanceId || manifest.backupId !== data.backupId || manifest.fileHash !== data.fileHash ||
+              manifest.schemaVersion !== 3 || manifest.schemaChecksum !== data.schemaChecksum || manifest.completedAt !== data.completedAt ||
+              manifest.toolVersion !== data.toolVersion || manifest.approvalId !== data.backupApprovalId ||
+              ['integrityCheck', 'foreignKeyCheck', 'schemaCheck', 'hashCheck'].some(key => manifest.verification?.[key] !== true)) invalid();
+          // Genuine registered online-backup provenance plus absence of sidecars
+          // permits immutable reads. Never use this for arbitrary live databases.
+          withClosedBackupSnapshot(path, copy => {
+            tick();
+            for (const row of copy.prepare('PRAGMA integrity_check').iterate()) { tick(); if (row.integrity_check !== 'ok') invalid(); }
+            tick();
+            for (const row of copy.prepare('PRAGMA foreign_key_check').iterate()) { tick(); invalid(); }
+            tick();
+            // Historical schema validation remains a noninterruptible synchronous
+            // call; the first-error FK pass above prevents collecting corrupt rows.
+            const identity = getInstanceIdentity(copy); tick();
+            const marker = copy.prepare('SELECT version,migration_checksum FROM im_schema').get();
+            if (identity.instanceId !== data.instanceId || identity.createdAt !== data.instanceCreatedAt ||
+                marker.version !== 3 || marker.migration_checksum !== data.schemaChecksum) invalid();
+          });
+        } catch (e) {
+          if (e?.code === 'REGISTRY_BUSY' || e?.code === 'RECOVERY_BUSY') throw e;
+          throw fail('REGISTRY_ARTIFACT_MISMATCH');
+        }
+        noSidecars(); if (sourceHash() !== data.fileHash) throw fail('REGISTRY_ARTIFACT_MISMATCH'); tick();
+      };
+      verifyClosedSnapshot();
+      let active = true;
+      try {
+        const result = consume(Object.freeze({ recordBytes: Buffer.from(recordBytes), manifestBytes: Buffer.from(manifestBytes),
+          copyTo(writeChunk) {
+            if (!active) throw fail('REGISTRY_USE_EXPIRED');
+            if (typeof writeChunk !== 'function') throw fail('REGISTRY_INVALID_INPUT');
+            if (Object.prototype.toString.call(writeChunk) === '[object AsyncFunction]') throw fail('REGISTRY_ASYNC_CALLBACK');
+            checkSize();
+            const before = platform.protectedPath(path);
+            let fd;
+            try {
+              fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+              platform.checkOpened(path, before, fstatSync(fd));
+              const buffer = Buffer.allocUnsafe(65536), digest = createHash('sha256');
+              let count, total = 0;
+              while (true) {
+                tick(); count = readSync(fd, buffer, 0, buffer.length, null);
+                if (!count) break;
+                total += count; if (total > bounds.maxFileBytes) throw fail('REGISTRY_BUSY');
+                const chunk = Buffer.from(buffer.subarray(0, count)); digest.update(chunk);
+                const output = writeChunk(chunk);
+                try { rejectPromise(output); } catch (e) { active = false; throw e; }
+                tick();
+              }
+              const after = fstatSync(fd); platform.checkOpened(path, before, after);
+              if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) invalid();
+              if (digest.digest('hex') !== data.fileHash) throw fail('REGISTRY_ARTIFACT_MISMATCH');
+              tick();
+            } finally { if (fd !== undefined) closeSync(fd); }
+          } }));
+        rejectPromise(result);
+        verifyClosedSnapshot();
+        if (!recordBytes.equals(readProtected(join(root, `backup-${backupId}.json`), platform, 65536)) ||
+             !manifestBytes.equals(readProtected(`${path}.manifest.json`, platform, 65536))) throw fail('REGISTRY_ARTIFACT_MISMATCH');
+        tick();
+        return result;
+      } finally { active = false; }
+    });
+  });
   return { registry, writer: Object.freeze({ registerInstance, registerPublishedBackup }), artifactDirectory: join(root, 'artifacts') };
+}
+
+// No raw source path or registration writer crosses this boundary. The consuming
+// trusted adapter must finish independent destination verification before return.
+export function withProtectedBackupCopy(registry, input, consume) {
+  const copy = protectedCopies.get(registry);
+  if (!copy) throw fail('REGISTRY_INVALID_INPUT');
+  return copy(input, consume);
 }
 
 // Reader facade cannot mint provenance, including when reopened independently.

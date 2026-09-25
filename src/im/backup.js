@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, lstatSync, fstatSync, fchmodSync, openSync, closeSync, writeFileSync, fsyncSync, linkSync, unlinkSync, readFileSync, statSync, readSync } from 'node:fs';
 import { dirname, basename, join, resolve } from 'node:path';
-import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
+import { backup as sqliteBackup } from 'node:sqlite';
 import { performance } from 'node:perf_hooks';
 import { assertImSchema, SUPPORTED_IM_SCHEMA_VERSIONS } from './schema.js';
+import { withClosedBackupSnapshot } from './backup-snapshot.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const sha = path => {
@@ -25,18 +26,16 @@ const own = (path, identity) => {
 };
 
 function inspect(path) {
-  let db;
   try {
-    db = new DatabaseSync(path, { readOnly: true });
-    db.exec('PRAGMA foreign_keys=ON');
-    if (db.prepare('PRAGMA integrity_check').all().some(row => row.integrity_check !== 'ok')) throw fail('BACKUP_VERIFY_FAILED');
-    if (db.prepare('PRAGMA foreign_key_check').all().length) throw fail('BACKUP_VERIFY_FAILED');
-    assertImSchema(db);
-    const { version, migration_checksum: schemaChecksum } = db.prepare('SELECT version,migration_checksum FROM im_schema').get();
-    if (!SUPPORTED_IM_SCHEMA_VERSIONS.includes(version) || !hashPattern.test(schemaChecksum)) throw fail('BACKUP_VERIFY_FAILED');
-    return { schemaVersion: version, schemaChecksum };
+    return withClosedBackupSnapshot(path, db => {
+      for (const row of db.prepare('PRAGMA integrity_check').iterate()) if (row.integrity_check !== 'ok') throw fail('BACKUP_VERIFY_FAILED');
+      for (const row of db.prepare('PRAGMA foreign_key_check').iterate()) throw fail('BACKUP_VERIFY_FAILED');
+      assertImSchema(db);
+      const { version, migration_checksum: schemaChecksum } = db.prepare('SELECT version,migration_checksum FROM im_schema').get();
+      if (!SUPPORTED_IM_SCHEMA_VERSIONS.includes(version) || !hashPattern.test(schemaChecksum)) throw fail('BACKUP_VERIFY_FAILED');
+      return { schemaVersion: version, schemaChecksum };
+    });
   } catch { throw fail('BACKUP_VERIFY_FAILED'); }
-  finally { db?.close(); }
 }
 
 // The manifest is the success proof; a database file without a matching manifest is NOT a usable backup.
@@ -161,6 +160,7 @@ export function createImBackup({ db, authority, clock = Date.now, toolVersion = 
           manifest.verification?.schemaCheck !== true || manifest.verification?.hashCheck !== true) throw fail('BACKUP_VERIFY_FAILED');
       if (sha(backupPath) !== manifest.fileHash) throw fail('BACKUP_VERIFY_FAILED');
       const snapshot = inspect(backupPath);
+      if (sha(backupPath) !== manifest.fileHash) throw fail('BACKUP_VERIFY_FAILED');
       if (snapshot.schemaVersion !== manifest.schemaVersion || snapshot.schemaChecksum !== manifest.schemaChecksum) throw fail('BACKUP_VERIFY_FAILED');
       return { ok: true, code: 'BACKUP_VERIFIED', backupId: manifest.backupId,
         schemaVersion: snapshot.schemaVersion, fileHash: manifest.fileHash };

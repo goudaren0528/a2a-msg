@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { withClosedBackupSnapshot } from './backup-snapshot.js';
 import { getInstanceIdentity, IM_SCHEMA_VERSION } from './schema.js';
 
 const fail = code => Object.assign(new Error(code), { code });
@@ -50,15 +50,13 @@ export function createBackupPublisher({ db, registry, writer, artifactDirectory,
     if (backup.verify({ backupPath: destinationPath, manifestPath: result.manifestPath })?.ok !== true)
       throw fail('BACKUP_VERIFY_FAILED');
     // Open the produced copy, not the current DB and not the caller's manifest assertion.
-    let copy;
     try {
-      copy = new DatabaseSync(destinationPath, { readOnly: true });
-      copy.exec('PRAGMA foreign_keys=ON');
-      const copied = getInstanceIdentity(copy);
-      if (copied.instanceId !== identity.instanceId || copied.instanceId !== registered.instanceId ||
-          copied.createdAt !== identity.createdAt) throw fail('BACKUP_IDENTITY_MISMATCH');
+      withClosedBackupSnapshot(destinationPath, copy => {
+        const copied = getInstanceIdentity(copy);
+        if (copied.instanceId !== identity.instanceId || copied.instanceId !== registered.instanceId ||
+            copied.createdAt !== identity.createdAt) throw fail('BACKUP_IDENTITY_MISMATCH');
+      });
     } catch { throw fail('BACKUP_IDENTITY_MISMATCH'); }
-    finally { copy?.close(); }
 
     let manifest;
     try { manifest = JSON.parse(readFileSync(result.manifestPath, 'utf8')); }

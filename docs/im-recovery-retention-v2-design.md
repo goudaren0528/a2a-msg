@@ -1,17 +1,17 @@
-# IM v2 恢复与留存实施契约（P1/P2-FROZEN-1）
+# IM v2 恢复与留存实施契约（P1/P2-FROZEN-1；P5 技术裁决已批准）
 
 | 项 | 状态 |
 | --- | --- |
-| 基线 | 源码核对基线 `9b5ef8f`；本轮文档修订时 HEAD 为 `61052a3`，旧兼容测试由独立 lane 提交；不构成本契约实现 |
+| 基线 | 原契约源码基线 `9b5ef8f`；本次 P5 文档交接核对 HEAD `f3d17094106c1833a2d0019a4c3cb19b25918fe7` 的 backup/registry、P1 schema/migration 与 v2 clock；不构成 P5 实现证据 |
 | 责任 | contractauthor 编写；Oracle 独立架构门禁；父会话控制范围、冻结和后续分配 |
-| 授权层级 | **NONRELEASE 开发方案已批准**；Oracle 最终条件裁决要求的 v3_import 备份/RPO 修正已落实，`P1/P2-FROZEN-1` 生效；这是冻结的实施契约，不是已交付功能 |
+| 授权层级 | **继续 NONRELEASE 开发已批准，P5 技术裁决已批准、尚未完成**；`P1/P2-FROZEN-1` 及已批准 P1–P4 语义保持；父会话阅读本交接后按 P5-A→B→C→D 分派 |
 | 配套 | [有序实施与验证计划](im-v2-implementation-plan.md) |
 
 ## 1. 决策层级与边界
 
 **A：用户已批准的规范性边界。**旧 LAN `18787`、原 DB、配置、API 继续运行，无强制下线期限；新 IM 独立 TLS 端口、DB、配置。恢复使用人工控制；消息内容及附件 90 天，安全重试窗口 7 天，普通审计 180 天；内容过期、物理删除默认关闭。生产恢复、切换、实际删除，以及公网暴露、DNS、成本、资源须分别确认。此次文档不授权 push、rename、LICENSE、服务启动或运行配置变更。
 
-**T：Oracle 已裁决的实施契约。**T1–T7 及最终 v3_import 备份/RPO 修正已落实，`P1/P2-FROZEN-1` 生效；父会话阅读修正章节后分派 P1 单写者，无需再开通用 Oracle 评审。冻结不表示实现或上线。第 10 节保留 P4/P5/P6 的具体后续实现门禁；这些不扩大已批准开发范围，也不代替人工操作许可。
+**T：Oracle 已裁决的实施契约。**T1–T7、v3_import 备份/RPO 修正及本次第 6 节 P5 技术决定已采纳；`P1/P2-FROZEN-1` 保持。P5 按配套计划顺序实施，不重开通用架构选型。第 10 节明确仅需作者补齐的 capability/记录编码交接及验证门禁；技术批准不表示实现、上线或人工操作许可。
 
 **H：人工运维待确认。**真实恢复候选、备份来源、RPO 接受、旧写入方隔离、凭据复核/轮换、监听器切换、每个物理删除批次、备份保留窗口、平台生产支持均需独立确认。备份“超过 30 天”只是 **UNCONFIRMED 建议，不进入默认配置**。开发授权不代替这些操作授权。
 
@@ -281,49 +281,139 @@ ACK/expiry 每请求最多100项。每次前缀推进最多检查1000个 seq（A
 
 附件下载每个 64KiB chunk 前及发送 headers 前重验 epoch、ACL、content live；到期/撤权发生在 headers 后则断流，客户端只在完整 length+SHA-256 验证、安全落盘且 journal durable 后 ACK。已发出的字节无法撤回；客户端已有完整文件时服务端随后过期，首次 ACK 仍走 expired receipt，而不是谎称本次已投递。流程为重新 sync 获取 tombstone→持久记录 expiry fact→专用 receipt→推进 handled；旧 message/attachment receipt 不擦除。不把 hash/ACL/下载错误一概当 expired，只有经过授权的 CONTENT_EXPIRED +重新 sync 才能转分支。journal 提交前、后及 receipt 响应丢失均须可幂等恢复。
 
-## 6. 人工恢复：prepare → verify → activate
+## 6. P5 人工恢复：stage → preview/prepare → verify → preview/activate
 
-### 6.1 管理能力输入、候选类型与双审批
+**状态：技术裁决已批准，实施与故障证据尚未完成。**本节替代旧的“prepare 直接复制候选”流程；不改第 3 节 P1 DDL/枚举或第 4–5 节协议/journal。四类来源为 fresh、registered v3、closed v3、registered v4 snapshot；候选 kind 仍只有三种。
 
-恢复不开放普通 HTTP。独立本地 admin authority 与 plan approval authority 注入，均须同步返回 literal true；审批人身份取可信 adapter，不能取调用者自报。**prepare 与 activation 是两份分别批准的计划**，不能拿 prepare approval 代替 activation。没有新增审批平台。能力形状如下，计划里的身份/epoch由可信读取或内部生成，调用者提交计划仅用于完整性校验，不能任意指定新身份：
+### 6.1 冻结 facade 与信任边界
+
+唯一管理 facade 为 `createImV2RecoveryServices({root,sourceCatalog,authority,approvalAuthority,evidenceAuthority,policy,clock,limits})`，返回冻结的 `stageCandidate`、`previewRecovery`、`prepareRecovery`、`verifyRecovery`、`previewActivation`、`activateRecovery`、`getRecoveryStatus`、`releaseRecoveryHold`。管理操作不开放网络端点。服务内部拥有 candidate、coordinator、只读 source DB 的连接生命周期；不接收调用者 DB handle，不创建监听器，不自动启写。
+
+`sourceCatalog` 仅是构造时注入的可信来源 capability，操作只接受其 `sourceRef`，不接受 raw path、调用者自报来源 metadata/identity/epoch/backup 证明。引用本身不等于授权。admin、`prepare|activate|release-hold` 审批及 isolation/authReview evidence adapters 必须同步返回 **literal true**；Promise/thenable、truthy、抛错均拒绝。审批人取可信 adapter，prepare 与 activation 分别审批，hold release 另需独立审批；verify 无 activation 权限。准确 adapter 方法名/参数与 sourceCatalog capability shape 由 P5-A/B 作者在实现消费方前冻结（第 10 节），不在本文虚构。
 
 ```text
-previewRecovery({candidateKind,preparationRef,backupId,candidateReference}, adminContext)
+stageCandidate({requestRef,sourceRef,kind,isolationAckRef}, adminContext)
+previewRecovery({runId}, adminContext)
   -> {preparePlan,preparePlanHash}
-prepareRecovery({preparePlan,preparePlanHash,approvalRef}, adminContext)
+prepareRecovery({runId,preparePlanHash,approvalRef}, adminContext)
   -> {runId,candidateReference,newEpoch,status:"prepared"}
 verifyRecovery({runId,preparePlanHash}, adminContext)
   -> {runId,status:"verified",sealReference,sealHash}
 previewActivation({runId,sealReference,authReviewRef,isolationAckRef,activationRef}, adminContext)
   -> {activationPlan,activationPlanHash}
-activateRecovery({activationPlan,activationPlanHash,activationApprovalRef,sealReference}, adminContext)
+activateRecovery({activationPlanHash,activationApprovalRef,sealReference}, adminContext)
   -> {runId,newEpoch,status:"active",writeMode:"paused"}
 ```
 
-preparePlan 字段顺序固定：`{version:1,runId,candidateKind,preparationRef,instanceId,instanceCreatedAt,backupId,backupFileHash,manifestHash,sourceSchemaVersion,sourceSchemaChecksum,candidateReference,oldEpoch,newEpoch,recoveryCounter,policyHash,rpoReport,sourceEvidence,sourceClosedEvidenceRef,isolationAckRef,createdAt,expiresAt}`。不适用字段显式null。preparePlanHash=SHA256(UTF8 固定字段序 JSON)，TTL 300000ms，`now<expiresAt`；prepare approval 绑定全部字段。**整份preparePlan（包括完整sourceEvidence）必须受保护持久保存、可读回，读回hash必须等于im_recovery_runs.approved_plan_hash**；仅保存hash而丢失来源证明不合格。sourceEvidence是不含路径/凭据的已验证来源证据，完整编码仍为P5门禁，不阻塞P1表定义；不能用任意字符串伪装来源。sourcekind由可信管理层验证，不接受调用者通过删字段将备份来源降为无备份来源。
+`kind` 使用 `fresh_bootstrap|v3_import|snapshot_recovery`。fresh 的 sourceRef/isolationAckRef 必须显式 null；非 fresh 必须有可信隔离证据。stage 先持久化唯一 request intent 和内部生成的 runId/candidateReference，同 requestRef exact retry 复用持久身份，参数变化冲突；不接受预选 runId、candidateReference 或 epochs。stage/status/release 的完整 DTO 字段集亦列入 P5-A/B 的有限编码交接，不增加其他管理能力。
 
-- fresh_bootstrap：读取 kind=fresh 的 preparation；preparationRef 非空，newEpoch=initial_epoch，sourceSchemaVersion/sourceSchemaChecksum、全部备份字段、oldEpoch、rpoReport、sourceEvidence、sourceClosedEvidenceRef、isolationAckRef 均null。不得伪造备份/源隔离/RPO证明。
-- v3_import：读取kind=v3_import的preparation，保留实际stable identity，newEpoch=initial_epoch，sourceSchemaVersion=3/sourceSchemaChecksum来自preparation；oldEpoch始终null，rpoReport/sourceEvidence/sourceClosedEvidenceRef/isolationAckRef始终必填。备份支持的导入在preparePlan保留真实backupId/backupFileHash/manifestHash与RPO，在run保留相同三字段及修改前candidate_base_hash；后者必须等于已验证原backupFileHash。来自实际已关闭源且确无备份的导入，plan三备份字段和run四备份字段可分别全null，仍需受保护持久sourceEvidence与RPO/隔离，不能冒充注册备份。schema preparation本身不证明源已停。
-- snapshot_recovery：preparationRef=null，来源为已验证v4快照，sourceSchemaVersion=4；全部备份字段、oldEpoch、rpoReport、sourceEvidence/sourceClosedEvidenceRef/isolationAckRef 非空；newEpoch内部新生成。来源无epoch的v3快照必须先走 v3_import 候选类型，不混用 nullable 条件。
+### 6.2 私有工作区、规范字节与锁
 
-activationPlan 精确字段顺序为 `{runId,preparePlanHash,sealHash,candidateReference,newEpoch,authReviewRef,isolationAckRef,createdAt,expiresAt,activationRef}`；activationPlanHash同样对固定序列JSON求SHA256，TTL 300000ms，`now<expiresAt`。authReviewRef 三种候选均必填；isolationAckRef 仅fresh为null，其他须与prepare及当前隔离核验一致。批准该计划后，在 active 事务中写入 activation_plan_hash/activation_approval_ref，不能仅写一份笼统approval_ref。两次审批都由可信 authority验证，verify没有activate权限。
+工作区布局固定如下；reference 经内部解析，不是公开路径访问器：
 
-`rpoReport`精确形状：`{status:'measured'|'unknown',snapshotCompletedAt:null|ms,sourceObservedAt:null|ms,missingAcceptedCount:null|int,missingAckCount:null|int,missingReadCount:null|int,comparisonEvidenceHash:null|hex64,authChanges:'unknown'|'reviewed',notesCode:'SOURCE_UNAVAILABLE'|'BOUNDED_COMPARISON_COMPLETE'|'COMPARISON_INCOMPLETE'}`。v3_import不论有无备份均须RPO报告。备份支持的候选snapshotCompletedAt必须为真实备份completedAt；仅无备份来源且没有已知快照时间时可null。差异不可知或比对不完整时status='unknown'，三项missing计数及comparisonEvidenceHash均null，不用0伪装无损失；仅完整经验证比对可measured。sourceObservedAt与snapshot时间差是观察区间，不是精确丢失量。
+```text
+root/                              # 私有 0700，可信祖先
+  coordination.sqlite
+  registry/{artifacts,records,holds,releases}/
+  runs/<uuid>/
+    stage.json
+    prepare-<preparePlanHash>.json
+    activation-<activationPlanHash>.json
+    seals/<sealHash>.json
+    candidate.sqlite
+```
 
-### 6.2 不可破坏的执行顺序
+所有文件 0600、有效 euid 所有、无 symlink、稳定普通文件单 hard link；逐级校验可信祖先及 opened inode 与路径一致。发布时只允许自身 pending/final 的短暂双链接，清掉自身临时链接后才认可单链接完成态。元数据限 **65536 UTF-8 bytes**：按规定字段序构建普通对象，`JSON.stringify`，无 BOM/空白格式化/尾换行；严格 shape、类型、未知字段拒绝，读取后规范重编码须与原 bytes 完全相等；SHA-256 对原始规范 bytes 求值。既有旧 v3 manifest/record 按旧格式验证，导入保留其原 bytes/hash，不把它们悄悄重编码成新格式。
 
-以下copy/artifact验证、持久hold、源隔离、exclusive copy与修改前base hash规则适用于**所有备份支持的候选，包括v3_import**，不能只用于snapshot_recovery；这些步骤先于候选迁移/任何修改。无备份v3_import使用已验证关闭实际源的受控复制与持久sourceEvidence，仍需隔离/RPO与exclusive候选，但不伪造backup/hold。bootstrap/import按第3.2节绑定preparation后仍须verify与独立activation；fresh不要求不存在的旧源证据。
+新文件发布顺序固定为 exclusive pending → file sync → hard-link no-replace → 仅 unlink 自身 pending → directory sync。任何阶段失败若不能证明落盘结果，保留证据、报告 durability uncertain；不能宣称已干净回滚，也不能删不明候选/锁/证明。连接与原始 fd 必须受同一所有者控制：**coordination.sqlite inode 已有 SQLite 锁时不得再 raw open/close 该 inode 的 fd**，避免破坏进程锁。允许 coarse lock；顺序为 **旧源 verified/discovered scope → 新 registry → candidate → 业务事务**，没有旧源时从新 registry 开始。锁只覆盖参与本机协议的进程。
 
-1. 锁顺序固定 **registry→candidate**。registry 锁内验证来源、manifest/文件 hash、identity/schema、未撤销；在任何copy前持久化 hold `{version:1,holdId,backupId,recoveryRunId,preparePlanHash,createdAt}`，no-replace发布并fsync。hold不能只存在进程Map；release是另行显式操作写durable release marker，completed/failed都不自动release；坏hold或不明release拒绝cleanup。旧v3 cleanup不识别hold，不能充当v4清理入口：必须由可信源保护排除它，或复制至新的受保护registry后才使用。具体seal/hold/release编码与adapter故障矩阵在P5冻结，不阻塞P1的表结构。原备份不改写，真实源关闭/隔离确认先于候选写；源失联不证明已隔离。
-2. exclusive-create 新候选，拒绝已存在路径/别名/硬链接/符号链接，私有本地目录且不覆盖 accepted 原 DB。先完成只读复制/hash，`candidate_base_hash` 定义为**复制后、任何 prepare 修改前**的完整 DB hash，应等于 backupFileHash。保留它不宣称它等于迁移后候选 hash。
-3. snapshot候选断言v4；一个事务插计划已绑定的新epoch、recovery run、center prepared，递增分支counter、write_mode=paused、失效旧leases；**保留全部旧lease_requests**，v2 epoch命名空间阻止旧重放。旧epoch send mappings、ACK/read和progress/receipts保留。当前epoch progress继承实际连续ACK前缀，旧epoch expiry receipt不自动算新handled，须新接收者明确确认。stream_epoch保留，不靠generation回滚后的数值防护。
-4. verify 在暂停exclusive状态验证integrity/FK/manifest、skeleton/mapping/receipt、授权、scrub一致性、RPO/clock；同事务写run/center verified。成功checkpoint WAL→main后关闭**全部**候选连接；BUSY、无法解释的残留WAL/SHM或不明writer均拒绝seal，不静默删除侧文件。保持候选exclusive控制，hash关闭的DB，no-replace+fsync发布外部seal `{version:1,runId,preparePlanHash,newEpoch,candidateReference,candidateFileHash,schemaChecksum,verifiedAt,verification:{integrity:true,foreignKeys:true,schema:true,invariants:true}}`。sealHash为其规范编码字节SHA256，编码细节P5冻结。外部seal避免自引用整库hash，hash不在业务write transaction内；verify不activate。
-5. activate **先取得候选exclusive控制，再检查sealHash及关闭候选DB hash**；锁次序仍registry→candidate。重新验证独立activation审批、prepare绑定、hold、隔离和auth review，再打开DB，检查小状态和run/epoch/schema，事务同时写run/center active、activation字段及最小审计，write_mode仍paused。不能在验hash后才争抢exclusive控制。activation改变DB hash是预期；精确重试先在exclusive控制下识别completed active记录、核对activationPlanHash/approvalRef/activationRef并返回原结果，不再要求activeDB等于旧verified seal hash，不换epoch。未active则必须完整seal验证。
-6. 独立监听器启用/路由切换/启写必须另确认。构造 v2 center 只接受 active，写操作还须配置与 im_settings 双 enabled。旧源即使启动也不能靠本地 lock 全局 fencing；人工隔离失效时可能双中心，必须在报告显式承认。
+### 6.3 独立版本化备份、注册来源与 bridge
 
-prepared 未 seal、verified 未 seal、seal 发布失败、activation commit 前后崩溃分别保留现状、按原 runId 对账；不自动删除不明候选/锁文件，不自动重试成新 epoch。旧备份恢复可能撤销掉备份后新增凭据/禁用信息，不能“认证成功就安全”：activation 前要求管理员复核/轮换，无法复核则停止 activation；具体轮换材料不写本文或日志。
+v2 backup/verifier 必须支持真实 v4，调用 P1 **完整数据/结构 validator**，另核验 integrity/FK/file hash；不能只信 marker。新 manifest 的 `formatVersion:2` 必须绑定实际 snapshot DB 的 source identity/createdAt、schema/checksum、file hash、完成时间和审批 metadata；`sourceId` 不能由调用者权威指定。完整 manifest 字段序/审批 metadata 编码在 P5-A 冻结，不套用旧 primitive 的自报 sourceId API。
 
-Windows 原生严格 registry 尚不支持，默认 fail closed；Windows 仅允许明确标注的隔离测试能力，不能注入 fake platform 绕过生产保护。WSL 证据必须来自原生 Linux 文件系统，不能用挂载 Windows/网络盘冒充 POSIX 保护。目录 singleton lock 只保证参与该本地目录锁协议的进程互斥，不能证明另机旧 writer 停止。
+独立 registry 的 `recordVersion:3` 记录绑定已裁决字段 `backupId,instanceId,instanceCreatedAt,schemaVersion,schemaChecksum,fileHash,manifestHash,completedAt,artifactReference,publicationKind,sourceEvidenceHash,registeredAt`；publicationKind 仅 `native-v4|imported-registered-v3`。完整类型/nullable/字段序编码在 P5-A 冻结，不自行扩键。writer 是私有闭包，仅实际 snapshot publication 或 verified bridge 能生成 provenance；无 public `registerArtifact`、writer 或 source path accessor。旧 [backup.js](../src/im/backup.js) 仍只支持 1–3，旧 publisher/runner 的 current=3 与所有历史 schema 常量不改。
+
+registered v3 bridge 唯一批准的旧代码扩展是 [backup-registry.js](../src/im/backup-registry.js) 内最小 **protected-copy capability**：现有真实 `withVerifiedBackup`/`withDiscoveredBackup` 锁必须覆盖 independent copy **及复制验证完成**。当前源码 callback 仅给 metadata/recheck，尚无 protected-copy 能力，不能当成已有 source path API。bridge 不向外暴露 source path/writer，不跨 root hard-link；独立 bytes 副本落在新 registry。旧 cleanup 后续可以删除旧源 artifact，绝不能删掉新独立副本。旧 registry 的 recordVersion=2 与新 recordVersion=3 明确分派，旧 cleanup 不充当新 hold-aware cleanup。
+
+未注册 v3 只能按已关闭来源导入，不能声称 registered provenance；不为 fresh/closed-source 伪造 backup。新 registry 的 provenance 与下面 sourceEvidence 一起核对，不能由调用者删除字段将备份降格成无备份。
+
+`sourceEvidence` 严格 tagged union，按下列顺序编码，均由可信读取生成：
+
+```text
+fresh: null
+registered-backup: {version:1,kind:"registered-backup",sourceRef,
+  registryFormat:2|3,instanceId,instanceCreatedAt,backupId,fileHash,manifestHash,
+  schemaVersion:3|4,schemaChecksum,completedAt,importedRecordHash}
+closed-source: {version:1,kind:"closed-source",sourceRef,instanceId,instanceCreatedAt,
+  schemaVersion:3,schemaChecksum,closedSourceFileHash,observedAt,isolationAckRef}
+```
+
+`importedRecordHash` 对 native 为 null，导入注册来源须绑定其被验证注册证据 hash；具体取证字节对象由 P5-A 编码交接明确，不能靠任意字符串代替。registryFormat 表示所验证 registry record 的版本，不能与 manifest formatVersion 或 DB schemaVersion 混用。closed-source 必须证明已关闭并读取真实 identity/schema/file hash；source unavailable 本身不是隔离证据。
+
+### 6.4 Stage 与 prepare：先有真实候选，再批准完整计划
+
+1. admin/evidence 检查后持久化唯一 stage intent。所有备份来源先在源 verified scope 下复制、验证并发布到**新独立 registry**；然后在新 registry 给这份独立副本持久 stage hold，**最后**才复制 candidate。hold 不要求尚不存在的 preparePlanHash；不存在“任何来源 copy 前先有 prepare 审批”的循环。
+2. exclusive-create candidate，拒绝现存路径/别名/软硬链接，绝不覆盖原 DB。backup candidate 的修改前 base hash 必须等于已验证 backupFileHash，并在 pause/migration 前留证；closed-source 同样验证受控复制及 sourceEvidence，但无假 backup/hold。
+3. fresh 调第 3.4 节真实 P1 initializer；v3 candidate 若来源备份 write_mode=enabled，**只暂停新 candidate**、记录该动作，再显式调用 P1 migration。身份/initial/import epochs 均来自 P1 持久结果；原 artifact 不改。snapshot stage 保持已关闭候选及旧 marker/epoch/state，prepare 前不写新 run/epoch，也不开业务服务。
+4. `staged` 是外部工作区状态，**不是** im_center_state/im_recovery_runs 新枚举。stage/preview 返回的内部 refs 不代表已审批。`previewRecovery({runId})` 从持久 stage/真实候选取值；仅 snapshot 内部生成新 epoch，fresh/import 使用真实 initial_epoch。预览把完整 canonical preparePlan 持久化；恢复/重试读取持久计划，不默默再分配身份。
+5. `prepareRecovery` 只按 runId/hash 读回受保护完整计划并核验 prepare approval、时效、来源/隔离、候选和 hold。DB `approved_plan_hash` 绑定该文件的 hash；不能接收调用者替换的 plan 对象。备份 hold 增加不可变 prepare binding 后才进入对应候选写阶段，失败不释放 hold。
+6. fresh/import 绑定现有 preparation.initial_epoch；snapshot 在一个事务创建批准的新 epoch/run、center prepared、严格安全递增分支 counter（溢出拒绝）并 paused。各类候选中存在的旧 leases 都要失效，**保留全部旧 epochs、lease_requests、send mappings、ACK/read、旧 progress/receipts**。新 epoch progress 取实际最大连续 ACK 前缀，不继承旧 expiry receipt 作新 handled 证明；stream_epoch 保留。源 messages/keys/ACK/read 不改，不依赖 generation 数值成为全局 fence。
+
+preparePlan 固定顺序保持为 `{version:1,runId,candidateKind,preparationRef,instanceId,instanceCreatedAt,backupId,backupFileHash,manifestHash,sourceSchemaVersion,sourceSchemaChecksum,candidateReference,oldEpoch,newEpoch,recoveryCounter,policyHash,rpoReport,sourceEvidence,sourceClosedEvidenceRef,isolationAckRef,createdAt,expiresAt}`。不适用字段显式 null，TTL 300000ms，只有 `now<expiresAt` 有效。完整 sourceEvidence 随计划保存，不仅存 hash。
+
+| candidate kind | 精确来源/nullable 与 epoch 绑定 |
+| --- | --- |
+| fresh_bootstrap | kind=fresh preparation；newEpoch=initial_epoch；source schema、备份、oldEpoch、RPO、sourceEvidence/sourceClosedEvidenceRef/isolationAckRef 全 null |
+| v3_import | sourceVersion=3，kind=v3_import preparation；实际 stable identity，newEpoch=initial_epoch，oldEpoch=null；RPO/sourceEvidence/sourceClosedEvidenceRef/isolationAckRef 必填；registered v3 的 plan 三备份字段与 run 四备份字段完整，candidate_base_hash=修改前 backupFileHash；实际 closed v3 且无备份才全 null |
+| snapshot_recovery | verified v4 backup，preparationRef=null；备份/oldEpoch/RPO/sourceEvidence/sourceClosedEvidenceRef/isolationAckRef 必填；内部新 epoch 和安全更高 counter，不伪造 v3 oldEpoch |
+
+保留 `sourceClosedEvidenceRef` 的既有语义：它是可信关闭/隔离证据引用，不等于“备份文件存在”；其生成/解析与 sourceCatalog/evidenceAuthority 的具体绑定在 P5-A/B 冻结，操作不增加调用者自报参数。
+
+### 6.5 RPO 的有限可证实范围
+
+`rpoReport` 固定顺序为 `{status:'measured'|'unknown',snapshotCompletedAt:null|ms,sourceObservedAt:null|ms,missingAcceptedCount:null|int,missingAckCount:null|int,missingReadCount:null|int,comparisonEvidenceHash:null|hex64,authChanges:'unknown'|'reviewed',notesCode:'SOURCE_UNAVAILABLE'|'BOUNDED_COMPARISON_COMPLETE'|'COMPARISON_INCOMPLETE'}`。v3 import 无论是否备份均要报告；备份的 snapshotCompletedAt 是真实 completedAt，只有无备份且未知快照时间可 null。
+
+`measured` **只允许完整、稳定、有界的身份/事实集合比较**：逐项比对 messages、operation/key 接受事实、ACK、read 的身份及事实，不能拿两边总行数相减。来源不可得、不稳定或超预算一律 unknown，三项 missing counts 与 comparisonEvidenceHash 全 null；时间差只是观察区间，不是丢失量。预算默认且最大 10000 messages / 100MiB verified content / 10000 other records / 10s 单调软预算，仅可降低；超限不部分计数后报 measured，不承诺中断单条 SQLite 调用。
+
+authChanges 默认 unknown，数据比较完成不等于凭据安全；独立人工 auth review/必要轮换经可信证据核验后才能标 reviewed 或用于 activation。不承诺 RPO=0 或 global fencing。
+
+### 6.6 持久 hold、prepare binding 与独立 release
+
+以下对象按所列字段序使用第 6.2 节编码/发布规则：
+
+```text
+stageHold = {version:1,holdId,backupId,recoveryRunId,stageHash,createdAt}
+prepareBinding = {version:1,holdId,stageHash,preparePlanHash,boundAt}
+releaseMarker = {version:1,holdId,recoveryRunId,terminalState:"active"|"failed",
+  stateEvidenceHash,approvalRef,releasedAt}
+```
+
+stage hold 在 candidate copy 前持久存在；**未绑定 prepare 的 stage hold 也阻止 cleanup**。prepareBinding 是独立不可变证据，不重写 hold 来添字段。`releaseRecoveryHold` 必须 admin + 独立 `release-hold` approval + candidate 的 active/failed 完成证明，绑定 stateEvidenceHash 后发布 release marker；status 声明或单个引用不足以释放。坏 hold、不明 binding/release 均 fail closed，不删除 hold，不因 failed/active 自动释放。P5 无 TTL/自动清理；P6 的旧备份 30 天建议仍 UNCONFIRMED，未批准无删除计划。binding/release 具体文件命名及 terminal proof 编码在 P5-A/B 交接冻结。
+
+### 6.7 Verify 与外部 closed-file seal
+
+verify 持有 candidate exclusive 控制，核验 prepared/run/完整 plan/hold 和 P1 全内容不变量（integrity/FK/schema、skeleton/mapping/receipt、授权、scrub、RPO/clock）；同事务置 run/center verified，write_mode 保持 paused。成功 checkpoint WAL→main，BUSY/不明 writer/无法解释的 WAL/SHM 拒绝 seal；关闭**所有** candidate connections，确认 main 包含所有已提交数据，file/dir sync 后才 hash closed file。不得手动删 WAL/SHM 伪造关闭态。
+
+外部 seal 精确顺序为 `{version:1,runId,preparePlanHash,newEpoch,candidateReference,candidateFileHash,schemaChecksum,verifiedAt,verification:{integrity:true,foreignKeys:true,schema:true,invariants:true}}`。第 6.2 节 canonical bytes 的 SHA-256 同时是 sealHash 和 `seals/<sealHash>.json` 文件名；no-replace durable 发布。**不把 sealHash 写回 candidate DB**，避免自引用改变已封印 bytes。verified 但无 durable seal 不能 activation；失败保留原 run/证明以便查询/重新 verify，不偷偷分配新 epoch。
+
+### 6.8 Activation、时钟锚与响应丢失
+
+activationPlan 精确字段序为 `{runId,preparePlanHash,sealHash,candidateReference,newEpoch,authReviewRef,isolationAckRef,createdAt,expiresAt,activationRef}`，持久到 activation-<hash>.json；TTL 300000ms，`now<expiresAt`。绑定最终 sealHash、全部 refs/newEpoch/有效期，由独立 activation approval 批准。authReviewRef 三种 kind 均必填；isolationAckRef 仅 fresh=null，其他须与 prepare 和当前隔离核验一致。activate 仅提交 hash/approvalRef/sealReference，按 hash 读取受保护计划。
+
+1. **先锁，后验 seal。**持 registry/candidate exclusive 控制；若是已提交 active 的 exact retry，先用只读 completed proof 核对原 run/epoch/activationPlanHash/activationApprovalRef/activationRef 和绑定证据，返回原结果，不要求旧 preactivation file hash，不重置 epoch、不再激活。
+2. 非 completed 路径先验证外部 seal canonical/hash、plan/hold/审批及 closed candidate file hash，**任何 clock anchor/guard write 必须在 closed-file hash 校验之后**。再打开候选做点查 run/epoch/schema/state；不能先调用会持久 anchor 的 guard 再忽略 hash 变化。
+3. fresh transaction 内重新检查 approval、epoch/state、计划 expiry、隔离/authReview；原子写 run/center active、activation_plan_hash/activation_approval_ref、activation_ref/时间及最小审计，write_mode **仍 paused**。最终 expiry check 成功才 commit，然后关闭并完成持久性处理。
+4. 若 clock anchor 已提交而 activation 未提交，旧 seal 已失效：返回 `RECOVERY_REVERIFY_REQUIRED`，重新 verify、生成新 seal/activation plan 并取得**新 activation approval**。不得忽略 hash、回滚 clock floor 或拿旧审批继续。若 commit 后响应丢失，走步骤 1 的完成证明路径；持久结果不明则 indeterminate，不伪造 failed activation，也不把 active 改 failed/抹去 active 事实。
+
+独立监听器、路由切换、启写都另需人工许可；active 不代表可服务或可写。人工隔离失败可能产生双中心，本地锁无法跨机器 fence。旧快照可能缺少备份后凭据新增/撤销，无法完成 auth review 时停止 activation，敏感材料不写日志。
+
+### 6.9 Status、错误与平台证据
+
+`getRecoveryStatus` 只返回安全 refs、状态、holds 与 nextAction，不输出路径/秘密。显式外部状态为 `staged|prepared|verified|active|failed|indeterminate`；staged/indeterminate 不添加到 P1 DB 枚举。status 必须按持久证据对账，不能仅相信内存 Map；具体 DTO 在 P5-A/B 冻结。
+
+仅本地恢复错误：`RECOVERY_AUTH_DENIED`、`RECOVERY_APPROVAL_DENIED`、`RECOVERY_INVALID`、`RECOVERY_BUSY`、`RECOVERY_PLAN_STALE`、`RECOVERY_EVIDENCE_MISMATCH`、`RECOVERY_REVERIFY_REQUIRED`、`RECOVERY_DURABILITY_UNCERTAIN`、`RECOVERY_UNSUPPORTED`。不新增 IM wire codes。
+
+Windows 原生严格保护 unsupported/fail closed，不以 best-effort 或 fake platform 算生产支持。真实保护、no-replace/fsync、跨进程锁/hold 证据须在 WSL/Linux 原生 ext4；挂载 Windows/网络盘不等价。P5-D 必测四类来源及每个持久化阶段 crash/响应丢失、seal replace、跨进程 hold 阻 cleanup、原 source 的备份后新增事实及原 backup/journals 不变。测试不声称完成生产源隔离，也不等于硬件断电耐久性证明。
 
 ## 7. 留存、批次和备份清理
 
@@ -393,12 +483,14 @@ T1：第3.2/3.3节准确编码CHECK、导入wire验证、payload/reservation不�
 
 | gate / owner | 剩余精确产物 | 阻断范围 |
 | --- | --- | --- |
-| DISPATCH / 父会话 | 最终v3_import修正已落实，`P1/P2-FROZEN-1`已生效；阅读修正章节后分派P1单写者 | 无需新增Oracle循环；冻结的是实施契约，不宣称已实现 |
+| DISPATCH / 父会话 | 本次 P5 技术裁决已批准；阅读第 6 节及配套 P5-A/B/C/D 后分派 P5-A 单写者 | 仅继续 NONRELEASE 开发；不宣称 P5 已完成，不触生产隔离/恢复/激活 |
 | P4 / journal单写者+review | 完整version2 journal DDL/manifest、复合FK、payload与receipt JSON bounds，落实accepted与remote_unknown共存 | P4实现前；不阻断P1/P2 |
-| P5 / recovery单写者+review | seal/hold/release marker规范编码、prepare sourceEvidence和持久计划证据、版本化v3/v4备份adapter、WAL/目录durability/进程故障矩阵 | P5实现前；不阻断P1表定义。旧v3无epoch走v3_import，不伪造snapshot旧epoch |
+| P5-A/B / 两包作者交接 | 冻结 sourceCatalog 的精确 capability shape、admin/approval/evidence adapters 参数；最小旧 registry protected-copy capability 签名及失效范围；manifest formatVersion=2 和 registry recordVersion=3 完整字段序；stage intent/结果/status/release DTO、binding 文件命名、terminal proof 和 RPO comparison evidence 的完整编码 | 是具体字段/接口冻结，不是整项 P5 待决。A 先冻结其发布/bridge 产物再实现；B 在实现消费方前冻结与 A 的接口，禁止临场添加 caller path/metadata |
+| P5-A/B / 来源证据交接 | 明确 importedRecordHash 所指旧注册证据的原始字节、sourceEvidenceHash 的取证对象和导入顺序，避免自引用；保留 sourceClosedEvidenceRef 与 evidenceAuthority 的可信绑定 | 已批准 sourceEvidence union/nullable 不变；未明确部分不能用猜测 hash 对象或自报 ref 填空 |
+| P5-C/D / 顺序单写者+review | 第 6 节已定 seal/hold/release/clock 顺序的实际实现、WAL/file/dir durability、四来源真实进程故障矩阵 | 是实施/证据门禁，不再笼统标“P5 技术未批准”；未 PASS 不交 P6 恢复依赖 |
 | P6 / maintenance单写者+review | planner确切indexed查询、candidate fingerprint规范序列、forward-jump与clock anchor交互、soft预算实证 | P6实现前；不重开100+2和10MiB裁决 |
 | H1 / 用户运维 | 真实源隔离、RPO及身份变化复核、实际activation/切换 | 单次操作确认，未确认不执行，不宣称跨机器fencing |
 | H2 / 用户运维 | 启用expiry/purge、逐批实删、备份TTL/窗口、生产容量阈值 | 全部默认OFF；30天UNCONFIRMED；本版无自动大组预算例外 |
 | H3 / 用户运维 | 新TLS端口、DB/config位置、公网/DNS/资源成本、真实平台部署 | 另行确认，不触旧18787，不开真实服务 |
 
-本轮只修改两份契约文档，父会话技术核对无需立即向用户提问。若P1单写者发现字段/CHECK仍欠定义，应列出具体缺口交技术决策，不能自行改历史schema或填入未定义字段。
+本轮只修改两份契约文档，父会话技术核对无需向用户追问技术命名。当前源码中旧 registry 尚无 protected-copy capability，须由 P5-A 在既有 verified/discovered 锁内最小扩展；P1 公共 `assertImSchemaV4(db)` 已执行完整有界校验，但不接收自定义 limits，较低预算的接入由 A/B 在现有内部 validator/budget 边界核实，不修改 P1 公共 API/DDL。P1 initializer/migration 内部取真实 `Date.now()` 并生成身份，不能把 facade clock 当作预选 P1 时间/ID 的后门。v2 clock 的 runRead/runWriteFresh 会提交 anchor，P5 必须遵守第 6.8 节前后顺序。以上都是明确接缝；没有发现需要改动旧 schema 常量或 P1–P4 语义才可开始 A 的冲突。未列完整的 DTO/编码由对应作者先冻结，不自行补造未批准运行接口。
