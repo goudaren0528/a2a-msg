@@ -36,4 +36,6 @@
 
 **IM v2 NONRELEASE P5-C C2 局部增量（2026-09-25，基于 `02e6f2` 与 14 份限定 overlay）：**运行时增加 `releaseRecoveryHold` 与显式迁移后的 status v2，共八个同步恢复方法；旧纯 status 编解码器仍保留。仅 active 且实际 DB、受保护 completion 和真正 hold 匹配时才能导出 release plan 并取得独立审批；发布持久 marker **不删除** hold/备份、不开放 TTL 或清理，`cleanupAllowed` 始终为 false/HOLD。精确重试无逻辑 DB/时钟/epoch/审计变更，仍须执行六处同步；只读 status/B 读取不修复。限定范围的代码、安全、契约忠实度及独立 QA 均 PASS，见 [P5-C C2 release/status v2 验证记录](im-v2-p5-release-validation.md)。这是提交前本地候选证据，非提交后 clean commit 重跑；P5-D 完整故障矩阵、P6 留存清理、P7 真实网络、H1–H3 人工许可和 30 天备份窗口确认仍待完成。无真实用户操作获批，不变更 WP0–WP4 原有顺序、门槛或旧 LAN。前述 C0+C1 段落保留其当时快照。
 
+**IM v2 NONRELEASE P5-D 进程恢复矩阵增量（2026-09-25，基于 `4884b65c` 加六份测试/fixture overlay）：**A6/B13/C10/D5/E3/F4/G2 共 43 个指定场景，39 个软件 SIGKILL 故障和四条独立进程正常退出链，限定范围 test-design 审查与最终 artifact QA 均 PASS；分版本兼容验证和证据保留局限见 [P5-D 进程恢复验证记录](im-v2-p5-process-validation.md)。恢复仅能遵守既定契约或保守拒绝，不保证任意故障恢复；原生证据不是硬件掉电、外部生产恢复或旧写入方全局 fencing 的证明。P5-A–D 本地切片有界验证不等于整项目发布/生产就绪；P6 留存 planner/purge 默认关闭与设计批准、P7 真正双机 LAN/跨网及 H1–H3 人工确认、30 天备份 TTL 确认仍未完成。此前各增量段落保留当时快照；原 WP0–WP4 顺序、门槛及旧 LAN 不变，不授权启用监听、自动接管、物理清理或发布。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。
