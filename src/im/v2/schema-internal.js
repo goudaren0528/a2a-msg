@@ -102,6 +102,12 @@ export function assertImSchemaV4Internal(db, budget) {
   const marker = db.prepare('SELECT version,migration_checksum FROM im_schema LIMIT 2').all();
   if (marker.length!==1 || marker[0].version!==4 || marker[0].migration_checksum!==V4_CHECKSUM) throw mismatch();
   projectCandidateBudget(db,budget,4);
+  return assertInheritedImBusiness(db,budget);
+}
+
+// Version-specific manifest/marker and workload gates must precede this shared check.
+export function assertInheritedImBusiness(db,budget) {
+  const tick=()=>budget.tick();
   const single = (table) => db.prepare(`SELECT * FROM ${table} LIMIT 2`).all();
   for (const table of ['im_settings','im_clock','im_instance_identity','im_center_state']) if (single(table).length!==1) throw mismatch();
   const identity = single('im_instance_identity')[0];
