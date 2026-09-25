@@ -115,7 +115,7 @@ export function sourceTable(catalog, evidenceAuthority, now, createReleaser) {
         recoveryRunId: identity.recoveryRunId, stageHash: identity.stageHash, preparePlanHash: identity.preparePlanHash }, ctx, inspect);
       if (mode === 'held') {
         if (!identity.receipt || identity.receipt.backupId !== entry.backupId) invalid();
-        return withRecoveryHold(entry.registry, { backupId: entry.backupId, holdId: identity.receipt.holdId }, ctx, inspect);
+        return withRecoveryHold(entry.registry, { backupId: entry.backupId, holdId: identity.receipt.holdId }, ctx, inspect, budget);
       }
       if (mode === 'read') {
         withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, () => {});

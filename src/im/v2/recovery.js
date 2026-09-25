@@ -1,16 +1,63 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { types as utilTypes } from 'node:util';
+import { decodeRecoveryConversionRecord, encodeRecoveryConversionRecord, hashRecoveryConversionRecord } from './recovery-conversion-records.js';
 import { validationLimits } from './backup.js';
 import { createRecoveryHoldReleaser } from './backup-registry.js';
 import { adapter, closureBinding, closureProof, recordCopy, sourceTable } from './recovery-source.js';
 export { createClosedV3Source } from './recovery-source.js';
-import { assertStaged, candidateFacts, completed, directory, lock, prepareDatabase, putRecord, readRecord, stageDatabase, standalone, transitionDatabase } from './recovery-candidate.js';
+import { assertStaged, candidateFacts, completed, database, directory, lock, pauseConversionCandidate, prepareDatabase, putRecord, readRecord, stageDatabase, standalone, transitionDatabase } from './recovery-candidate.js';
 import { activeEvidence, readActivation, readSeal, releaseEvidence, sealEvidence, sealReference } from './recovery-terminal.js';
 import { assertRecoveryActivationPlanFresh, assertRecoveryPlanFresh, hashRecoveryRecord, hashRecoveryRequestInput, hashRecoveryRequestRef,
   validateRecoverySealBindings, validateRecoveryActivationPlanBindings,
   validateRecoveryLocator, validateRecoveryNormalizationBindings, validateRecoveryPauseBindings, validateRecoveryPlanBindings } from './recovery-plan.js';
 import { canonical, decode, directoryEntries, exists, fail, hash, invalid, operationBudget,
-  fileHash, privateDirectory, protectedPath, publishBytes, readBytes, ref, resyncPublished, same, sha, shape, time, uuid } from './recovery-records.js';
+  deepFreeze, fileHash, privateDirectory, protectedPath, publishBytes, readBytes, ref, resyncPublished, same, sha, shape, time, uuid } from './recovery-records.js';
+
+const recoveryFacades = new WeakMap(), conversionTargets = new WeakMap(), conversionSessions = new WeakMap();
+const activeConversionScopes = new Set();
+const conversionNow = Date.now;
+function conversionMisuse() {
+  for (const frame of activeConversionScopes) frame.fault ??= fail('RECOVERY_INVALID');
+  throw fail('RECOVERY_INVALID');
+}
+function conversionInput(value, keys) {
+  if (utilTypes.isProxy(value)) conversionMisuse();
+  try { shape(value, keys); } catch { conversionMisuse(); }
+  return Object.freeze(Object.fromEntries(keys.map(key => [key, value[key]])));
+}
+function conversionFailure(error) {
+  // Never consult an accessor, prototype or proxy on a foreign thrown value.
+  if (error && typeof error === 'object' && !utilTypes.isProxy(error)) {
+    const code = Object.getOwnPropertyDescriptor(error, 'code')?.value;
+    if (typeof code === 'string' && /^RECOVERY_[A-Z_]+$/.test(code)) return fail(code);
+    if (code === 'IM_V2_BUDGET_EXCEEDED') return fail('RECOVERY_BUSY');
+  }
+  return fail('RECOVERY_EVIDENCE_MISMATCH');
+}
+export function createRecoveryConversionTarget(recoveryServices, value, ctx) {
+  const genuine = recoveryFacades.get(recoveryServices);
+  if (!genuine || arguments.length !== 3 || activeConversionScopes.size) conversionMisuse();
+  const input = conversionInput(value, ['runId']);
+  if (!uuid(input.runId)) conversionMisuse();
+  // Mint owns the same exclusion/poison span as an entered scope, including
+  // source postchecks, unlocks and the final authorization callback. No target
+  // is registered until that entire span has completed without a latched fault.
+  const frame = { fault: null };
+  activeConversionScopes.add(frame);
+  try { return genuine.mint(input.runId, ctx, frame); }
+  catch (error) {
+    if (frame.fault) throw frame.fault;
+    frame.fault = fail('RECOVERY_EVIDENCE_MISMATCH');
+    frame.fault = conversionFailure(error); throw frame.fault;
+  } finally { activeConversionScopes.delete(frame); }
+}
+export function withRecoveryConversionScope(target, ctx, consume) {
+  const owned = conversionTargets.get(target);
+  if (!owned || arguments.length !== 3 || owned.revoked || owned.active || activeConversionScopes.size || typeof consume !== 'function' ||
+      utilTypes.isProxy(consume) || utilTypes.isAsyncFunction(consume) || utilTypes.isGeneratorFunction(consume)) conversionMisuse();
+  return owned.enter(ctx, consume);
+}
 
 function inputCopy(value, keys) {
   try { shape(value, keys); return Object.freeze(Object.fromEntries(keys.map(k => [k, value[k]]))); }
@@ -103,8 +150,8 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
     if (hold.recoveryRunId !== locator.runId || hold.stageHash !== locator.stageHash || hold.backupId !== locator.stage.sourceEvidence?.backupId) invalid();
     return hold;
   }
-  function records(locator, budget) {
-    const dir = runPath(locator.runId), stage = readRecord(join(dir, 'stage.json'), 'stage', budget);
+  function records(locator, budget, retainedStage = null) {
+    const dir = runPath(locator.runId), stage = readRecord(join(dir, 'stage.json'), 'stage', budget) ?? retainedStage;
     if (!stage) throw fail('RECOVERY_RETRY_STAGE');
     if (hashRecoveryRecord('stage', stage) !== locator.stageHash || JSON.stringify(stage) !== JSON.stringify(locator.stage)) invalid();
     const closure = readRecord(join(dir, 'source-closed.json'), 'closureProof', budget);
@@ -136,8 +183,7 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
     });
     return { ...chain, staged, sourceClosedEvidence: closure, plan, planHash };
   }
-  function validated(locator, budget) {
-    const data = records(locator, budget);
+  function validated(locator, budget, data = records(locator, budget)) {
     const actual = candidateFacts(join(runPath(locator.runId), 'candidate.sqlite'), data.stage, budget);
     assertStaged(data.stage, data.staged, actual, data.base);
     if (data.stage.candidateKind === 'snapshot_recovery' && !actual.run &&
@@ -205,27 +251,314 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
     if (data.actual.run && held !== null && held.binding?.preparePlanHash !== data.planHash) invalid();
     return data;
   }
-  function readScope(locator, ctx, budget, consume, allowCompletionRepair = false, classify = error => { throw error; }) {
+  const conversionFiles = Object.freeze({ owner: 'conversion-owner.json', pauseIntent: 'conversion-pause-intent.json', paused: 'conversion-paused.json' });
+  function conversionRecords(locator, budget) {
+    const result = {};
+    for (const [kind, name] of Object.entries(conversionFiles)) {
+      const path = join(runPath(locator.runId), name);
+      let record = null;
+      if (exists(path)) {
+        const bytes = readBytes(path, budget);
+        try { record = decodeRecoveryConversionRecord(kind, bytes); } catch { invalid(); }
+      }
+      result[kind] = record === null ? null : { record, recordHash: hashRecoveryConversionRecord(kind, record) };
+    }
+    if ((!result.owner && (result.pauseIntent || result.paused)) || (!result.pauseIntent && result.paused)) invalid();
+    return result;
+  }
+  function conversionInventory(locator, budget, missingStage = false) {
+    const stage = locator.stage, required = new Set(['coordination.sqlite', 'candidate.sqlite', 'stage.json', 'staged.json']);
+    if (stage.sourceEvidence) for (const name of ['source-closed.json', 'source-verified.sqlite', 'copy-intent.json', 'base.json', 'normalization-intent.json', 'normalized.json']) required.add(name);
+    if (stage.sourceEvidence?.kind === 'registered-backup') required.add('hold.json');
+    if (stage.candidateKind === 'v3_import') for (const name of ['pause-intent.json', 'paused.json']) required.add(name);
+    const allowed = new Set([...required, ...Object.values(conversionFiles)]);
+    if (missingStage) required.delete('stage.json');
+    directoryEntries(runPath(locator.runId), budget, name => {
+      if (!allowed.has(name)) throw fail(name.endsWith('.pending') ? 'RECOVERY_INDETERMINATE' : 'RECOVERY_EVIDENCE_MISMATCH');
+      protectedPath(join(runPath(locator.runId), name)); required.delete(name);
+    });
+    if (required.size) invalid();
+  }
+  function conversionWorkspaceInventory(budget) {
+    const ids = new Set();
+    directoryEntries(requests, budget, name => {
+      if (name === 'coordination.sqlite') { protectedPath(join(requests, name)); return; }
+      if (!/^[0-9a-f]{64}\.json$/.test(name)) throw fail('RECOVERY_INDETERMINATE');
+      const item = readRecord(join(requests, name), 'requestLocator', budget);
+      if (name !== `${hashRecoveryRequestRef(item.requestRef)}.json` || ids.has(item.runId)) invalid();
+      ids.add(item.runId);
+    });
+    directoryEntries(runs, budget, name => {
+      if (!uuid(name) || !ids.has(name)) throw fail('RECOVERY_INDETERMINATE');
+      privateDirectory(runPath(name));
+    });
+  }
+  function conversionBinding(data, held) {
+    const { stage, staged, actual } = data;
+    return { version: 1, runId: stage.runId, stageHash: hashRecoveryRecord('stage', stage),
+      stagedHash: hashRecoveryRecord('staged', staged), candidateReference: stage.candidateReference,
+      instanceId: actual.identity.instance_id, instanceCreatedAt: actual.identity.created_at,
+      centerEpoch: actual.center.center_epoch, candidateKind: stage.candidateKind, preparationRef: stage.preparationRef,
+      sourceEvidenceHash: stage.sourceEvidence === null ? null : hashRecoveryRecord(
+        stage.sourceEvidence.kind === 'registered-backup' ? 'registeredSourceEvidence' : 'closedSourceEvidence', stage.sourceEvidence),
+      holdId: held?.hold.holdId ?? null };
+  }
+  function conversionValidated(locator, held, budget) {
+    conversionInventory(locator, budget);
+    const chain = conversionRecords(locator, budget), owner = chain.owner?.record;
+    const data = owner ? records(locator, budget) : validated(locator, budget);
+    const path = join(runPath(locator.runId), 'candidate.sqlite');
+    if (data.stage.sourceEvidence && fileHash(join(runPath(locator.runId), 'source-verified.sqlite'), budget) !==
+        (data.stage.sourceEvidence.fileHash ?? data.stage.sourceEvidence.closedSourceFileHash)) invalid();
+    if (owner) data.actual = candidateFacts(path, data.stage, budget);
+    assertStaged(data.stage, data.staged, data.actual, data.base);
+    if (data.plan || data.actual.run || held?.binding || held?.release) invalid();
+    if (data.stage.candidateKind !== 'snapshot_recovery' &&
+        (data.actual.center.center_epoch !== data.staged.initialEpoch || data.actual.center.recovery_run_id !== null ||
+         data.actual.center.status !== 'prepared' || data.actual.writeMode !== 'paused')) invalid();
+    const binding = conversionBinding(data, held);
+    const currentFileHash = closedHash(data, budget), currentWriteMode = data.actual.writeMode;
+    let phase = 'UNCLAIMED';
+    if (owner) {
+      if (Object.keys(binding).some(key => binding[key] !== owner[key]) ||
+          owner.claimedAt < Math.max(data.staged.stagedAt, binding.instanceCreatedAt,
+            data.stage.sourceEvidence?.completedAt ?? data.stage.sourceEvidence?.observedAt ?? 0, held?.hold.createdAt ?? 0)) invalid();
+      if (data.stage.candidateKind !== 'snapshot_recovery' && owner.intakeWriteMode !== 'paused') invalid();
+      phase = 'CLAIMED';
+      const intent = chain.pauseIntent?.record, paused = chain.paused?.record;
+      if (intent) {
+        if (intent.ownerHash !== chain.owner.recordHash || intent.inputFileHash !== owner.intakeFileHash ||
+            intent.originalWriteMode !== owner.intakeWriteMode || intent.targetWriteMode !== 'paused' || intent.createdAt < owner.claimedAt) invalid();
+        phase = 'PAUSE_INTENT';
+      }
+      if (paused) {
+        if (paused.ownerHash !== chain.owner.recordHash || paused.pauseIntentHash !== chain.pauseIntent.recordHash ||
+            paused.inputFileHash !== owner.intakeFileHash || paused.pausedAt < intent.createdAt ||
+            paused.changed !== (owner.intakeWriteMode === 'enabled') ||
+            (!paused.changed && paused.pausedFileHash !== owner.intakeFileHash) ||
+            (paused.changed && paused.pausedFileHash === owner.intakeFileHash)) invalid();
+        phase = 'PAUSED';
+      }
+      if (currentFileHash !== (paused?.pausedFileHash ?? owner.intakeFileHash) ||
+          currentWriteMode !== (paused ? 'paused' : owner.intakeWriteMode)) throw fail('RECOVERY_INDETERMINATE');
+    }
+    // Account for the actual complete metadata inventory, including objects the
+    // historical schema checker deliberately filters out of its manifest query.
+    const clockFloor = database(path, budget, false, db => {
+      for (const row of db.prepare('SELECT name FROM sqlite_schema LIMIT ?').iterate(budget.limits.maxMetadataEntries + 1)) {
+        budget.entry(); if (typeof row.name !== 'string') invalid();
+      }
+      budget.tick();
+      return db.prepare('SELECT last_observed_at FROM im_clock WHERE singleton=1').get().last_observed_at;
+    });
+    if (owner && owner.claimedAt < clockFloor) invalid();
+    return { data, chain, binding, phase, currentFileHash, currentWriteMode, clockFloor };
+  }
+  function conversionGuard(locator, held, budget) {
+    let found = false;
+    directoryEntries(runPath(locator.runId), budget, name => {
+      if (Object.values(conversionFiles).includes(name)) found = true;
+      else if (name.startsWith('conversion-')) invalid();
+      else if (name.endsWith('.pending')) throw fail('RECOVERY_INDETERMINATE');
+    });
+    if (!found) return;
+    const current = conversionValidated(locator, held, budget);
+    if (!current.chain.owner) invalid();
+    throw fail('RECOVERY_CONVERSION_PENDING');
+  }
+  function conversionControl(runId, ctx, budget, consume) {
+    admin(ctx); budget.tick();
+    const locator = byRun(runId, budget), receipt = holdReceipt(locator, budget);
+    const registered = locator.stage.sourceEvidence?.kind === 'registered-backup';
+    if (registered ? !receipt : receipt !== null) invalid();
+    return sources.withSource(locator.stage, ctx, budget, registered ? 'held' : 'read',
+      { sourceEvidence: locator.stage.sourceEvidence, receipt }, proof => {
+        bindingCheck(locator, proof, ctx);
+        return workspace(false, () => {
+          conversionWorkspaceInventory(budget);
+          const current = byRun(runId, budget);
+          if (JSON.stringify(current) !== JSON.stringify(locator)) invalid();
+          return lock(runPath(runId), false, () => {
+            if (JSON.stringify(holdReceipt(current, budget)) !== JSON.stringify(receipt)) invalid();
+            const held = registered ? proof : null;
+            return consume(current, held);
+          });
+        });
+      });
+  }
+  function mintConversion(runId, ctx, frame) {
+    const budget = operationBudget(bounds); budget.tick();
+    let binding, candidateIdentity;
+    conversionControl(runId, ctx, budget, (locator, held) => {
+      binding = conversionValidated(locator, held, budget).binding;
+      candidateIdentity = standalone(join(runPath(runId), 'candidate.sqlite'), budget);
+      admin(ctx); budget.tick();
+    });
+    if (frame.fault) throw frame.fault;
+    admin(ctx); budget.tick();
+    if (frame.fault) throw frame.fault;
+    const owned = { revoked: false, active: null, binding, enter };
+    const target = Object.freeze({ invalidate(...args) {
+      if (this !== target || args.length !== 0) {
+        if (owned.active) owned.active.fault ??= fail('RECOVERY_INVALID');
+        conversionMisuse();
+      }
+      owned.revoked = true;
+      if (owned.active) owned.active.fault ??= fail('RECOVERY_INVALID');
+    } });
+    conversionTargets.set(target, owned);
+    function enter(context, consume) {
+      const frame = { live: false, busy: false, fault: null, claimed: false, issued: new WeakSet() };
+      const budget = operationBudget(bounds); budget.tick();
+      owned.active = frame; activeConversionScopes.add(frame);
+      const poison = error => {
+        if (frame.fault) return frame.fault;
+        frame.fault = fail('RECOVERY_EVIDENCE_MISMATCH');
+        frame.fault = conversionFailure(error); return frame.fault;
+      };
+      const check = () => {
+        if (owned.revoked || frame.fault) throw frame.fault ?? fail('RECOVERY_INVALID');
+        budget.tick();
+      };
+      let session, result;
+      try {
+        result = conversionControl(runId, context, budget, (locator, held) => {
+          const identity = standalone(join(runPath(runId), 'candidate.sqlite'), budget);
+          if (!same(identity, candidateIdentity)) invalid();
+          const current = () => {
+            check(); reauthorize(locator, context); check();
+            const facts = conversionValidated(locator, held, budget);
+            if (Object.keys(binding).some(key => facts.binding[key] !== binding[key]) ||
+                !same(identity, protectedPath(join(runPath(runId), 'candidate.sqlite')))) invalid();
+            return facts;
+          };
+          current();
+          const write = (kind, record) => {
+            check(); reauthorize(locator, context); check();
+            const bytes = Buffer.from(encodeRecoveryConversionRecord(kind, record));
+            publishBytes(join(runPath(runId), conversionFiles[kind]), bytes, budget);
+            check();
+          };
+          const timestamp = floor => { const value = conversionNow(); if (!time(value) || value < floor) invalid(); return value; };
+          const invoke = (receiver, args, operation) => {
+            if (receiver !== session || conversionSessions.get(receiver) !== frame || !frame.live || frame.busy || args.length !== 1) {
+              frame.fault ??= fail('RECOVERY_INVALID'); conversionMisuse();
+            }
+            try {
+              conversionInput(args[0], []); check(); frame.busy = true;
+              const value = deepFreeze(operation(current())); check();
+              frame.issued.add(value); return value;
+            } catch (error) { throw poison(error); }
+            finally { frame.busy = false; }
+          };
+          session = Object.freeze({
+            inspectIntake(...args) { return invoke(this, args, value => {
+              const { binding: b, chain, phase, currentFileHash, currentWriteMode } = value;
+              return { ...b, executionPolicyHash: locator.stage.policyHash, phase,
+                intakeFileHash: chain.owner?.record.intakeFileHash ?? currentFileHash,
+                intakeWriteMode: chain.owner?.record.intakeWriteMode ?? currentWriteMode,
+                currentFileHash, currentWriteMode, ownerHash: chain.owner?.recordHash ?? null,
+                pauseIntentHash: chain.pauseIntent?.recordHash ?? null, pausedHash: chain.paused?.recordHash ?? null };
+            }); },
+            readConversionRecords(...args) { return invoke(this, args, value => ({ version: 1, ...value.chain })); },
+            claimConversion(...args) { return invoke(this, args, value => {
+              const replayed = value.chain.owner !== null;
+              const record = value.chain.owner?.record ?? { ...value.binding,
+                intakeFileHash: value.currentFileHash, intakeWriteMode: value.currentWriteMode,
+                claimedAt: timestamp(Math.max(value.clockFloor, value.data.staged.stagedAt, value.binding.instanceCreatedAt,
+                  locator.stage.sourceEvidence?.completedAt ?? locator.stage.sourceEvidence?.observedAt ?? 0, held?.hold.createdAt ?? 0)) };
+              write('owner', record);
+              const verified = current(); frame.claimed = true;
+              return { version: 1, owner: verified.chain.owner, replayed };
+            }); },
+            ensurePaused(...args) { return invoke(this, args, value => {
+              if (!frame.claimed) throw fail('RECOVERY_INVALID');
+              const owner = value.chain.owner.record, replayed = value.chain.paused !== null;
+              write('owner', owner);
+              const intent = value.chain.pauseIntent?.record ?? { version: 1, ownerHash: value.chain.owner.recordHash,
+                inputFileHash: owner.intakeFileHash, originalWriteMode: owner.intakeWriteMode,
+                targetWriteMode: 'paused', createdAt: timestamp(owner.claimedAt) };
+              write('pauseIntent', intent); current();
+              if (!replayed && owner.intakeWriteMode === 'enabled') {
+                pauseConversionCandidate({ path: join(runPath(runId), 'candidate.sqlite'), ...value.data, owner, budget,
+                  authorize: () => { check(); reauthorize(locator, context); check(); } });
+              }
+              check(); reauthorize(locator, context); check();
+              const pausedFileHash = closedHash(value.data, budget, true);
+              const actual = candidateFacts(join(runPath(runId), 'candidate.sqlite'), locator.stage, budget);
+              assertStaged(locator.stage, value.data.staged, actual, value.data.base);
+              if (actual.writeMode !== 'paused' || actual.run || actual.center.center_epoch !== owner.centerEpoch ||
+                  (owner.intakeWriteMode === 'paused' && pausedFileHash !== owner.intakeFileHash)) invalid();
+              const paused = value.chain.paused?.record ?? { version: 1, ownerHash: value.chain.owner.recordHash,
+                pauseIntentHash: hashRecoveryConversionRecord('pauseIntent', intent), inputFileHash: owner.intakeFileHash,
+                pausedFileHash, changed: owner.intakeWriteMode === 'enabled', pausedAt: timestamp(intent.createdAt) };
+              if (paused.pausedFileHash !== pausedFileHash) invalid();
+              write('paused', paused);
+              return { version: 1, ...current().chain, replayed };
+            }); }
+          });
+          conversionSessions.set(session, frame); frame.live = true;
+          try {
+            let selected;
+            try { selected = consume(session); }
+            catch { throw poison(fail('RECOVERY_CALLBACK_FAILED')); }
+            if (!frame.issued.has(selected)) {
+              poison(fail('RECOVERY_INVALID'));
+              // Observe native promises and unexpected thenables, but never pass
+              // a proxy to reflection. No consumer result is returned directly.
+              if (selected && (typeof selected === 'object' || typeof selected === 'function') && !utilTypes.isProxy(selected)) {
+                try { if (typeof selected.then === 'function') void Promise.resolve(selected).catch(() => {}); } catch { /* fixed refusal */ }
+              }
+              throw poison(fail('RECOVERY_INVALID'));
+            }
+            check(); return selected;
+          } finally {
+            frame.live = false;
+            // Authority/source callbacks here see an expired session and poison
+            // the still-active outer frame if they attempt escaped operations.
+            check(); reauthorize(locator, context); current(); check();
+          }
+        });
+        check(); admin(context); check(); return result;
+      } catch (error) { throw poison(error); }
+      finally { frame.live = false; owned.active = null; activeConversionScopes.delete(frame); }
+    }
+    return target;
+  }
+  function readScope(locator, ctx, budget, consume, allowCompletionRepair = false, classify = error => { throw error; }, retryStage = false) {
     const receipt = holdReceipt(locator, budget);
     const registered = locator.stage.sourceEvidence?.kind === 'registered-backup';
     if (registered ? !receipt : receipt !== null) throw fail('RECOVERY_INDETERMINATE');
     return sources.withSource(locator.stage, ctx, budget, registered ? 'held' : 'read', { sourceEvidence: locator.stage.sourceEvidence, receipt }, proof => {
       const held = registered ? proof : null;
       bindingCheck(locator, proof, ctx);
-      try { return candidateScope(locator, receipt, held, budget, consume, allowCompletionRepair); }
+      try { return candidateScope(locator, receipt, held, budget, consume, allowCompletionRepair, retryStage); }
       catch (error) { return classify(error); }
     });
   }
-  function candidateScope(locator, receipt, held, budget, consume, allowCompletionRepair = false) {
+  function candidateScope(locator, receipt, held, budget, consume, allowCompletionRepair = false, retryStage = false) {
     return workspace(false, () => {
       const current = byRun(locator.runId, budget);
       if (JSON.stringify(current) !== JSON.stringify(locator)) invalid();
-      if (!exists(join(runPath(locator.runId), 'stage.json'))) throw fail('RECOVERY_RETRY_STAGE');
+      // A durable locator can precede run-directory creation. lstat-based exists
+      // distinguishes absence from a dangling link; existing paths still pass
+      // through the candidate lock's strict directory checks and owner guard.
+      privateDirectory(runs);
+      if (!exists(runPath(locator.runId))) throw fail('RECOVERY_RETRY_STAGE');
       return lock(runPath(locator.runId), false, () => {
         if (JSON.stringify(holdReceipt(current, budget)) !== JSON.stringify(receipt)) invalid();
+        conversionGuard(current, held, budget);
+        const missingStage = !exists(join(runPath(locator.runId), 'stage.json'));
+        if (missingStage && !retryStage) throw fail('RECOVERY_RETRY_STAGE');
         if (!exists(join(runPath(locator.runId), 'candidate.sqlite'))) throw fail('RECOVERY_INDETERMINATE');
         const identity = protectedPath(join(runPath(locator.runId), 'candidate.sqlite'));
-        const data = observedBinding(validated(current, budget), held);
+        // Only the completed stage retry can inspect a missing stage using the
+        // authenticated locator. Guard first: claimed, orphan or pending evidence
+        // never reaches this fallback, and inspection itself publishes nothing.
+        if (missingStage) conversionInventory(current, budget, true);
+        const data = observedBinding(validated(current, budget,
+          records(current, budget, missingStage ? current.stage : null)), held);
+        if (missingStage && (data.plan || data.actual.run || held?.binding || held?.release)) invalid();
         if (data.actual.run?.status === 'active') {
           const evidence = activeEvidence(root, data, held, budget);
           // Visible matching evidence is an observation, not proof of a prior
@@ -246,11 +579,27 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
     // A prior closed-source observation must survive facade/clock replacement.
     const previous = exists(requests) ? readRecord(locatorPath(input.requestRef), 'requestLocator', budget) : null;
     if (previous && (previous.requestRef !== input.requestRef || previous.requestHash !== requestHash)) throw fail('RECOVERY_INVALID');
+    if (previous && exists(join(runPath(previous.runId), 'staged.json'))) {
+      // Completed retries acquire genuine held source before workspace/candidate.
+      // The owner guard precedes every historical evidence resync/publication.
+      return readScope(previous, ctx, budget, (data, held) => {
+        persistEvidence(previous, data, held, budget);
+        const staged = stageDatabase({ runRoot: runPath(previous.runId), stage: previous.stage,
+          proof: held ?? {}, policy, budget, now });
+        return recordCopy('stageResult', { runId: previous.runId, candidateReference: previous.stage.candidateReference,
+          status: 'staged', stageHash: previous.stageHash, preparationRef: staged.preparationRef, instanceId: staged.instanceId,
+          instanceCreatedAt: staged.instanceCreatedAt, initialEpoch: staged.initialEpoch, importEpoch: staged.importEpoch,
+          holdId: held?.hold.holdId ?? null });
+      }, true, undefined, true);
+    }
     return sources.withSource(input, ctx, budget, 'stage', { sourceEvidence: previous?.stage.sourceEvidence }, proof => workspace(true, () => {
       let locator = readRecord(locatorPath(input.requestRef), 'requestLocator', budget);
       if (locator) {
         if (locator.requestRef !== input.requestRef || locator.requestHash !== requestHash) throw fail('RECOVERY_INVALID');
         bindingCheck(locator, proof, ctx);
+        // A competing stage completed after our initial observation. Restart
+        // through the held completed-retry route; never establish/resync here.
+        if (exists(join(runPath(locator.runId), 'staged.json'))) throw fail('RECOVERY_BUSY');
       } else {
         // Pending locators have unknown irreversible identities. Do not bypass them.
         const boundRuns = new Set();
@@ -274,6 +623,16 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
         validateRecoveryLocator(locator, { binding: proof.sourceBinding });
       }
       // Irreversible locator first, then run/proof/stage, then hold, then copy.
+      // A conversion owner requires completed staged evidence. Stray evidence on
+      // an incomplete retry must refuse before any publication or hold creation.
+      if (exists(runPath(locator.runId))) {
+        const rejectStray = () => directoryEntries(runPath(locator.runId), budget, name => {
+          if (name.startsWith('conversion-')) invalid();
+          if (name.endsWith('.pending')) throw fail('RECOVERY_INDETERMINATE');
+        });
+        if (exists(join(runPath(locator.runId), 'coordination.sqlite'))) lock(runPath(locator.runId), false, rejectStray);
+        else rejectStray();
+      }
       putRecord(locatorPath(input.requestRef), 'requestLocator', locator, budget);
       const dir = directory(runPath(locator.runId));
       if (locator.sourceClosedEvidence) putRecord(join(dir, 'source-closed.json'), 'closureProof', locator.sourceClosedEvidence, budget);
@@ -332,6 +691,7 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
       bindingCheck(locator, proof, ctx);
       return workspace(false, () => lock(runPath(input.runId), false, () => {
         const current = byRun(input.runId, budget); if (JSON.stringify(current) !== JSON.stringify(locator)) invalid();
+        conversionGuard(current, proof.hold ? proof : null, budget);
         const data = observedBinding(validated(current, budget), proof.hold ? proof : null);
         if (data.planHash !== input.preparePlanHash) invalid();
         const done = completed(data.plan, data.planHash, data.actual, input.approvalRef);
@@ -529,9 +889,12 @@ export function createImV2RecoveryServices({ root, sourceCatalog, authority, app
     const input = runInput(value, ctx, ['runId', 'holdId', 'releasePlanHash', 'approvalRef']);
     if (!uuid(input.holdId)) throw fail('RECOVERY_INVALID');
     const budget = operationBudget(bounds), locator = byRun(input.runId, budget);
+    readScope(locator, ctx, budget, () => undefined, true);
     sources.release(locator.stage, input, ctx);
     return Object.freeze({ runId: input.runId, holdId: input.holdId, state: 'released', releasePlanHash: input.releasePlanHash });
   }); }
-  return Object.freeze({ stageCandidate, previewRecovery, prepareRecovery, getRecoveryStatus,
+  const facade = Object.freeze({ stageCandidate, previewRecovery, prepareRecovery, getRecoveryStatus,
     verifyRecovery, previewActivation, activateRecovery, releaseRecoveryHold });
+  recoveryFacades.set(facade, Object.freeze({ mint: mintConversion }));
+  return facade;
 }

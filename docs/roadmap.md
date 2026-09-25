@@ -42,4 +42,6 @@
 
 **IM v2 NONRELEASE P6-B0.1 schema 5 存储校验增量（2026-09-26，基于 `65d0727` 加 14 份限定 overlay）：**精确 schema 5 DDL/manifest（58 个对象、checksum `80eba5e6ce61261d31ec495216c3b6eb8c7a8f0c87edcbb1440372353f495435`）、完整 4/5 校验分派、全局跨 epoch 连续时间锚历史与可选当前 tip/head、类型化转换历史和五种纯规范记录编解码完成本地限定范围 QA；详见 [B0.1 验证记录](im-v2-p6-schema-v5-validation.md)。继承校验器仅机械抽取，不放宽 v4 接受条件；冻结的 v4 checksum、公开导出、fresh4/import4 与历史 goldens 不变。此处是**提交前候选证据**，不宣称提交后 clean commit 重跑，也不将 B0.1 误写成整个 P6 完成：纯记录与一致性校验不构成授权或维护会话；尚无转换器、私有 ownership bridge、时间权威、写执行器或 v5 运行时备份恢复兼容。B0.2/B0.3、runtime→backup→registry→versioned recovery→facade 的兼容与 v5 roundtrip、实际启用/删除、P7 和 H1–H3 均待独立门禁；v4 预览仍不可执行，备份 TTL 未确认，备份预览仅配置诊断。原 WP0–WP4 顺序、旧 LAN、默认关闭策略及运营门槛不变。
 
+**IM v2 NONRELEASE P6-B0.2a 转换所有权桥增量（2026-09-26，基于 `7c98249` 加限定源码/测试/契约 overlay）：**真实恢复 facade 内私有转换目标、规范 owner/intent/paused 证据、候选专用暂停和旧八方法的认领分支排除完成限定范围独立 QA；源码/测试与两份既有契约按冻结哈希验收，详见 [B0.2a 验证记录](im-v2-p6-conversion-bridge-validation.md)。这不是提交后 clean commit 重跑、schema 5 转换、时间权威或运行时启用。B0.2b 实际转换器、B0.3 时间权威、runtime→backup→registry→新版恢复家族→facade 兼容及 v5 往返、P6 写执行器、P7、H1–H3 与备份 TTL 确认仍待独立门禁；WP0–WP4 顺序、旧 LAN、默认关闭及运营批准不变，不授权真实恢复/删除/监听/发布。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。

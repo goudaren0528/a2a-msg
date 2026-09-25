@@ -1,7 +1,9 @@
 # P6 schema 5 and maintenance time contract (NONRELEASE)
 
-**Oracle-approved P6-B0 specification; B0 unimplemented; no runtime acceptance.**
-Reconciliation HEAD: `65d0727cde532f6909a5166c5028b3998e54d6a7`.
+**Oracle-approved P6-B0 specification; no runtime acceptance granted here.**
+Original reconciliation HEAD: `65d0727cde532f6909a5166c5028b3998e54d6a7`.
+B0.2a document-only scope reconciliation HEAD:
+`7c982499920354706ffa973aa74cfe478222c34a`.
 This records the additive center-schema decision and its compatibility gates.
 It authorizes no production migration, enablement or deletion.
 
@@ -10,8 +12,9 @@ Read with the [maintenance handoff](im-v2-maintenance-contract.md),
 [v4 schema exports](../src/im/v2/schema.js),
 [v4 DDL/validator](../src/im/v2/schema-internal.js),
 [config](../src/im/v2/config.js),
-[recovery storage contract](im-v2-recovery-storage-contract.md), and
-[recovery activation contract](im-v2-recovery-activation-contract.md).
+[recovery storage contract](im-v2-recovery-storage-contract.md),
+[recovery activation contract](im-v2-recovery-activation-contract.md), and the
+[B0.2a conversion ownership bridge contract](im-v2-recovery-conversion-contract.md).
 The completed [P6-A plan/codec contract](im-v2-maintenance-plan-contract.md) is
 design-approved with the Oracle amendments: offline borrowed-connection v4
 preview, pure codec, and configuration-only backup diagnostic. Implementation
@@ -31,10 +34,14 @@ later compatibility gate. Neither specification grants execution authority.
   `src/im/v2/schema-dispatch.js` and `src/im/v2/maintenance-v5-records.js`, plus
   narrow mechanical extraction of inherited business validation into a shared
   internal helper. No converter or time-service exports belong to B0.1.
-- **B0.2:** candidate converter only after a genuine private recovery ownership
-  bridge. **B0.3:** time authority only after a separately branded owned-v5 target
-  seam. Their interfaces below are specifications, not B0.1 implementation scope.
-  No implementation files are created by this document handoff.
+- **B0.2a:** private recovery ownership bridge, canonical conversion owner/pause
+  records and old-v4-facade exclusion only. **B0.2b:** candidate converter only
+  after that bridge independently passes. **B0.3:** time authority only after a
+  separately branded owned-v5 target seam. The bridge contract freezes behavior
+  and records and lists the finite session DTO/signature choices still requiring
+  parent freeze before source work. No migration engine, converter exposure,
+  time writer or v5 runtime/service support belongs to B0.2a. Interfaces below
+  remain specifications; no implementation files are created by this handoff.
 - The center dispatcher accepts **only fully validated** `(4,V4_CHECKSUM)` or
   `(5,V5_CHECKSUM)` pairs. `V5_CHECKSUM` is a symbolic name: generate it from the
   reviewed exact new manifest and freeze golden bytes; no literal hash has yet
@@ -224,8 +231,9 @@ replace only the marker definition, insert the transition proof, install marker
 5/checksum, then perform full v5 validation before commit. Preserve business
 rows, identity, epoch, policy and paused write mode. Create **no anchor or head**.
 A crash leaves a complete v4 or complete v5, never a partial committed upgrade.
-The API/record/retry contract below is frozen for B0.2; its private ownership
-bridge and implementation evidence remain prerequisites.
+The converter API/record/retry contract below belongs to future B0.2b; the
+separate B0.2a private ownership bridge and independent acceptance remain
+prerequisites. B0.2a leaves the candidate at schema 4.
 
 | Requested route | Approved behavior |
 | --- | --- |
@@ -241,11 +249,18 @@ must bind pre/post phases; it cannot relabel an old file hash or seal as v5.
 Closed-v3 and registered-v3 bridge behavior stays on its existing route unless
 an explicit target-5 workflow subsequently converts the owned v4 candidate.
 
-### 3.1 B0.2 private bridge and converter (not B0.1)
+### 3.1 B0.2a bridge prerequisite and future B0.2b converter
 
 Only genuine new-workflow source/workspace/candidate ownership may privately
-mint the converter's branded target. Verify paused mode; no **new workflow**
-prepare, seal or activation; actual closed-file prehash, identity, single-link
+mint the converter's branded target. The
+[bridge contract](im-v2-recovery-conversion-contract.md) governs factory-owned
+WeakMap provenance, internal mint/scope entrypoints, bounded inventory,
+owner/intent/paused records, whole-scope locks/budget/poison and permanent old-v4
+exclusion. Current path-taking recovery-candidate helpers are not opaque
+authority. Target construction does not claim or pause. Bridge intake may accept
+an enabled historical-active snapshot; its fixed explicit pause must establish
+paused evidence before future plan publication. Verify paused mode for conversion;
+no **new workflow** prepare, seal or activation; actual closed-file prehash, identity, single-link
 file (`nlink=1`), stage, source and preparation bindings. A snapshot's inherited
 old active recovery row is not the current workflow being active. No arbitrary
 path, DB connection or caller stage object is an ownership authorizer.
@@ -260,7 +275,13 @@ convertCandidate({transitionId,planHash,approvalRef},ctx)
 
 The target's protected publication owns the plan, with an internally generated
 transition ID generated once for that plan. No caller replacement plan is
-accepted. Require synchronous literal-true admin authority before disclosure,
+accepted. Future `previewConversion` is not read-only: it may claim, pause and
+publish immutable `conversion-plan.json`; exact retry retains the original plan
+and transition ID, with no automatic renewal of an expired branch. Its prehash
+is the actual closed paused candidate; old stage evidence remains intake history.
+`publishConversionPlan`, `applyApprovedConversion` and `finishConversion` are
+future B0.2b integration, not operational B0.2a placeholders. Require synchronous
+literal-true admin authority before disclosure,
 literal-true independent approval and distinct trusted executor/approver before
 conversion and at final transaction checks. Verify the exact approved plan and
 locked actual bindings. One owned transaction creates tables/index, replaces
@@ -277,6 +298,11 @@ evidence only; conflicting proof/publication is never overwritten. External
 Retain the local `MAINTENANCE_*` error vocabulary in §4.3 and add fixed
 `MAINTENANCE_CONVERSION_CONFLICT` and `MAINTENANCE_DURABILITY_UNCERTAIN`.
 No provider/native exception text, SQL, paths or records appear in errors.
+The bridge contract §8 records the approved resolver/same-approver authorization,
+privately owned wall/monotonic checks and uncertain-COMMIT reconciliation for
+future B0.2b. It preserves `im_clock`, issues no maintenance anchor and does not
+reuse the ordinary v4 guard after marker 5. These future engine requirements do
+not enlarge B0.2a's bridge-only write scope.
 
 ## 4. Time administration and proposal encoding
 
@@ -571,14 +597,15 @@ merely because its isolated migration transaction passes.
 | --- | --- |
 | B0.1 ready specification | Implement only §2 storage/validators and §4.2 pure codecs; strict types, table/record order, domains, contiguous chain, head semantics, transition reconstruction, APIs and budgets are frozen |
 | B0.1 generated artifacts | Expand constraints into exact SQL/marker/index bytes, generate DDL full-byte hash and V5 manifest checksum and independently review goldens; no literal V5 constant is claimed here; retain 1–4 bytes/goldens |
-| B0.2 prerequisite | Genuine private new-workflow recovery ownership bridge and protected plan/completion publication implementation; §3.1 converter API, typed plan/proof/complete records and retry semantics are fixed, not permission to implement in B0.1 |
+| B0.2a bridge prerequisite | Genuine factory-owned private target/scope, canonical owner/pause records and all-eight-method old-v4 exclusion only; freeze the bridge contract §10 DTO/signature choices, implement and independently verify before B0.2b; no v5 engine or converter exposure |
+| B0.2b future converter | Only after B0.2a independently passes: fixed approved 4-to-5 engine and protected plan/completion integration; §3.1 converter API and B0.1 plan/proof/complete formats remain fixed; no runtime rollout permission |
 | B0.3 prerequisite | Separately branded owned-v5 private target seam and time implementation evidence; §4–5 fix factory/operations/status, native clock units, sample ordering, nonce registration, chain and replay/session rules; test composition only until rollout |
 | New versioned P5 field tables | Still unfrozen: manifest-3 exact tool tag/fields; registry-4/sourceEvidence-2; source/target/conversion bindings across the coherent stage/prepare/verification/seal-2/activation/completion/status family; exact version tags, phase digests and 3–5 allowlists. Head-only reset behavior is fixed; integration evidence remains |
 | Hold/release verification | Prove retained formats bind the correct new-version records through real version-aware verification; otherwise freeze an explicit new variant before use |
 | B1 writer handoff | Future persisted result/status, candidate projection/completion audit and execution approval/rejection semantics remain separate freezes; B0 time approval is not deletion approval |
 
-Development gate order is **P6-A -> B0.1 -> B0.2 ownership bridge/converter ->
-B0.3 owned-v5 seam/time authority -> B1 execution -> process QA**. Runtime,
+Development gate order is **P6-A -> B0.1 -> B0.2a ownership bridge acceptance ->
+B0.2b converter -> B0.3 owned-v5 seam/time authority -> B1 execution -> process QA**. Runtime,
 backup/registry and the new recovery-family roundtrip are independent mandatory
 operational rollout gates before exposing the converter. Assign one owner
 per shared source file; future changes to shared runtime modules are separate
@@ -617,5 +644,7 @@ H1–H3 operational approvals and P7 external-network/resource gates remain as
 recorded in the maintenance handoff. This document supplies no code, migration,
 runtime test or production acceptance evidence. Its checks are document-only:
 UTF-8/no BOM/final newline, canonical field order, balanced fences, relative
-existing links and whitespace. This reconciliation edits only this contract and
-the maintenance handoff; it does not stage, commit or push.
+existing links and whitespace. The original reconciliation covered this contract
+and the maintenance handoff. The B0.2a reconciliation creates only the recovery
+conversion contract and updates linking/scope here; it supplies no source/test
+or runtime acceptance evidence and does not stage, commit or push.

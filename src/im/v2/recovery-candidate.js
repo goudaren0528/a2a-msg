@@ -245,6 +245,26 @@ export function candidateFacts(path, stage, budget) {
     invalid();
   }
 }
+// Fixed conversion-only mutation. The gate receives no database or transaction;
+// it can only refuse. Caller retains source/workspace/candidate controls.
+export function pauseConversionCandidate({ path, stage, staged, base, owner, budget, authorize }) {
+  return database(path, budget, true, db => {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const check = mode => {
+        const actual = facts(db, stage, budget);
+        assertStaged(stage, staged, actual, base);
+        if (actual.run || actual.identity.instance_id !== owner.instanceId ||
+            actual.identity.created_at !== owner.instanceCreatedAt || actual.center.center_epoch !== owner.centerEpoch ||
+            actual.writeMode !== mode || stage.candidateKind !== 'snapshot_recovery') invalid();
+      };
+      check('enabled'); authorize(); budget.tick();
+      if (db.prepare("UPDATE im_settings SET write_mode='paused' WHERE singleton=1 AND write_mode='enabled'").run().changes !== 1) invalid();
+      check('paused'); authorize(); budget.tick();
+      db.exec('COMMIT');
+    } finally { if (db.isTransaction) db.exec('ROLLBACK'); }
+  });
+}
 export function assertStaged(stage, staged, actual, base) {
   if (!staged || staged.runId !== stage.runId || staged.stageHash !== hashRecoveryRecord('stage', stage) ||
       staged.preparationRef !== stage.preparationRef || staged.instanceId !== actual.identity.instance_id ||

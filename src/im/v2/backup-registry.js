@@ -363,11 +363,12 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     if (held.hold.backupId!==input.backupId) invalid();
     return deepFreeze({...verified,...held});
   }
-  function withRecoveryHoldLocked(input,context,callback) {
+  function withRecoveryHoldLocked(input,context,callback,inheritedBudget) {
+    const budget=operationBudget(bounds,inheritedBudget);
     const operation=holdInput(input,['backupId','holdId']);
     if (!synchronous(callback)) throw fail('RECOVERY_INVALID');
     adminGate(authority,context);
-    const budget=operationBudget(bounds), sentinel=fail('RECOVERY_CALLBACK_FAILED');
+    const sentinel=fail('RECOVERY_CALLBACK_FAILED');
     let callbackFailure;
     try { return store.withLock(()=>{
       const proof=heldLocked(operation,budget);
@@ -485,9 +486,9 @@ export function withRecoverySourceIntent(registry, input, context, callback) {
   return trustedRegistries.get(registry).withRecoverySourceIntentLocked(input, context, callback);
 }
 
-export function withRecoveryHold(registry,input,context,callback) {
+export function withRecoveryHold(registry,input,context,callback,inheritedBudget) {
   if (!trustedRegistries.has(registry)) invalid();
-  return trustedRegistries.get(registry).withRecoveryHoldLocked(input,context,callback);
+  return trustedRegistries.get(registry).withRecoveryHoldLocked(input,context,callback,inheritedBudget);
 }
 
 // Trusted local composition, not a network/facade API or a defense against
