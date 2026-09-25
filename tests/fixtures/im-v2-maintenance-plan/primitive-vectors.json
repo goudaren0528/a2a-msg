@@ -1,0 +1,4 @@
+[
+  {"name":"null-frame-text-domain","tag":"a2a-msg.im.maintenance.text.v1","inputBytesHex":"6e3b","expectedSha256":"e9ce652a2546fb0452eaddbe17cd95a91fd994e9be5ec5243ec38675340641ec"},
+  {"name":"null-frame-blob-domain","tag":"a2a-msg.im.maintenance.blob.v1","inputBytesHex":"6e3b","expectedSha256":"e9460e5fa2f855a8db3cd6d49b2d8b5401d575431cc0ea3f4ed5d89b6ad6201e"}
+]

@@ -38,4 +38,6 @@
 
 **IM v2 NONRELEASE P5-D 进程恢复矩阵增量（2026-09-25，基于 `4884b65c` 加六份测试/fixture overlay）：**A6/B13/C10/D5/E3/F4/G2 共 43 个指定场景，39 个软件 SIGKILL 故障和四条独立进程正常退出链，限定范围 test-design 审查与最终 artifact QA 均 PASS；分版本兼容验证和证据保留局限见 [P5-D 进程恢复验证记录](im-v2-p5-process-validation.md)。恢复仅能遵守既定契约或保守拒绝，不保证任意故障恢复；原生证据不是硬件掉电、外部生产恢复或旧写入方全局 fencing 的证明。P5-A–D 本地切片有界验证不等于整项目发布/生产就绪；P6 留存 planner/purge 默认关闭与设计批准、P7 真正双机 LAN/跨网及 H1–H3 人工确认、30 天备份 TTL 确认仍未完成。此前各增量段落保留当时快照；原 WP0–WP4 顺序、门槛及旧 LAN 不变，不授权启用监听、自动接管、物理清理或发布。
 
+**IM v2 NONRELEASE P6-A 只读预览增量（2026-09-26，基于 `609a97a` 加 15 份限定 overlay）：**五导出纯 plan/cursor 编解码、严格 schema4 离线借用连接的留存预览与仅配置诊断的备份预览完成限定范围本地 artifact QA；版本绑定计数、环境与限制见 [P6-A 预览验证记录](im-v2-p6-preview-validation.md)。所有 v4 计划均不可执行（`SCHEMA_UPGRADE_REQUIRED`）；过期与清除分批，备份不枚举、不授权 TTL 或删除。默认 expiry/purge/backup cleanup 继续关闭，未实现 apply/executor/status，v5 schema/时间锚/转换/运行时与备份恢复兼容仍为设计门槛。P6-B/C、P7、H1–H3 与备份 TTL 确认均待完成；不改变上方 WP0–WP4 顺序、旧 LAN 或运营门禁，不授权真实数据操作或发布。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。
