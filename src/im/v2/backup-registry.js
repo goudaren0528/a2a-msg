@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync } from 'node:fs';
 import { join } from 'node:path';
+import { types as utilTypes } from 'node:util';
 import { withClosedBackupSnapshot } from '../backup-snapshot.js';
 import { withProtectedBackupCopy } from '../backup-registry.js';
 import { getInstanceIdentity } from '../schema.js';
@@ -11,6 +12,33 @@ import { authorize, canonical, decode, deepFreeze, directoryEntries, exists, fai
   ref, rejectThenable, resyncPublished, streamFile, time, uuid, writeAll } from './recovery-records.js';
 
 const trustedRegistries = new WeakMap();
+const synchronous = fn => typeof fn === 'function' && !['[object AsyncFunction]', '[object AsyncGeneratorFunction]', '[object GeneratorFunction]'].includes(Object.prototype.toString.call(fn));
+function adminGate(authority, context) {
+  try {
+    const fn=authority?.authorizeAdmin;
+    if (!synchronous(fn)) throw null;
+    const result=fn.call(authority,context); rejectThenable(result);
+    if (result===true) return;
+  } catch { /* fixed local denial, including falsy throws */ }
+  throw fail('RECOVERY_AUTH_DENIED');
+}
+function approvalGate(authority, operation, context) {
+  try {
+    const fn=authority?.authorizeApproval;
+    if (!synchronous(fn)) throw null;
+    const result=fn.call(authority,Object.freeze({kind:'release-hold',planHash:operation.releasePlanHash,approvalRef:operation.approvalRef}),context);
+    rejectThenable(result); if (result===true) return;
+  } catch { /* no raw adapter errors */ }
+  throw fail('RECOVERY_APPROVAL_DENIED');
+}
+function holdInput(input, keys) {
+  try {
+    shape(input,keys);
+    const value=Object.fromEntries(keys.map(k=>[k,input[k]]));
+    for (const key of keys) if (!(key==='releasePlanHash'?hash:key==='approvalRef'?ref:uuid)(value[key])) throw null;
+    return Object.freeze(value);
+  } catch { throw fail('RECOVERY_INVALID'); }
+}
 
 function oldRecord(bytes) {
   // Preserve historical bytes, but reapply its exact recordVersion=2 shape on
@@ -171,7 +199,7 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
       throw error;
     } finally { active = false; }
   }
-  function holdLocked(holdId, budget, cache) {
+  function holdLocked(holdId, budget, cache, allowRelease = false) {
     const hold = read('holds', holdId, 'hold', undefined, budget);
     if (hold.holdId !== holdId) invalid();
     verifyLocked(hold.backupId, budget, cache);
@@ -180,21 +208,30 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
       binding = read('holds', holdId, 'binding', '.binding.json', budget);
       if (binding.holdId !== holdId || binding.stageHash !== hold.stageHash || binding.boundAt < hold.createdAt) invalid();
     }
-    // P5-C owns terminal proof verification. No marker is authoritative in A.
-    if (exists(leaf('releases', holdId))) invalid();
-    return { hold, binding, release: null };
+    let release = null;
+    if (exists(leaf('releases', holdId))) {
+      if (!allowRelease) invalid(); // Preserve B's old read/source behavior.
+      release=read('releases',holdId,'release',undefined,budget);
+      // Historical failed markers have no approved C verifier. Fail closed.
+      if (!binding||release.holdId!==holdId||release.recoveryRunId!==hold.recoveryRunId||
+          release.terminalState!=='active'||release.releasedAt<binding.boundAt) invalid();
+    }
+    return { hold, binding, release };
   }
-  function scanHolds(budget, cache) {
+  function scanHolds(budget, cache, allowRelease = false) {
     const ids = new Set(); let malformed = false;
     directoryEntries(join(store.root, 'registry', 'holds'), budget, name => {
       const match = /^([0-9a-f-]{36})(\.binding)?\.json$/.exec(name);
       if (!match || !uuid(match[1])) malformed = true;
       else ids.add(match[1]);
     });
-    directoryEntries(join(store.root, 'registry', 'releases'), budget, () => { malformed = true; });
+    directoryEntries(join(store.root, 'registry', 'releases'), budget, name => {
+      const match=/^([0-9a-f-]{36})\.json$/.exec(name);
+      if (!allowRelease||!match||!uuid(match[1])||!ids.has(match[1])) malformed=true;
+    });
     if (malformed) invalid();
     const holds = [];
-    for (const id of ids) { budget.tick(); holds.push(holdLocked(id, budget, cache)); }
+    for (const id of ids) { budget.tick(); holds.push(holdLocked(id, budget, cache, allowRelease)); }
     return holds;
   }
   function createStageHold(input, context) {
@@ -320,18 +357,111 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     authorize(authority, context); const budget = operationBudget(bounds);
     return store.withLock(() => holdLocked(holdId, budget));
   }
+  function heldLocked(input,budget) {
+    const cache=new Map(), verified=verifyLocked(input.backupId,budget,cache);
+    const held=holdLocked(input.holdId,budget,cache,true);
+    if (held.hold.backupId!==input.backupId) invalid();
+    return deepFreeze({...verified,...held});
+  }
+  function withRecoveryHoldLocked(input,context,callback) {
+    const operation=holdInput(input,['backupId','holdId']);
+    if (!synchronous(callback)) throw fail('RECOVERY_INVALID');
+    adminGate(authority,context);
+    const budget=operationBudget(bounds), sentinel=fail('RECOVERY_CALLBACK_FAILED');
+    let callbackFailure;
+    try { return store.withLock(()=>{
+      const proof=heldLocked(operation,budget);
+      let result;
+      try { result=callback(proof); } catch (error) { callbackFailure={error}; throw sentinel; }
+      rejectThenable(result);
+      verifyLocked(operation.backupId,budget);
+      return result;
+    }); } catch (error) {
+      if (error===sentinel&&callbackFailure) throw callbackFailure.error;
+      throw error;
+    }
+  }
+  function releaseRecoveryHoldLocked(operation,context,releaseAuthority,approvalAuthority,verifyTerminal) {
+    adminGate(authority,context); adminGate(releaseAuthority,context);
+    approvalGate(approvalAuthority,operation,context);
+    const budget=operationBudget(bounds);
+    let state='open', fault, receipt, publishedHash, marker;
+    const poison=error=>{
+      if (fault) return fault.error;
+      // Latch before inspecting a thrown value: even descriptor/proxy traps may
+      // throw or reenter. Sanitization can never leave this scope unpoisoned.
+      fault={error:fail('RECOVERY_EVIDENCE_MISMATCH')};
+      try {
+        if (utilTypes.isProxy(error)) return fault.error;
+        const code=Object.getOwnPropertyDescriptor(error,'code')?.value;
+        switch (code) {
+          case 'RECOVERY_INVALID':
+          case 'RECOVERY_EVIDENCE_MISMATCH':
+          case 'RECOVERY_AUTH_DENIED':
+          case 'RECOVERY_APPROVAL_DENIED':
+          case 'RECOVERY_BUSY':
+          case 'RECOVERY_UNSUPPORTED':
+          case 'RECOVERY_DURABILITY_UNCERTAIN':
+          case 'RECOVERY_CALLBACK_FAILED':
+            fault.error=fail(code);
+        }
+      } catch { /* Retain the fixed failure; never propagate hostile errors. */ }
+      return fault.error;
+    };
+    try { return store.withLock(()=>{
+      const proof=heldLocked(operation,budget);
+      if (!proof.binding||proof.hold.recoveryRunId!==operation.runId) invalid();
+      const publish=value=>{
+        if (state==='expired'||fault) throw fail('RECOVERY_INVALID');
+        if (state==='publishing') throw poison(fail('RECOVERY_EVIDENCE_MISMATCH'));
+        state='publishing';
+        try {
+          rejectThenable(value);
+          shape(value,['stateEvidenceHash']);
+          const requested=value.stateEvidenceHash;
+          if (!hash(requested)) invalid();
+          if (receipt) { if (requested!==publishedHash) invalid(); state='published'; return receipt; }
+          const previous=proof.release;
+          if (previous&&(previous.stateEvidenceHash!==requested||previous.approvalRef!==operation.approvalRef)) invalid();
+          if (!synchronous(clock)) throw fail('RECOVERY_INVALID');
+          let releasedAt;
+          if (previous) releasedAt=previous.releasedAt;
+          else { releasedAt=clock(); rejectThenable(releasedAt); if (!time(releasedAt)||releasedAt<proof.binding.boundAt) invalid(); }
+          marker=deepFreeze({version:1,holdId:proof.hold.holdId,recoveryRunId:proof.hold.recoveryRunId,
+            terminalState:'active',stateEvidenceHash:requested,approvalRef:operation.approvalRef,releasedAt});
+          // Recheck source and all gates immediately before publication, while C
+          // still owns its workspace/candidate controls inside verifyTerminal.
+          verifyLocked(operation.backupId,budget);
+          adminGate(authority,context); adminGate(releaseAuthority,context);
+          approvalGate(approvalAuthority,operation,context);
+          if (fault) throw fault.error;
+          write('releases',proof.hold.holdId,'release',marker,undefined,budget);
+          if (fault) throw fault.error;
+          publishedHash=requested; receipt=Object.freeze(Object.create(null)); state='published';
+          return receipt;
+        } catch (error) { throw poison(error); }
+      };
+      let result;
+      try { result=verifyTerminal(proof,operation,context,publish); rejectThenable(result); }
+      catch { throw poison(fail('RECOVERY_CALLBACK_FAILED')); }
+      if (fault||!receipt||result!==receipt) throw poison(fail('RECOVERY_EVIDENCE_MISMATCH'));
+      verifyLocked(operation.backupId,budget);
+      if (fault) throw fault.error;
+      return Object.freeze({releaseMarker:marker});
+    }); } finally { state='expired'; }
+  }
   function checkCleanup({ backupId } = {}, context) {
     authorize(authority, context);
     const budget = operationBudget(bounds);
     return store.withLock(() => {
       const cache = new Map(); verifyLocked(backupId, budget, cache);
-      const held = scanHolds(budget, cache).some(({ hold }) => hold.backupId === backupId);
+      const held = scanHolds(budget, cache, true).some(({ hold }) => hold.backupId === backupId);
       budget.tick();
       return { allowed: false, reason: held ? 'HOLD' : 'DISABLED' };
     });
   }
   const registry = Object.freeze({ verify, withVerifiedBackup, createStageHold, bindPrepareHold, getHold, checkCleanup });
-  trustedRegistries.set(registry, Object.freeze({ withRecoverySourceLocked, withRecoverySourceIntentLocked }));
+  trustedRegistries.set(registry, Object.freeze({ withRecoverySourceLocked, withRecoverySourceIntentLocked, withRecoveryHoldLocked, releaseRecoveryHoldLocked }));
   return { registry, store, leaf, bounds, commitLocked };
 }
 
@@ -345,6 +475,23 @@ export function withRecoverySource(registry, input, context, callback) {
 export function withRecoverySourceIntent(registry, input, context, callback) {
   if (!trustedRegistries.has(registry)) invalid();
   return trustedRegistries.get(registry).withRecoverySourceIntentLocked(input, context, callback);
+}
+
+export function withRecoveryHold(registry,input,context,callback) {
+  if (!trustedRegistries.has(registry)) invalid();
+  return trustedRegistries.get(registry).withRecoveryHoldLocked(input,context,callback);
+}
+
+// Trusted local composition, not a network/facade API or a defense against
+// malicious same-process JavaScript importing this capability.
+export function createRecoveryHoldReleaser({registry,authority,approvalAuthority,verifyTerminal}={}) {
+  if (!trustedRegistries.has(registry)) invalid();
+  if (!synchronous(verifyTerminal)) throw fail('RECOVERY_INVALID');
+  const trusted=trustedRegistries.get(registry);
+  return Object.freeze({release(input,context) {
+    const operation=holdInput(input,['backupId','runId','holdId','releasePlanHash','approvalRef']);
+    return trusted.releaseRecoveryHoldLocked(operation,context,authority,approvalAuthority,verifyTerminal);
+  }});
 }
 
 export function createTrustedImV2BackupServices(options = {}) {

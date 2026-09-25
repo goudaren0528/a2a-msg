@@ -54,7 +54,7 @@ test('Windows recovery strict protection reports unsupported', { skip: !unsuppor
 
 test('fresh actual P1 staging, immutable preview, prepare binding and expired readonly exact retry', { skip: unsupported }, t => {
   const f = fixture(t), s = setup(f), api = s.open();
-  assert.deepEqual(Object.keys(api), ['stageCandidate', 'previewRecovery', 'prepareRecovery', 'getRecoveryStatus']);
+  assert.deepEqual(Object.keys(api), ['stageCandidate', 'previewRecovery', 'prepareRecovery', 'getRecoveryStatus', 'verifyRecovery', 'previewActivation', 'activateRecovery']);
   assert.ok(Object.isFrozen(api));
   const staged = api.stageCandidate(stageInput(), context);
   assert.equal(staged.holdId, null); assert.ok(Object.isFrozen(staged));
@@ -432,7 +432,7 @@ test('partial registered copy retains hold and pending bytes, cannot be adopted 
   assert.equal(statSync(join(dir, pending)).size, 16); assert.equal(existsSync(join(dir, 'candidate.sqlite')), false);
 });
 
-test('consistent later verified/active facts are readonly and never downgraded by completed prepare retry', { skip: unsupported }, t => {
+test('synthetic verified observation is retained but fake active without protected C proof refuses readonly', { skip: unsupported }, t => {
   const f = fixture(t), s = setup(f), api = s.open(), staged = api.stageCandidate(stageInput(), context);
   const preview = api.previewRecovery({ runId: staged.runId }, context), request = { runId: staged.runId, preparePlanHash: preview.preparePlanHash, approvalRef: 'prepare-ok' };
   api.prepareRecovery(request, context);
@@ -452,9 +452,48 @@ test('consistent later verified/active facts are readonly and never downgraded b
     } finally { db.close(); }
     s.state.approved = false; s.state.now += 900000;
     const before = tree(s.root);
-    assert.equal(s.open().prepareRecovery(request, context).status, state);
-    assert.equal(s.open().getRecoveryStatus({ runId: staged.runId }, context).state, state);
+    if (state === 'verified') {
+      assert.equal(s.open().prepareRecovery(request, context).status, state);
+      assert.equal(s.open().getRecoveryStatus({ runId: staged.runId }, context).state, state);
+    } else {
+      assert.throws(() => s.open().prepareRecovery(request, context), { code: 'RECOVERY_EVIDENCE_MISMATCH' });
+      assert.equal(s.open().getRecoveryStatus({ runId: staged.runId }, context).state, 'indeterminate');
+    }
     assert.deepEqual(tree(s.root), before);
+  }
+});
+
+test('real C verified/active facts survive expired B plan and revoked mutation approval with zero fsync or writes', { skip: unsupported }, t => {
+  const f = fixture(t), s = setup(f);
+  s.state.now += 60000; // Candidate P1 initialization has its own fresh clock.
+  s.evidenceAuthority.assertAuthReview = (input, ctx) => ctx === context && input.authReviewRef === 'fixture-auth';
+  s.options.approvalAuthority = { authorizeApproval: (input, ctx) => ctx === context && s.state.approved &&
+    (input.kind === 'prepare' && input.approvalRef === 'prepare-ok' || input.kind === 'activate' && input.approvalRef === 'activate-ok') };
+  const api = s.open(), staged = api.stageCandidate(stageInput(), context);
+  const preview = api.previewRecovery({ runId: staged.runId }, context);
+  const request = { runId: staged.runId, preparePlanHash: preview.preparePlanHash, approvalRef: 'prepare-ok' };
+  api.prepareRecovery(request, context);
+  const seal = api.verifyRecovery({ runId: staged.runId, preparePlanHash: preview.preparePlanHash }, context);
+  const path = join(s.root, staged.candidateReference);
+  for (const state of ['verified', 'active']) {
+    if (state === 'active') {
+      s.state.approved = true;
+      const plan = api.previewActivation({ runId: staged.runId, sealReference: seal.sealReference,
+        activationRef: 'fixture-active', authReviewRef: 'fixture-auth', isolationAckRef: null }, context);
+      assert.equal(api.activateRecovery({ runId: staged.runId, sealReference: seal.sealReference,
+        activationPlanHash: plan.activationPlanHash, activationApprovalRef: 'activate-ok' }, context).status, 'active');
+    }
+    s.state.now += 900000; s.state.approved = false;
+    const before = tree(s.root), rows = query(path, snapshot);
+    const real = { fsyncSync: fs.fsyncSync, writeSync: fs.writeSync, linkSync: fs.linkSync, unlinkSync: fs.unlinkSync };
+    let writes = 0;
+    for (const name of Object.keys(real)) fs[name] = () => { writes++; throw Error('readonly B/C observation attempted write or sync'); };
+    syncBuiltinESMExports();
+    try {
+      assert.equal(s.open().prepareRecovery(request, context).status, state);
+      assert.equal(s.open().getRecoveryStatus({ runId: staged.runId }, context).state, state);
+    } finally { Object.assign(fs, real); syncBuiltinESMExports(); }
+    assert.equal(writes, 0); assert.deepEqual(tree(s.root), before); assert.deepEqual(query(path, snapshot), rows);
   }
 });
 

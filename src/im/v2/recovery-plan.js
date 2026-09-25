@@ -1,4 +1,4 @@
-// P5-B pure, local evidence serialization. No authorization, source inspection or publication.
+// P5-B/C pure local evidence serialization. No authorization, inspection or publication.
 import { createHash } from 'node:crypto';
 import { V3_CHECKSUM } from './schema-history.js';
 import { V4_CHECKSUM } from './schema-internal.js';
@@ -18,6 +18,11 @@ const kind = x => ['fresh_bootstrap', 'v3_import', 'snapshot_recovery'].includes
 const mode = x => x === 'paused' || x === 'enabled';
 const schema = x => x === 3 || x === 4;
 const fields = {
+  verification: { integrity:x=>x===true,foreignKeys:x=>x===true,schema:x=>x===true,invariants:x=>x===true },
+  seal: { version:one,runId:uuid,preparePlanHash:hash,newEpoch:uuid,candidateReference:ref,candidateFileHash:hash,schemaChecksum:x=>x===V4_CHECKSUM,verifiedAt:time,verification:x=>object(x,'verification') },
+  activationPlan: { version:one,runId:uuid,preparePlanHash:hash,sealHash:hash,candidateReference:ref,newEpoch:uuid,authReviewRef:ref,isolationAckRef:nullable(ref),createdAt:time,expiresAt:time,activationRef:ref },
+  activationCompletion: { version:one,runId:uuid,preparePlanHash:hash,activationPlanHash:hash,activationApprovalRef:ref,activationRef:ref,sealHash:hash,candidateReference:ref,instanceId:uuid,instanceCreatedAt:time,newEpoch:uuid,recoveryCounter:time,activatedAt:time,writeMode:x=>x==='paused' },
+  releasePlan: { version:one,runId:uuid,holdId:uuid,backupId:uuid,stageHash:hash,preparePlanHash:hash,activationCompletionHash:hash,terminalState:x=>x==='active',candidateReference:ref,newEpoch:uuid },
   closureBinding: { sourceRef:ref,isolationAckRef:ref,sourceKind:x=>x==='registered-backup'||x==='closed-source',instanceId:uuid,instanceCreatedAt:time,schemaVersion:schema,schemaChecksum:hash,fileHash:hash,backupId:nullable(uuid),manifestHash:nullable(hash) },
   closureProof: { version:one,evidenceRef:ref,sourceRef:ref,isolationAckRef:ref,sourceKind:x=>x==='registered-backup'||x==='closed-source',instanceId:uuid,instanceCreatedAt:time,schemaVersion:schema,schemaChecksum:hash,fileHash:hash,backupId:nullable(uuid),manifestHash:nullable(hash),issuedAt:time },
   closedSourceEvidence: { version:one,kind:x=>x==='closed-source',sourceRef:ref,instanceId:uuid,instanceCreatedAt:time,schemaVersion:x=>x===3,schemaChecksum:hash,closedSourceFileHash:hash,observedAt:time,isolationAckRef:ref },
@@ -38,6 +43,7 @@ const fields = {
 // A's exact registered evidence shape, without modifying or extending A's public encoder.
 const registered = { version:one,kind:x=>x==='registered-backup',sourceRef:ref,registryFormat:x=>x===2||x===3,instanceId:uuid,instanceCreatedAt:time,backupId:uuid,fileHash:hash,manifestHash:hash,schemaVersion:schema,schemaChecksum:hash,completedAt:time,importedRecordHash:nullable(hash) };
 fields.registeredSourceEvidence = registered;
+fields.statusV2 = { version:two,...fields.status,releasePlan:x=>x===null||object(x,'releasePlan'),releasePlanHash:nullable(hash) };
 Object.freeze(fields);
 function own(x, keys) {
   if (!x || Object.getPrototypeOf(x)!==Object.prototype || Reflect.ownKeys(x).length!==keys.length) invalid();
@@ -66,7 +72,8 @@ function normalize(name, value) {
     if (out.sourceEvidence!==null && (out.sourceEvidence.kind==='closed-source' ? out.candidateKind!=='v3_import'||out.sourceEvidence.sourceRef!==out.sourceRef||out.sourceEvidence.isolationAckRef!==out.isolationAckRef : out.candidateKind==='snapshot_recovery' ? out.sourceEvidence.schemaVersion!==4 : out.sourceEvidence.schemaVersion!==3)) invalid();
   }
   if (name==='requestLocator' && (out.stage.runId!==out.runId || out.stage.requestRef!==out.requestRef || out.stage.requestHash!==out.requestHash || out.stageHash!==hashRecoveryRecord('stage',out.stage) || (out.sourceClosedEvidence===null ? out.stage.sourceClosedEvidenceRef!==null : out.sourceClosedEvidence.evidenceRef!==out.stage.sourceClosedEvidenceRef||hashRecoveryRecord('closureProof',out.sourceClosedEvidence)!==out.stage.sourceClosedEvidenceHash))) invalid();
-  if (name==='preparePlan' && (out.createdAt>Number.MAX_SAFE_INTEGER-300000 || out.expiresAt!==out.createdAt+300000)) invalid();
+  if (['preparePlan','activationPlan'].includes(name) && (out.createdAt>Number.MAX_SAFE_INTEGER-300000 || out.expiresAt!==out.createdAt+300000)) invalid();
+  if (['seal','activationPlan','activationCompletion','releasePlan'].includes(name) && out.candidateReference!==`runs/${out.runId}/candidate.sqlite`) invalid();
   if (name==='preparePlan' && (out.candidateReference!==`runs/${out.runId}/candidate.sqlite` || (out.candidateKind==='fresh_bootstrap' ? out.preparationRef===null||out.backupId!==null||out.backupFileHash!==null||out.manifestHash!==null||out.sourceSchemaVersion!==null||out.sourceSchemaChecksum!==null||out.oldEpoch!==null||out.rpoReport!==null||out.sourceEvidence!==null||out.sourceClosedEvidenceRef!==null||out.isolationAckRef!==null||out.recoveryCounter!==0 : (out.preparationRef===null)!==(out.candidateKind==='snapshot_recovery') || out.rpoReport===null||out.sourceEvidence===null||out.sourceClosedEvidenceRef===null||out.isolationAckRef===null))) invalid();
   if (name==='pauseIntent' && out.targetWriteMode!=='paused') invalid();
   if (['copyIntent','base'].includes(name) && (out.candidateReference!==`runs/${out.runId}/candidate.sqlite` || out.sourceSchemaChecksum!==(out.sourceSchemaVersion===3?V3_CHECKSUM:V4_CHECKSUM))) invalid();
@@ -85,8 +92,24 @@ function normalize(name, value) {
         (out.state==='failed' && (out.candidateReference===null || out.stageHash===null)) ||
         (out.state==='indeterminate' && out.nextAction==='RETRY_STAGE' && out.preparePlanHash!==null)) invalid();
   }
+  if (name==='statusV2') {
+    const {version,releasePlan,releasePlanHash,...legacy}=out;
+    normalize('status',{...legacy,nextAction:out.state==='active'?'NONE':out.nextAction});
+    if ((releasePlan===null)!==(releasePlanHash===null)) invalid();
+    if (out.state!=='active') { if (releasePlan!==null) invalid(); }
+    else {
+      if (!['NONE','RETRY_ACTIVATE','APPROVE_RELEASE_HOLD'].includes(out.nextAction)) invalid();
+      if (out.nextAction==='RETRY_ACTIVATE' ? releasePlan!==null :
+          out.nextAction==='APPROVE_RELEASE_HOLD' ? out.holdId===null||releasePlan===null :
+          (out.holdId===null)!==(releasePlan===null)) invalid();
+    }
+    if (releasePlan!==null) {
+      if (hashRecoveryRecord('releasePlan',releasePlan)!==releasePlanHash) invalid();
+      for (const k of ['runId','holdId','stageHash','preparePlanHash','candidateReference','newEpoch']) if (releasePlan[k]!==out[k]) invalid();
+    }
+  }
   // Rebuild nested objects in declaration order, never retain caller-owned references.
-  for (const [key,nested] of Object.entries({sourceEvidence:out.sourceEvidence?.kind==='registered-backup'?'registeredSourceEvidence':'closedSourceEvidence',sourceClosedEvidence:'closureProof',stage:'stage',rpoReport:'rpoReport'})) if (out[key]!==undefined && out[key]!==null) out[key]=normalize(nested,out[key]);
+  for (const [key,nested] of Object.entries({sourceEvidence:out.sourceEvidence?.kind==='registered-backup'?'registeredSourceEvidence':'closedSourceEvidence',sourceClosedEvidence:'closureProof',stage:'stage',rpoReport:'rpoReport',verification:'verification',releasePlan:'releasePlan'})) if (out[key]!==undefined && out[key]!==null) out[key]=normalize(nested,out[key]);
   return freeze(out);
 }
 export function encodeRecoveryRecord(kind, record) { const bytes=Buffer.from(JSON.stringify(normalize(kind,record)),'utf8'); if (bytes.length>65536) invalid(); return bytes; }
@@ -109,6 +132,7 @@ export function hashRecoveryRequestInput(input) {
   return sha(Buffer.from(JSON.stringify([candidateKind,sourceRef,isolationAckRef,policyHash]),'utf8'));
 }
 export function assertRecoveryPlanFresh(plan,now) { const p=normalize('preparePlan',plan); if (!time(now)) invalid(); if (now>=p.expiresAt) fail('RECOVERY_PLAN_STALE'); return p; }
+export function assertRecoveryActivationPlanFresh(plan,now) { const p=normalize('activationPlan',plan); if (!time(now)) invalid(); if (now>=p.expiresAt) fail('RECOVERY_PLAN_STALE'); return p; }
 export function validateRecoveryPlanBindings(plan,{stage,staged,sourceClosedEvidence=null,base=null,previousRecoveryCounter=null}={}) {
   let p,s,t;
   try { p=normalize('preparePlan',plan); s=normalize('stage',stage); t=normalize('staged',staged); } catch { mismatch(); }
@@ -168,4 +192,68 @@ export function validateRecoveryPauseBindings({stage,copyIntent,base,normalizati
       p.pauseIntentHash!==hashRecoveryRecord('pauseIntent',i)||p.changed!==(i.originalWriteMode==='enabled')||
       (!p.changed&&p.pausedCandidateHash!==i.pauseInputHash)||i.createdAt<n.normalizedAt||p.pausedAt<i.createdAt) mismatch();
   return p;
+}
+
+// C binding helpers deliberately require the entire evidence argument, including
+// explicit nulls. They validate supplied facts, never authenticate their origin.
+function evidence(value,keys) { try { own(value,keys); if (keys.some(k=>value[k]===undefined)) mismatch(); } catch { mismatch(); } return value; }
+function record(name,value) { try { return normalize(name,value); } catch { mismatch(); } }
+function prepareChain(plan,input) {
+  evidence(input,['stage','staged','sourceClosedEvidence','base','previousRecoveryCounter']);
+  return validateRecoveryPlanBindings(plan,input);
+}
+export function validateRecoverySealBindings(seal,input) {
+  evidence(input,['preparePlan','prepareEvidence','candidateFileHash','schemaChecksum','verifiedAt','sealReference']);
+  const s=record('seal',seal), p=prepareChain(input.preparePlan,input.prepareEvidence);
+  if (s.runId!==p.runId||s.preparePlanHash!==hashRecoveryRecord('preparePlan',p)||s.newEpoch!==p.newEpoch||
+      s.candidateReference!==p.candidateReference||s.candidateFileHash!==input.candidateFileHash||
+      s.schemaChecksum!==input.schemaChecksum||s.verifiedAt!==input.verifiedAt||
+      s.verifiedAt<p.createdAt||input.sealReference!==`runs/${s.runId}/seals/${hashRecoveryRecord('seal',s)}.json`) mismatch();
+  return s;
+}
+export function validateRecoveryActivationPlanBindings(plan,input) {
+  evidence(input,['seal','sealEvidence']);
+  const a=record('activationPlan',plan), s=validateRecoverySealBindings(input.seal,input.sealEvidence);
+  const p=record('preparePlan',input.sealEvidence.preparePlan);
+  for (const k of ['runId','preparePlanHash','candidateReference','newEpoch']) if (a[k]!==s[k]) mismatch();
+  if (a.sealHash!==hashRecoveryRecord('seal',s)||a.isolationAckRef!==p.isolationAckRef||a.createdAt<s.verifiedAt) mismatch();
+  return a;
+}
+export function validateRecoveryCompletionBindings(completion,input) {
+  evidence(input,['activationPlan','activationEvidence','prepareApprovalRef','actual']);
+  const c=record('activationCompletion',completion), a=validateRecoveryActivationPlanBindings(input.activationPlan,input.activationEvidence);
+  const se=input.activationEvidence.sealEvidence, p=record('preparePlan',se.preparePlan), actual=input.actual;
+  // Exact runtime projection of independently inspected run/center/identity/epoch
+  // rows. No DB handles, truthy completion flag or whole-active-DB hash substitute.
+  evidence(actual,['run','center','instance','epoch','writeMode']);
+  evidence(actual.run,['runId','preparePlanHash','prepareApprovalRef','candidateReference','newEpoch','status','verifiedAt','activationPlanHash','activationApprovalRef','activationRef','activatedAt','authReviewRef','isolationAckRef','failureCode']);
+  evidence(actual.center,['runId','newEpoch','status','activationRef','updatedAt','recoveryCounter']);
+  evidence(actual.instance,['instanceId','instanceCreatedAt']);
+  evidence(actual.epoch,['newEpoch','recoveryCounter']);
+  for (const k of ['runId','preparePlanHash','candidateReference','newEpoch','sealHash','activationRef']) if (c[k]!==a[k]) mismatch();
+  if (c.activationPlanHash!==hashRecoveryRecord('activationPlan',a)||c.activatedAt<a.createdAt||c.activatedAt>=a.expiresAt||
+      c.instanceId!==p.instanceId||c.instanceCreatedAt!==p.instanceCreatedAt||c.recoveryCounter!==p.recoveryCounter) mismatch();
+  for (const k of ['runId','preparePlanHash','candidateReference','newEpoch','activationPlanHash','activationApprovalRef','activationRef','activatedAt']) if (actual.run[k]!==c[k]) mismatch();
+  if (!ref(input.prepareApprovalRef)||actual.run.prepareApprovalRef!==input.prepareApprovalRef||actual.run.status!=='active'||actual.run.failureCode!==null||
+      actual.run.verifiedAt!==se.verifiedAt||actual.run.authReviewRef!==a.authReviewRef||actual.run.isolationAckRef!==a.isolationAckRef||
+      actual.center.status!=='active'||actual.center.updatedAt!==c.activatedAt||actual.writeMode!=='paused') mismatch();
+  for (const k of ['runId','newEpoch','activationRef','recoveryCounter']) if (actual.center[k]!==c[k]) mismatch();
+  for (const k of ['instanceId','instanceCreatedAt']) if (actual.instance[k]!==c[k]) mismatch();
+  for (const k of ['newEpoch','recoveryCounter']) if (actual.epoch[k]!==c[k]) mismatch();
+  return c;
+}
+export function validateRecoveryReleasePlanBindings(plan,input) {
+  evidence(input,['completion','completionEvidence','hold','binding']);
+  const r=record('releasePlan',plan), c=validateRecoveryCompletionBindings(input.completion,input.completionEvidence);
+  const se=input.completionEvidence.activationEvidence.sealEvidence, p=record('preparePlan',se.preparePlan);
+  const h=input.hold,b=input.binding;
+  evidence(h,['version','holdId','backupId','recoveryRunId','stageHash','createdAt']);
+  evidence(b,['version','holdId','stageHash','preparePlanHash','boundAt']);
+  if (h.version!==1||b.version!==1||!time(h.createdAt)||!time(b.boundAt)||b.boundAt<h.createdAt||
+      h.holdId!==r.holdId||h.backupId!==r.backupId||h.recoveryRunId!==r.runId||h.stageHash!==r.stageHash||
+      b.holdId!==h.holdId||b.stageHash!==h.stageHash||b.preparePlanHash!==r.preparePlanHash||
+      r.backupId!==p.backupId||r.stageHash!==hashRecoveryRecord('stage',se.prepareEvidence.stage)||
+      r.activationCompletionHash!==hashRecoveryRecord('activationCompletion',c)) mismatch();
+  for (const k of ['runId','preparePlanHash','candidateReference','newEpoch']) if (r[k]!==c[k]) mismatch();
+  return r;
 }

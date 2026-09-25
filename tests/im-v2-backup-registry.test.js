@@ -103,8 +103,8 @@ test('unbound/bound durable holds block across facades; binding no-replace, malf
   assert.deepEqual(other.getHold({ holdId: hold.holdId }, context), { hold, binding, release: null });
   const releasePath = join(f.registryRoot, 'registry/releases', `${hold.holdId}.json`);
   writeFileSync(releasePath, canonical('release', { version: 1, holdId: hold.holdId, recoveryRunId: hold.recoveryRunId,
-    terminalState: 'active', stateEvidenceHash: 'd'.repeat(64), approvalRef: 'unverified', releasedAt: Date.now() }), { mode: 0o600 });
-  assert.throws(() => other.checkCleanup({ backupId: record.backupId }, context));
+    terminalState: 'active', stateEvidenceHash: 'd'.repeat(64), approvalRef: 'unverified', releasedAt: binding.boundAt }), { mode: 0o600 });
+  assert.deepEqual(other.checkCleanup({ backupId: record.backupId }, context), { allowed: false, reason: 'HOLD' });
   unlinkSync(releasePath);
   const holdPath = join(f.registryRoot, 'registry/holds', `${hold.holdId}.json`);
   writeFileSync(holdPath, readFileSync(holdPath).toString() + '\n');

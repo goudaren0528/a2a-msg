@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { withClosedBackupSnapshot } from '../backup-snapshot.js';
 import { assertFrozenV3Structure, V3_CHECKSUM } from './schema-history.js';
 import { projectCandidateBudget } from './schema-internal.js';
-import { withRecoverySource, withRecoverySourceIntent } from './backup-registry.js';
+import { withRecoveryHold, withRecoverySource, withRecoverySourceIntent } from './backup-registry.js';
 import { decodeRecoveryRecord, encodeRecoveryRecord } from './recovery-plan.js';
 import { deepFreeze, exists, fail, fileHash, invalid, privateDirectory, protectedPath,
   ref, rejectThenable, same, shape, streamFile, uuid } from './recovery-records.js';
@@ -93,6 +93,8 @@ export function sourceTable(catalog, evidenceAuthority, now) {
       const inspect = proof => {
         const e = recordCopy('registeredSourceEvidence', proof.sourceEvidence);
         if (e.backupId !== entry.backupId || e.schemaVersion !== (input.candidateKind === 'snapshot_recovery' ? 4 : 3)) invalid();
+        if (mode === 'held' && (JSON.stringify(proof.hold) !== JSON.stringify(identity.receipt) ||
+            proof.hold.recoveryRunId !== input.runId)) invalid();
         budget.tick(); const result = consume({ ...proof, sourceEvidence: e, sourceBinding: closureBinding(input, e) });
         isolation(input, ctx); budget.tick(); return result;
       };
@@ -100,6 +102,10 @@ export function sourceTable(catalog, evidenceAuthority, now) {
       // WeakMap. An unestablished intent has no durable effects.
       if (mode === 'prepare') return withRecoverySource(entry.registry, { backupId: entry.backupId,
         recoveryRunId: identity.recoveryRunId, stageHash: identity.stageHash, preparePlanHash: identity.preparePlanHash }, ctx, inspect);
+      if (mode === 'held') {
+        if (!identity.receipt || identity.receipt.backupId !== entry.backupId) invalid();
+        return withRecoveryHold(entry.registry, { backupId: entry.backupId, holdId: identity.receipt.holdId }, ctx, inspect);
+      }
       if (mode === 'read') {
         withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, () => {});
         return entry.registry.withVerifiedBackup({ backupId: entry.backupId }, ctx, inspect);

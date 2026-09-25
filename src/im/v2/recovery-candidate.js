@@ -14,6 +14,7 @@ import { checkOpened, directoryEntries, exists, fail, fileHash, invalid, private
   publishBytes, publishPending, readBytes, reserve, resyncPublished, same, sha,
   streamFile, syncDirectory, writeAll } from './recovery-records.js';
 
+const unclosedCandidates = new Map();
 export function directory(path) {
   if (!exists(path)) { mkdirSync(path, { mode: 0o700 }); syncDirectory(dirname(path)); }
   privateDirectory(path); syncDirectory(dirname(path)); return path;
@@ -38,6 +39,7 @@ export function putRecord(path, kind, value, budget) {
   return decodeRecoveryRecord(kind, bytes);
 }
 export function standalone(path, budget) {
+  if (unclosedCandidates.has(path)) throw fail('RECOVERY_INDETERMINATE');
   const { before, mode } = closedHeader(path, budget);
   if (mode !== 'DELETE') throw fail('RECOVERY_INDETERMINATE');
   return before;
@@ -189,10 +191,22 @@ export function database(path, budget, writable, consume) {
     result = consume(db);
     budget.tick();
   } finally {
-    db?.close();
+    let closeFailed = false;
+    try { db?.close(); }
+    catch {
+      closeFailed = true;
+      // A thrown native close may have already closed, or may leave an owned
+      // connection alive. Never hash/publish through the latter uncertainty.
+      try { if (db?.isOpen) db.close(); } catch { /* retain below */ }
+      if (db?.isOpen !== false) {
+        unclosedCandidates.set(path, db);
+        throw fail('RECOVERY_INDETERMINATE');
+      }
+    }
     if (!same(before, protectedPath(path))) invalid();
     standalone(path, budget);
     if (writable) resyncPublished(path, budget);
+    if (closeFailed) throw fail('RECOVERY_DURABILITY_UNCERTAIN');
   }
   return result;
 }
@@ -215,7 +229,10 @@ function facts(db, stage, budget) {
           JSON.parse(db.prepare('SELECT canonical_json FROM im_retention_policies WHERE policy_hash=?').get(stage.policyHash).canonical_json), stage.preparationRef]))) invalid();
   }
   if (stage.sourceEvidence && (identity.instance_id !== stage.sourceEvidence.instanceId || identity.created_at !== stage.sourceEvidence.instanceCreatedAt)) invalid();
-  return { identity, center, writeMode, preparation, run: db.prepare('SELECT * FROM im_recovery_runs WHERE run_id=?').get(stage.runId) ?? null };
+  return { identity, center, writeMode, preparation,
+    epoch: db.prepare('SELECT * FROM im_center_epochs WHERE center_epoch=?').get(center.center_epoch),
+    schemaChecksum: db.prepare('SELECT migration_checksum FROM im_schema').get().migration_checksum,
+    run: db.prepare('SELECT * FROM im_recovery_runs WHERE run_id=?').get(stage.runId) ?? null };
 }
 export function candidateFacts(path, stage, budget) {
   try {
@@ -381,8 +398,59 @@ export function completed(plan, planHash, actual, approvalRef) {
   if (actual.center.recovery_run_id !== plan.runId || actual.center.center_epoch !== plan.newEpoch ||
       actual.center.recovery_counter !== plan.recoveryCounter || !['prepared', 'verified', 'active', 'failed'].includes(r.status) ||
       (r.status === 'failed' ? actual.center.status !== 'prepared' : actual.center.status !== r.status) ||
-      (r.status !== 'active' && actual.writeMode !== 'paused')) invalid();
+      actual.writeMode !== 'paused') invalid();
+  if (r.status === 'prepared' || r.status === 'verified') {
+    if (r.failure_code !== null || r.auth_review_ref !== null || r.activation_plan_hash !== null ||
+        r.activation_approval_ref !== null || r.activation_ref !== null || r.activated_at !== null ||
+        actual.center.activation_ref !== null || (r.status === 'prepared' ? r.verified_at !== null :
+          !Number.isSafeInteger(r.verified_at) || r.verified_at < r.created_at || actual.center.updated_at !== r.verified_at)) invalid();
+  }
   return r.status;
+}
+// Caller holds source -> workspace -> candidate control. No file hashing occurs
+// in the guard transaction; its independently durable clock anchor is retained.
+export function transitionDatabase({ path, data, budget, clock, authorize, activationPlan = null, activationPlanHash = null, activationApprovalRef = null }) {
+  const { stage, staged, base, plan, planHash } = data;
+  const expected = activationPlan ? 'verified' : 'prepared';
+  if (!same(data.candidateIdentity, standalone(path, budget))) invalid();
+  return database(path, budget, true, db => {
+    const guard = createImV2ClockGuard({ db, clock });
+    const check = status => {
+      const actual = facts(db, stage, budget);
+      assertStaged(stage, staged, actual, base);
+      if (completed(plan, planHash, actual, data.actual.run.approval_ref) !== status ||
+          expected === 'verified' && actual.run.verified_at !== data.actual.run.verified_at) invalid();
+      return actual;
+    };
+    return guard.runWriteFresh(() => {
+      check(expected); authorize();
+      const fresh = value => {
+        if (activationPlan && value >= activationPlan.expiresAt) throw fail('RECOVERY_PLAN_STALE');
+        if (value < (activationPlan?.createdAt ?? plan.createdAt)) invalid();
+      };
+      fresh(guard.current());
+      const at = guard.current();
+      if (activationPlan) {
+        if (db.prepare("UPDATE im_recovery_runs SET status='active',auth_review_ref=?,activation_plan_hash=?,activation_approval_ref=?,activation_ref=?,activated_at=? WHERE run_id=? AND status='verified'")
+          .run(activationPlan.authReviewRef, activationPlanHash, activationApprovalRef, activationPlan.activationRef, at, plan.runId).changes !== 1) invalid();
+        if (db.prepare("UPDATE im_center_state SET status='active',activation_ref=?,updated_at=? WHERE singleton=1 AND recovery_run_id=? AND status='verified'")
+          .run(activationPlan.activationRef, at, plan.runId).changes !== 1) invalid();
+        db.prepare('INSERT INTO im_audit(actor_kind,actor_id,action,target_ids_json,occurred_at,safe_details_json) VALUES (?,?,?,?,?,?)')
+          .run('system', plan.runId, 'recovery.activate', JSON.stringify([plan.runId]), at, JSON.stringify({ activationPlanHash }));
+      } else {
+        if (db.prepare("UPDATE im_recovery_runs SET status='verified',verified_at=? WHERE run_id=? AND status='prepared'").run(at, plan.runId).changes !== 1) invalid();
+        if (db.prepare("UPDATE im_center_state SET status='verified',updated_at=? WHERE singleton=1 AND recovery_run_id=? AND status='prepared'").run(at, plan.runId).changes !== 1) invalid();
+      }
+      authorize();
+      const actual = check(activationPlan ? 'active' : 'verified');
+      if (activationPlan && (actual.run.activation_plan_hash !== activationPlanHash || actual.run.activation_approval_ref !== activationApprovalRef ||
+          actual.run.auth_review_ref !== activationPlan.authReviewRef || actual.run.activation_ref !== activationPlan.activationRef ||
+          actual.run.activated_at !== at || actual.center.updated_at !== at || actual.run.verified_at !== data.actual.run.verified_at)) invalid();
+      budget.tick(); fresh(guard.refreshCurrent());
+      authorize(); check(activationPlan ? 'active' : 'verified');
+      return actual;
+    });
+  });
 }
 export function prepareDatabase({ path, stage, staged, base, plan, planHash, approvalRef, budget, clock, authorize, fresh }) {
   return database(path, budget, true, db => {
