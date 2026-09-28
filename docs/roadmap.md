@@ -44,4 +44,6 @@
 
 **IM v2 NONRELEASE P6-B0.2a 转换所有权桥增量（2026-09-26，基于 `7c98249` 加限定源码/测试/契约 overlay）：**真实恢复 facade 内私有转换目标、规范 owner/intent/paused 证据、候选专用暂停和旧八方法的认领分支排除完成限定范围独立 QA；源码/测试与两份既有契约按冻结哈希验收，详见 [B0.2a 验证记录](im-v2-p6-conversion-bridge-validation.md)。这不是提交后 clean commit 重跑、schema 5 转换、时间权威或运行时启用。B0.2b 实际转换器、B0.3 时间权威、runtime→backup→registry→新版恢复家族→facade 兼容及 v5 往返、P6 写执行器、P7、H1–H3 与备份 TTL 确认仍待独立门禁；WP0–WP4 顺序、旧 LAN、默认关闭及运营批准不变，不授权真实恢复/删除/监听/发布。
 
+**IM v2 NONRELEASE P6-B0.2b 转换引擎局部增量（2026-09-28，基于 `d9d0907` + 19 份限定 overlay）：**私有真实归属桥上的候选 schema 4→5 转换、独立审批与原预算/期限/文件系统约束、实际事务和完整 v5 校验、COMMIT 不确定性调和及精确完成重试已获 gen145 限定范围 QA PASS；两份设计契约另行审查，不作执行 overlay。见 [B0.2b 转换引擎验证记录](im-v2-p6-conversion-engine-validation.md)。这是提交前冻结候选的本地证据，**不是**新 clean commit 重跑、完整 P6 或运营授权；历史红测/缺失证据不能追认。B0.3 时间权威、runtime 5→backup manifest 3→registry 4→新恢复家族→facade 兼容及 v5 往返、维护写执行器、P7、H1–H3 和备份 TTL 确认仍待各自门禁。此前 B0.2a 段落保留当时快照；WP0–WP4 顺序、旧 LAN、默认关闭/暂停及生产批准不变，不授权迁移、真实恢复、启用、删除、监听或发布。
+
 **v1 非目标：**群聊、音视频、全球发现、多租户跨组织审批、联邦、多中心/HA/broker、大文件/多附件/断点续传、完整官方 A2A 协议 adapter、自动值守上线及外部动作 exactly-once。地址可预留 domain 命名空间、会话成员模型可演进，但本轮不做群聊，也不把永久中心 URL 编入 Agent ID。品牌本轮只改文档；包、bin、MCP 名称、远端仓库 rename 后续须经用户批准和实测。许可证、保留期限与预算待维护者确认；公开仓库不等于已有开源许可。

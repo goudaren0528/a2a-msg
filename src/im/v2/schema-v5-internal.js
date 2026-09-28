@@ -3,6 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { types } from 'node:util';
 import { V4_DDL, V4_CHECKSUM, projectCandidateBudget, assertInheritedImBusiness } from './schema-internal.js';
 import { hashMaintenanceV5Record } from './maintenance-v5-records.js';
+import { isRecoveryOperationBudget } from './recovery-records.js';
 
 const MAX = Number.MAX_SAFE_INTEGER;
 const check = (c, expr, nullable) => `CHECK(${nullable ? `${c} IS NULL OR ` : ''}(${expr}))`;
@@ -68,39 +69,88 @@ const autoindexes=V5_DDL.filter(sql => sql.startsWith('CREATE TABLE ')).flatMap(
 }).sort((a,b) => a[0].localeCompare(b[0]));
 
 const DEFAULTS = Object.freeze({maxMessages:10000,maxVerifiedContentBytes:104857600,maxOtherRecords:10000,maxElapsedMs:10000,maxMaintenanceAnchors:10000,maxMaintenanceMetadataBytes:10485760});
+const RECOVERY_LIMITS = Object.freeze({maxMessages:10000,maxVerifiedContentBytes:104857600,maxOtherRecords:10000,maxElapsedMs:10000,maxFileBytes:134217728,maxMetadataEntries:10000});
 const errors = new WeakSet();
 function fail(code = 'IM_SCHEMA_MISMATCH') {
   const error = Object.assign(new Error(code),{code});
   errors.add(error);
   throw error;
 }
-// Never read a thrown value's properties: native/provider error getters are untrusted.
-function safeFailure(error) {
-  if (errors.has(error)) throw error;
-  if (error===null || (typeof error!=='object' && typeof error!=='function') || types.isProxy(error)) fail();
-  let budgetExceeded=false;
+// Native Proxy detection precedes reflection; never invoke foreign error getters.
+function hasDataCode(error,code) {
+  if (error===null || (typeof error!=='object' && typeof error!=='function') || types.isProxy(error)) return false;
   try {
     const descriptor=Object.getOwnPropertyDescriptor(error,'code');
-    budgetExceeded=!!descriptor && Object.hasOwn(descriptor,'value') && descriptor.value==='IM_V2_BUDGET_EXCEEDED';
+    return !!descriptor && Object.hasOwn(descriptor,'value') && descriptor.value===code;
   } catch {}
-  if (budgetExceeded) fail('IM_V2_BUDGET_EXCEEDED');
+  return false;
+}
+function safeFailure(error) {
+  if (errors.has(error)) throw error;
+  if (hasDataCode(error,'IM_V2_BUDGET_EXCEEDED')) fail('IM_V2_BUDGET_EXCEEDED');
   fail();
+}
+function dataFields(value) {
+  if (!value || typeof value!=='object' || types.isProxy(value) || Object.getPrototypeOf(value)!==Object.prototype) fail();
+  const fields=Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(fields)) {
+    if (typeof key!=='string' || !fields[key].enumerable || !Object.hasOwn(fields[key],'value')) fail();
+  }
+  return fields;
+}
+function synchronousResult(value) {
+  if (value===null || (typeof value!=='object' && typeof value!=='function')) return;
+  if (types.isProxy(value)) fail();
+  if (types.isPromise(value)) {
+    // Observe ordinary native promises only. A custom constructor/species may
+    // execute foreign getters even through the native then method.
+    if (Object.getPrototypeOf(value)===Promise.prototype && !Object.hasOwn(value,'constructor'))
+      Promise.prototype.then.call(value,undefined,() => {});
+    fail();
+  }
+  // A then accessor is refused without evaluating it, including on prototypes.
+  for (let cursor=value; cursor!==null; cursor=Object.getPrototypeOf(cursor)) {
+    if (types.isProxy(cursor)) fail();
+    const then=Object.getOwnPropertyDescriptor(cursor,'then');
+    if (then && (!Object.hasOwn(then,'value') || typeof then.value==='function')) fail();
+  }
 }
 function makeBudget(parent) {
   const start = performance.now();
   const limits = {...DEFAULTS};
+  let parentTick, recovery=false;
   if (parent !== undefined) {
-    if (!parent || typeof parent.tick!=='function' || !parent.limits) fail();
-    for (const key of Object.keys(parent.limits)) {
-      const value = parent.limits[key];
-      if (!Object.hasOwn(DEFAULTS,key) || !Number.isSafeInteger(value) || value<1 || value>DEFAULTS[key]) fail();
-      limits[key]=value;
+    const fields=dataFields(parent);
+    parentTick=fields.tick?.value;
+    if (typeof parentTick!=='function' || types.isProxy(parentTick) || types.isAsyncFunction(parentTick) || types.isGeneratorFunction(parentTick)) fail();
+    const bounds=dataFields(fields.limits?.value);
+    recovery=isRecoveryOperationBudget(parent);
+    if (!recovery && (Object.hasOwn(fields,'file') || Object.hasOwn(fields,'entry') ||
+        Object.hasOwn(bounds,'maxFileBytes') || Object.hasOwn(bounds,'maxMetadataEntries'))) fail();
+    const ceilings=recovery ? RECOVERY_LIMITS : DEFAULTS;
+    if (recovery && Object.keys(bounds).length!==Object.keys(ceilings).length) fail();
+    for (const key of Object.keys(bounds)) {
+      const value=bounds[key].value;
+      if (!Object.hasOwn(ceilings,key) || !Number.isSafeInteger(value) || value<1 || value>ceilings[key]) fail();
+      // Filesystem accounting stays with the original recovery operation. Only
+      // its four shared DB caps project here; maintenance caps keep defaults.
+      if (Object.hasOwn(DEFAULTS,key)) limits[key]=value;
     }
   }
   let metadataBytes = 0;
   return {limits, tick() {
+    if (parentTick) {
+      let result;
+      try { result=Reflect.apply(parentTick,parent,[]); }
+      catch (error) {
+        if (!recovery) safeFailure(error);
+        if (hasDataCode(error,'RECOVERY_BUSY')) fail('IM_V2_BUDGET_EXCEEDED');
+        fail();
+      }
+      synchronousResult(result);
+    }
+    // Supplementary local bound, never a replacement for the parent's deadline.
     if (performance.now()-start>limits.maxElapsedMs) fail('IM_V2_BUDGET_EXCEEDED');
-    if (parent) parent.tick();
   }, reserve(bytes) {
     if (!Number.isSafeInteger(bytes) || bytes<0) fail();
     metadataBytes+=bytes;

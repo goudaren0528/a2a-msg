@@ -168,9 +168,11 @@ Recheck authority, source/hold/stage/candidate identity and phase under controls
 before mutation/publication. Expire the consumer session before callback-bearing
 cleanup can reuse it. Perform final poison/invalidation checks **after all
 callback-bearing cleanup**, including source-isolation/final-verifier callbacks;
-do not return a previously computed successful DTO first. Close/unlock failures
-also preclude success. Retain evidence after a fault following publication; do
-not claim rollback of already durable filesystem or DB effects.
+do not return a previously computed successful DTO first. Unresolved close and
+unlock failures also preclude success; §12.6 narrowly distinguishes a resolved
+B0.2b native close response exception from unresolved closure. Retain evidence
+after a fault following publication; do not claim rollback of already durable
+filesystem or DB effects. Connection ownership and fault poisoning still apply.
 
 ## 4. Eligible intake and exact inventory
 
@@ -482,7 +484,9 @@ proof -> no-replace `conversion-complete.json`. Completion binds the closed file
 its postconversion hash is not stored inside the DB. Every explicit exact
 completion retry, including already-visible completion after restart, validates
 and syncs both candidate and completion file/directory. Conflicting proof is
-never overwritten. Source and original backup stay unchanged.
+never overwritten. Completion reconstruction also requires a valid protected
+namespace with no unknown pending residue; see §12.6 for the bounded retry and
+close-response clarification. Source and original backup stay unchanged.
 
 These future fixed operations need their own reviewed integration signatures;
 they are not B0.2a session methods. No runtime facade is wired until v5 backup,
@@ -644,3 +648,325 @@ Verification follows §9 on an immutable committed base plus explicit owned
 runtime overlays, with native environment and before/after execution hashes.
 Parent independent review/QA precedes B0.2b; this contract supplies no converter,
 time authority, service rollout or operational release approval.
+
+## 12. Frozen B0.2b source integration specification (NONRELEASE)
+
+This section records the parent-frozen B0.2b source/contract assignment against
+committed HEAD `d9d090701af3c85813a0092388332f134ea8aaba`. It supersedes the
+future-only method/result descriptions in §8 for this bounded implementation
+assignment; it does not change any B0.1 codec, historical record shape, schema,
+checksum, policy, registry or P6-A contract. It grants no B0.2b acceptance,
+maintenance authority, converter rollout or B0.3 time-authority scope.
+
+### 12.1 Exact construction and public operations
+
+`recovery.js` owns `createCandidateSchemaV5Converter(options)`; the new internal
+`candidate-schema-v5-converter.js` is a thin reexport only. Construction requires
+exact ordinary-data fields `{target,authority,approvalAuthority,executorId,limits}`.
+The target is authenticated through the existing private WeakMap. Construction
+invokes no adapter and performs no database or filesystem mutation.
+
+`limits` has exactly these required positive safe-integer fields:
+
+```text
+maxMessages, maxVerifiedContentBytes, maxOtherRecords, maxElapsedMs,
+maxFileBytes, maxMetadataEntries, planTtlMs
+```
+
+Limits may only lower the target's ceilings; `planTtlMs <= 300000`. Each call
+creates one authentic operation budget before metadata access and carries that
+same object through source, workspace, candidate, engine, hash, publication and
+cleanup work. There is no operation-level limit, clock or budget override.
+
+The frozen converter has exactly these methods and ordered results:
+
+```text
+previewConversion({},ctx)
+  -> {version:1,plan,planHash,replayed}
+convertCandidate({transitionId,planHash,approvalRef},ctx)
+  -> {version:1,transitionId,planHash,conversionProofHash,
+      schemaVersion:5,schemaChecksum,replayed}
+```
+
+Inputs are exact ordinary data and detached before callbacks. Check Proxies
+before reflection. Reject known async/generator callbacks before their prefix;
+observe and refuse unexpected thenables. Errors cross a fixed safe boundary
+without invoking foreign code or retaining foreign message/cause. Reentry,
+caught faults and late invalidation poison success through all callback-bearing
+finalization. Current converter admin authorization is always required.
+
+Preview is a write operation: it claims, pauses and publishes immutable
+`conversion-plan.json`. Generate one internal transition UUID for that plan.
+An exact existing unexpired plan is resynchronized unchanged and returns
+`replayed:true`; an expired plan yields `MAINTENANCE_PLAN_STALE`, with no
+replacement or new ID. Preview on an already converted branch yields
+`MAINTENANCE_CONVERSION_CONFLICT`.
+
+### 12.2 Private session binding and issued results
+
+Extend the authenticated session with exactly:
+
+```text
+publishConversionPlan({})
+applyApprovedConversion({transitionId,planHash,approvalRef})
+finishConversion({transitionId,planHash})
+```
+
+Their exact ordered results are, respectively, the public preview DTO,
+`{version:1,proof,proofHash,replayed}`, and the public convert DTO. Register each
+successful result in the existing invocation-local issued-object WeakSet. The
+converter returns the exact issued publish/finish result, never a copy.
+
+Construction adapters, executor and limits travel in a private converter-bound
+scope, not an extra argument to public `withRecoveryConversionScope`. Ordinary
+B0.2a consumers cannot successfully use the three new methods without that
+binding. Existing four method input/result shapes remain unchanged. Publication
+requires successful claim and pause in the current scope. Apply reads the
+protected plan itself, accepting no caller plan. Finish requires a successful
+current-scope apply tracked privately, never a DTO presented as authority. No
+database, path, SQL, verifier or generic writer escapes.
+
+### 12.3 Approval and immutable plan bindings
+
+The trusted synchronous approval calls have exactly these bindings:
+
+```text
+resolveApproval({kind:'candidate-schema-conversion',planHash,approvalRef,
+  instanceId,instanceCreatedAt,centerEpoch,executorId},ctx)
+  -> strict {approverId}
+authorizeApproval({kind:'candidate-schema-conversion',planHash,approvalRef,
+  instanceId,instanceCreatedAt,centerEpoch,executorId,approverId},ctx)
+  -> literal true
+```
+
+Require valid references and distinct executor/approver. Snapshot the resolved
+actor and repeat authorization with that same binding before mutation and
+immediately before commit. An accurate committed retry uses retained proof
+actors matching the configured executor and requested approval reference. It
+does not resolve an approver, request new mutation approval or apply obsolete
+plan TTL checks; current admin and source authority still apply.
+
+Use B0.1 plan/proof/completion codecs unchanged. Derive plan facts from the
+actual owner, stage, source, preparation, instance, current epoch, exact V4/V5
+checksums and registered policy. Its preconversion hash is the actual closed
+paused candidate hash and must equal the retained paused hash. The only new
+inventory filenames are `conversion-plan.json` and `conversion-complete.json`.
+
+### 12.4 Phase dispatch and old-facade exclusion
+
+First validate locator, owner, intake, pause, source and unreleased/unbound hold.
+A bounded marker observation then selects exactly the v4 or v5 full validator.
+V4 retains its phase-specific original/paused prehash binding and the existing
+interrupted-pause manual-reconciliation behavior.
+
+V5 receives the same parent budget and must have exactly one transition matching
+the protected plan hash, actual instance, current epoch and approval actors,
+paused mode and empty maintenance anchors/head. Although B0.1's general validator
+allows a historical conversion epoch after later recovery, this unfinished
+conversion branch requires `plan.centerEpoch === currentEpoch`. Do not compare
+current v5 bytes with the old paused hash: the original prehash remains bound
+through the chain, and any completion posthash binds the current bytes.
+
+A newly minted target after restart must recognize the exact v5 branch. The old
+four session methods then refuse with `RECOVERY_CONVERSION_PENDING`; converter
+operations can finish/replay it. Each old facade guard validates ownership before
+the v4 full phase validator, returning pending for valid ownership even on v5,
+and `RECOVERY_EVIDENCE_MISMATCH` for malformed/conflicting ownership. This is
+guard-outcome shorthand, not a requirement that `getRecoveryStatus` always throw.
+As in §7, when the independent locator/run/candidate-reference binding remains
+authenticated, its existing classifier may return the exact conservative
+`statusV2` DTO: `state:'indeterminate'`, `nextAction:'MANUAL_RECONCILIATION'`, and `preparePlanHash`,
+`newEpoch`, `holdId`, `writeMode`, `releasePlan` and `releasePlanHash` all null.
+Identity fields derive from the authenticated locator, never the corrupt owner.
+An invalid or unauthenticated locator must not produce a trusted partial DTO.
+Other operations continue to refuse; a valid conversion owner still yields
+`RECOVERY_CONVERSION_PENDING`, including on valid v5, and must not be swallowed
+by this classifier. No owner/proof check is weakened. Status performs zero
+writes, syncs, repairs or evidence regeneration; no old-workflow repair or resync
+is permitted on the conversion branch.
+
+### 12.5 Fixed owned engine and private time
+
+The new internal `migration-v5.js` exports only the fixed engine
+`applyOwnedCandidateSchemaV5(resources)`, not a public ownership boundary. Its
+private resources have exactly these fields:
+
+```text
+candidatePath, plan, planHash, approvalRef, executorId, approverId,
+budget, checkAuthorizationAndTime
+```
+
+Only the bridge supplies resources. The callback receives no DB and returns a
+validated time sample or refuses. The engine owns its connection and transaction;
+there is no caller handle or arbitrary SQL callback. Under the outer locks, the
+bridge checks the closed prehash before any mutable open.
+
+The engine validates exact v4, plan bindings and paused mode, uses
+`BEGIN IMMEDIATE`, repeats identity/epoch/policy/mode/authority/time checks, keeps
+foreign keys enabled, creates the frozen three tables and index, drops/recreates
+only `im_schema` with the exact v5 definition, and inserts marker and typed
+transition. Full v5 validation uses the shared budget before final
+authority/time/poison checks and native COMMIT. Prepare fresh statements after
+DDL. Do not rewrite marker 5 to 4 for validation or use a v4 clock guard after
+marker replacement. Preserve every inherited row, including clock, policy,
+epoch and identity; insert no audit, anchor or head.
+
+Capture native `Date.now` and `process.hrtime.bigint` privately; expose no sampler.
+Preview wall time must meet candidate floor, phase and instance chronology, with
+checked TTL addition. Apply wall time must meet plan creation, actual floor and
+private observations and be strictly before expiry. Establish a monotonic
+deadline from remaining TTL, without a nested reset. Persist `convertedAt` from
+one accepted mutation sample; the final sample must be at least `convertedAt`
+and satisfy both deadlines. No clamping or anchor write is allowed. Restart on
+uncommitted v4 rechecks wall TTL/floor without claiming persistent monotonic
+state. Tests may control `Date.now` only in an isolated child before imports.
+
+### 12.6 Uncertain COMMIT and completion durability
+
+If COMMIT throws, inspect the engine's own transaction state and roll back only
+if it remains active. Never roll back the committed writer. Close properly;
+unresolved close is fixed `MAINTENANCE_DURABILITY_UNCERTAIN`. Retain ownership of
+any unresolved resource: no candidate hashing, completion publication or success
+is permitted until it is safely closed. Neither a thrown close error nor a final
+filename proves closure.
+
+If native close actually establishes `isOpen === false` after successful COMMIT,
+a close response exception alone does not require refusal. Success still requires
+an actual reopen and full exact schema-5 plus same-transition/proof recognition,
+all candidate and completion file/directory durability, and exact completion
+validation below. This narrowly resolved native response does not relax
+connection ownership or fault poisoning; no second DDL/transition or rollback
+of the committed writer is allowed. Assertions must distinguish a later reader's
+read-transaction rollback from rollback of that committed writer.
+
+Reopen and inspect actual state under the same outer locks and budget; exact
+committed proof permits completion only when the protected namespace is valid:
+
+| Actual state | Outcome |
+| --- | --- |
+| Exact v4, original prehash, no new metadata | This attempt fails; a later explicit retry is allowed |
+| Exact v5 with the same plan/transition/proof and valid protected namespace | Conversion committed; continue completion under the rules below |
+| Conflicting or partial state | Conflict or durability uncertainty; retain evidence |
+
+Never automatically retry DDL or generate a new transition ID. `replayed:true`
+means the exact transition already existed at locked operation entry, not that
+the first attempt recovered a committed result after a COMMIT response failure.
+
+Finish validates exact v5/proof/approval bindings and closes all readers. Require
+standalone DELETE, stable identity, no aliases and no unknown sidecars. Sync the
+candidate file and directory, hash actual closed bytes, reconstruct B0.1 proof
+hash/completion, then no-replace publish or compare exact existing bytes and sync
+the completion file/directory. Every explicit exact retry reestablishes both
+durability boundaries; a visible completion is no bypass. Missing completion may
+be reconstructed from exact committed DB evidence **only if the protected
+namespace is otherwise valid**, including no unknown pending residue.
+
+| Completion/namespace observation | Required explicit-retry outcome |
+| --- | --- |
+| Missing completion, no residue, otherwise valid protected namespace | Exact committed proof permits reconstruction and durable no-replace publication; no second DDL/transition |
+| Final visible completion with publication durability uncertainty | Validate exact bytes/bindings and resync candidate and completion files/directories before success; visibility never establishes durability |
+| Conflicting completion/posthash | Reject without overwrite or adoption of changed bytes |
+| Pending artifact without a supported durable ownership/reconciliation record | Indeterminate/manual conservative refusal; preserve the artifact even if its bytes match expected completion |
+
+Test-observer provenance is not restart authority. No deletion, adoption, rename,
+generic pending cleanup or new reconciliation protocol is authorized by this
+package; §4's unknown-residue refusal remains in force. This is a bounded
+availability limitation, not automatic recovery from every crash. All successful
+explicit exact retries require the candidate and completion file/directory syncs
+above. Source/workspace/candidate locks span finish and final source checks.
+Original source, backup and old records remain untouched.
+
+### 12.7 Safe errors and bounded verification ownership
+
+Public converter errors are fixed local literals:
+
+```text
+MAINTENANCE_INVALID, MAINTENANCE_AUTH_DENIED, MAINTENANCE_APPROVAL_DENIED,
+MAINTENANCE_TARGET_STALE, MAINTENANCE_PLAN_STALE,
+MAINTENANCE_CONVERSION_CONFLICT, MAINTENANCE_READ_UNAVAILABLE,
+MAINTENANCE_DURABILITY_UNCERTAIN
+```
+
+Map recovery/storage failures conservatively through safe private identity or
+nonreflective handling, never foreign exception text. Old facade errors retain
+their `RECOVERY_*` vocabulary; §12.4's status-only conservative classification
+does not turn a malformed owner into valid ownership or ordinary workflow state.
+
+The three adjudicated expectation clarifications in §§12.4 and 12.6 require new
+native assertions for resolved close responses, unknown pending residue and
+status-specific classification. Retain the original RED evidence (207 pass,
+3 fail); these documentation corrections neither relabel it PASS nor claim that
+amended tests have executed. Parent QA independently checks the frozen contract
+and new evidence. The seven private session methods are the approved §12.2
+B0.2b extension; the public recovery facade remains exactly eight methods with
+no converter operational wiring or migration rollout, time-authority or schema-5
+backup-readiness claim.
+
+The source lane owns recovery.js, the two new internal modules and only a
+narrowly necessary fixed recovery-candidate helper, plus this contract. It owns
+syntax/pure probes and source-hash handoff. An independent test lane owns the
+new candidate-schema-v5 test and dedicated fixtures, including later native
+private-candidate lifecycle, preserved-row, approval/time, fault/COMMIT and
+durability checks. Source work neither reads nor runs that lane's moving tests.
+No dependencies, commits, pushes, services, production DB/config changes,
+server/MCP/CLI/export-barrel wiring or actual rollout belong to this assignment.
+
+### 12.8 Finite authenticated recovery-budget prerequisite
+
+The parent-approved prerequisite adds only
+`isRecoveryOperationBudget(value) -> boolean` to `recovery-records.js`: its
+entire implementation is the existing module-private WeakSet's `has(value)`.
+It exposes no registrar, callback or mutable private state. Copies, Proxies and
+primitives do not acquire identity. Existing budget construction, frozen
+facades and record formats remain unchanged; records do not import v5.
+
+`assertImSchemaV5Internal(db,parentBudget)` retains three budget forms:
+
+1. Omitted parent: existing standalone defaults.
+2. Trusted standalone composition: ordinary own-data `tick` and `limits`, with
+   partial lower-only schema limits and missing keys defaulted. Ordinary caller
+   metadata such as `start` remains compatible. The six permitted schema keys
+   are the four common DB limits below plus `maxMaintenanceAnchors=10000` and
+   `maxMaintenanceMetadataBytes=10485760`. This is trusted composition, not
+   ownership authentication.
+3. Exact authenticated recovery-budget identity: exactly the six positive
+   safe-integer limits `maxMessages<=10000`,
+   `maxVerifiedContentBytes<=104857600`, `maxOtherRecords<=10000`,
+   `maxElapsedMs<=10000`, `maxFileBytes<=134217728`,
+   `maxMetadataEntries<=10000`. No unknown/symbol/accessor/nonenumerable fields
+   are accepted. Native Proxy guards precede reflection of parent, limits and
+   tick; tick must be synchronous, non-Proxy, non-async and nongenerator.
+   Known thenables are refused without accessor evaluation; ordinary rejected
+   native promises are observed. Unbranded recovery-shaped parents (file/entry
+   methods or either filesystem limit) refuse instead of falling back to form 2.
+
+At composition boundaries pass the **same original parent object**, never a
+filtered external substitute. The existing legitimate private v5 accounting
+normalizer snapshots limits and tick once, projects only the four common DB
+limits, and retains its separate maintenance defaults. It neither drops nor
+reinterprets the parent's filesystem caps. Original `file`/`entry` functions and
+their accumulated accounting remain available to the rest of the same operation.
+No new converter public limits are introduced.
+
+The captured original tick runs with its original receiver before the first DB
+read, throughout validation and immediately before valid return. The local
+wrapper clock is supplementary: it never refreshes the original elapsed
+deadline, including time consumed before entry. Only an actual authenticated
+parent-tick invocation may translate an own-data `RECOVERY_BUSY` into a freshly
+generated `IM_V2_BUDGET_EXCEEDED`. Other errors from that invocation become fixed
+`IM_SCHEMA_MISMATCH`. Arbitrary DB/callback/standalone `RECOVERY_BUSY` is not
+globally translated. The accepted B0.1 own-data `IM_V2_BUDGET_EXCEEDED`
+classification for standalone/inherited failures is preserved. Error Proxies
+are rejected before reflection; no foreign error getters, messages, causes or
+raw SQL are exposed. Budget identity does not authenticate arbitrary DB authority
+and does not establish a general same-process sandbox.
+
+The dedicated `im-v2-schema-v5-recovery-budget.test.js` suite exercised actual
+`operationBudget(validationLimits(...))` against stable legal synthetic v5
+fixtures, transition/anchor/business corruption, lower DB caps, retained
+filesystem caps, hostile inputs and deterministic original-deadline exhaustion.
+Its initial native Node 24.19.0 / SQLite 3.53.3 run passed 25 tests with zero
+failures/skips, replacing the concrete shape-incompatibility blocker above.
+Parent independent review remains required before resuming the converter lane.
+This prerequisite implements no converter, time writer, maintenance execution or
+schema-5 operational rollout and grants no B0.2b acceptance.

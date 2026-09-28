@@ -143,7 +143,8 @@ try {
     } else {
       assert.equal(mode, 'below'); assert.equal(last.phase, 'ensure-intent');
       assert.equal(samples.length, 1); assert.equal(samples[0].supplied, report.floor - 1);
-      assert.match(samples[0].stack, /recovery\.js:480:/);
+      assert.equal(samples[0].phase, 'ensure-intent');
+      assert.match(samples[0].stack, /^[ \t]+at timestamp \((?:[^()\r\n]*[\\/])?recovery\.js:[1-9]\d*:[1-9]\d*\)$/m);
       assert.ok(events.some(e => e.op === 'fsync' && e.path === join(s.dir, 'conversion-owner.json') && e.seq <= samples[0].eventSequence));
       // ONE same-input retry, after an explicit legitimate test-wall advance.
       const retained = evidence(), owner = report.firstClaim.owner;

@@ -54,7 +54,8 @@ for (const [route, enabled] of [['fresh', false], ['closed-v3', true], ['registe
     assert.deepEqual(empty, { version: 1, owner: null, pauseIntent: null, paused: null });
     let first;
     const paused = scope(target, context, session => {
-      assert.deepEqual(Object.keys(session), ['inspectIntake', 'readConversionRecords', 'claimConversion', 'ensurePaused']);
+      assert.deepEqual(Object.keys(session), ['inspectIntake', 'readConversionRecords', 'claimConversion', 'ensurePaused',
+        'publishConversionPlan', 'applyApprovedConversion', 'finishConversion']);
       first = session.claimConversion({}); assert.equal(first.replayed, false);
       assert.equal(session.claimConversion({}).replayed, true);
       assert.equal(session.inspectIntake({}).phase, 'CLAIMED');
@@ -88,6 +89,18 @@ test('session exact receiver/arity/input, poison, result identity, expiry and re
   foreign = scope(target, context, session => { escaped = session; return session.inspectIntake({}); });
   assert.throws(() => escaped.inspectIntake({}), invalid);
   const methods = ['inspectIntake', 'readConversionRecords', 'claimConversion', 'ensurePaused'];
+  for (const [method, input] of [
+    ['publishConversionPlan', {}],
+    ['applyApprovedConversion', { transitionId: s.staged.runId, planHash: 'a'.repeat(64), approvalRef: 'approved' }],
+    ['finishConversion', { transitionId: s.staged.runId, planHash: 'a'.repeat(64) }],
+  ]) {
+    assert.throws(() => scope(target, context, session => session[method](input)), invalid);
+    assert.throws(() => scope(target, context, session => {
+      const issued = session.inspectIntake({});
+      assert.throws(() => session[method](input), invalid);
+      return issued;
+    }), invalid, 'caught converter-only misuse poisons the ordinary outer scope');
+  }
   const proxy = new Proxy({}, { ownKeys() { throw Error('trap'); }, getPrototypeOf() { throw Error('trap'); } });
   const getter = Object.defineProperty({}, 'x', { get() { throw Error('trap'); } });
   for (const name of methods) for (const args of [[], [{}, {}], [null], [[]], [Object.create(null)], [{ x: 1 }], [getter], [{ [Symbol()]: 1 }], [proxy]]) {

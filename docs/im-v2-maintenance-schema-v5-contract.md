@@ -217,6 +217,21 @@ soft-budgeted between calls, not promised interruptible. Fixed safe errors are
 `IM_SCHEMA_MISMATCH` and `IM_V2_BUDGET_EXCEEDED`; no SQL, row data or native error
 details leak through them.
 
+Internal budget forms are omitted/default, trusted standalone partial schema
+limits (ordinary metadata such as `start` allowed), or exact authenticated
+recovery-operation identity. The latter has the four common DB caps plus
+`maxFileBytes<=134217728` and `maxMetadataEntries<=10000`, all positive safe
+integers; its filesystem accounting stays on the original object while private
+v5 accounting keeps separate maintenance defaults. Capture original limits/tick
+once and invoke that tick before DB reads, throughout checks and before return;
+a supplementary local clock never resets the parent's deadline. Only that
+authenticated tick's own-data `RECOVERY_BUSY` maps to a fresh budget error;
+unrelated `RECOVERY_BUSY` remains mismatch. Standalone/inherited own-data
+`IM_V2_BUDGET_EXCEEDED` compatibility remains. Proxy/accessor/symbol/unknown
+limit fields and unbranded recovery-shaped parents refuse. See the precise
+[finite budget seam](im-v2-recovery-conversion-contract.md#128-finite-authenticated-recovery-budget-prerequisite).
+This composition support supplies no DB ownership or converter/time-writer authority.
+
 ## 3. Explicit conversion and route matrix
 
 Conversion is supported only for an **exclusive, paused, owned recovery or

@@ -16,6 +16,7 @@ export const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 export const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
 export const exists = path => { try { lstatSync(path); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } };
 const operationBudgets = new WeakSet();
+export const isRecoveryOperationBudget = value => operationBudgets.has(value);
 export function operationBudget(limits, inherited) {
   if (inherited !== undefined) {
     if (!operationBudgets.has(inherited) || Object.keys(limits).some(key => inherited.limits[key] > limits[key])) invalid();

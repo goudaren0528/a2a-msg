@@ -84,7 +84,7 @@ test('bounded A7: fresh Python HTTP and SDK MCP processes, TLS, durable JS resta
   await bounded(new Promise((done, reject) => {
     server.once('error', reject); server.listen(0, '127.0.0.1', done);
   }), 'loopback TLS listen');
-  const serverUrl = `https://localhost:${server.address().port}`;
+  const serverUrl = `https://127.0.0.1:${server.address().port}`;
   const storage = join(root, 'receiver-storage');
   const attachments = join(storage, 'attachments');
   mkdirSync(attachments, { recursive: true, mode: 0o700 });

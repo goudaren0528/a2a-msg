@@ -7,6 +7,7 @@ import { withClosedBackupSnapshot } from '../backup-snapshot.js';
 import { createRegistryLock } from '../registry-lock.js';
 import { initializeImSchemaV4, migrateImSchemaV4 } from './migration.js';
 import { assertImSchemaV4Internal, projectCandidateBudget, V4_DDL } from './schema-internal.js';
+import { assertImSchemaV5Internal, V5_DDL } from './schema-v5-internal.js';
 import { assertFrozenV3Structure, V3_CHECKSUM, V3_DDL } from './schema-history.js';
 import { createImV2ClockGuard } from './clock.js';
 import { decodeRecoveryRecord, encodeRecoveryRecord, hashRecoveryRecord, validateRecoveryNormalizationBindings, validateRecoveryPauseBindings, validateRecoveryPlanBindings } from './recovery-plan.js';
@@ -43,6 +44,20 @@ export function standalone(path, budget) {
   const { before, mode } = closedHeader(path, budget);
   if (mode !== 'DELETE') throw fail('RECOVERY_INDETERMINATE');
   return before;
+}
+// Fixed native-connection cleanup shared with the conversion engine. Retaining
+// unresolved closes in the same ledger prevents subsequent bridge readers from
+// hashing/publishing even after a fresh target is minted in this process.
+export function closeConversionCandidate(db, path) {
+  if (!db) return;
+  try { db.close(); }
+  catch {
+    try { if (db.isOpen) db.close(); } catch { /* retained below */ }
+    if (db.isOpen !== false) {
+      unclosedCandidates.set(path, db);
+      throw fail('RECOVERY_DURABILITY_UNCERTAIN');
+    }
+  }
 }
 function closedHeader(path, budget) {
   privateDirectory(dirname(path)); const before = protectedPath(path);
@@ -216,8 +231,12 @@ export function validateV4(db, budget) {
   for (const row of db.prepare('PRAGMA foreign_key_check').iterate()) { budget.tick(); invalid(); }
   budget.tick();
 }
-function facts(db, stage, budget) {
-  validateV4(db, budget);
+function facts(db, stage, budget, converted = false) {
+  if (converted) {
+    assertImSchemaV5Internal(db, budget);
+    for (const row of db.prepare('PRAGMA integrity_check').iterate()) { budget.tick(); if (row.integrity_check !== 'ok') invalid(); }
+    for (const row of db.prepare('PRAGMA foreign_key_check').iterate()) { budget.tick(); invalid(); }
+  } else validateV4(db, budget);
   const identity = db.prepare('SELECT * FROM im_instance_identity').get();
   const center = db.prepare('SELECT * FROM im_center_state').get();
   const writeMode = db.prepare('SELECT write_mode FROM im_settings').get().write_mode;
@@ -244,6 +263,54 @@ export function candidateFacts(path, stage, budget) {
     if (error?.code === 'IM_V2_BUDGET_EXCEEDED') throw fail('RECOVERY_BUSY');
     invalid();
   }
+}
+// Fixed read for the owned conversion branch only. Never used by ordinary P5
+// validation. Marker projection is bounded before either exact full validator.
+export function conversionCandidateFacts(path, stage, budget) {
+  return database(path, budget, false, db => {
+    db.exec('BEGIN');
+    try {
+      for (const row of db.prepare('SELECT length(CAST(name AS BLOB))+length(CAST(tbl_name AS BLOB))+coalesce(length(CAST(sql AS BLOB)),0) AS bytes FROM sqlite_schema LIMIT ?').iterate(budget.limits.maxMetadataEntries + 1)) {
+        budget.entry(); if (!Number.isSafeInteger(row.bytes) || row.bytes > 65536) invalid();
+      }
+      const marker = db.prepare("SELECT CASE WHEN typeof(version)='integer' THEN version ELSE NULL END AS version,length(CAST(migration_checksum AS BLOB)) AS bytes FROM im_schema LIMIT 2").all();
+      budget.tick();
+      if (marker.length !== 1 || ![4, 5].includes(marker[0].version) || marker[0].bytes !== 64) invalid();
+      const schemaVersion = marker[0].version, ddl = schemaVersion === 5 ? V5_DDL : V4_DDL;
+      const objects = new Set(ddl.map(sql => /^CREATE (?:TABLE|INDEX) (im_\w+)/.exec(sql)[1]));
+      for (const row of db.prepare('SELECT name,tbl_name,sql FROM sqlite_schema LIMIT ?').iterate(budget.limits.maxMetadataEntries + 1)) {
+        budget.tick();
+        if (!objects.has(row.name) && !(row.sql === null && objects.has(row.tbl_name) && /^sqlite_autoindex_im_\w+_\d+$/.test(row.name))) invalid();
+      }
+      const actual = facts(db, stage, budget, schemaVersion === 5);
+      if (!db.prepare('SELECT 1 FROM im_retention_policies WHERE policy_hash=?').get(stage.policyHash)) invalid();
+      let transition = null;
+      if (schemaVersion === 5) {
+        // Full v5 validation has already bounded and checked all transition text.
+        const rows = db.prepare('SELECT * FROM im_center_schema_transitions LIMIT 2').all();
+        if (rows.length !== 1 || db.prepare('SELECT 1 FROM im_maintenance_time_anchors LIMIT 1').get() ||
+            db.prepare('SELECT 1 FROM im_maintenance_time_head LIMIT 1').get()) invalid();
+        transition = rows[0];
+      }
+      const clockFloor = db.prepare('SELECT last_observed_at FROM im_clock WHERE singleton=1').get().last_observed_at;
+      budget.tick(); return { ...actual, schemaVersion, transition, clockFloor };
+    } finally { if (db.isTransaction) db.exec('ROLLBACK'); }
+  });
+}
+// Guard-only identity observation: excludes the old facade before either full
+// phase validator while proving that retained ownership refers to this DB.
+export function conversionOwnershipFacts(path, budget) {
+  return database(path, budget, false, db => {
+    db.exec('BEGIN');
+    try {
+      const identities = db.prepare('SELECT length(CAST(instance_id AS BLOB)) AS bytes FROM im_instance_identity LIMIT 2').all();
+      const epochs = db.prepare('SELECT length(CAST(center_epoch AS BLOB)) AS bytes FROM im_center_state LIMIT 2').all();
+      if (identities.length !== 1 || identities[0].bytes !== 36 || epochs.length !== 1 || epochs[0].bytes !== 36) invalid();
+      const identity = db.prepare('SELECT instance_id,created_at FROM im_instance_identity LIMIT 1').get();
+      const center = db.prepare('SELECT center_epoch FROM im_center_state LIMIT 1').get();
+      budget.tick(); return { identity, center };
+    } finally { if (db.isTransaction) db.exec('ROLLBACK'); }
+  });
 }
 // Fixed conversion-only mutation. The gate receives no database or transaction;
 // it can only refuse. Caller retains source/workspace/candidate controls.
