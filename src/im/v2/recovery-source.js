@@ -9,6 +9,12 @@ import { deepFreeze, exists, fail, fileHash, invalid, privateDirectory, protecte
   ref, rejectThenable, same, shape, streamFile, uuid } from './recovery-records.js';
 
 const closed = new WeakMap();
+function rejectNative5(proof) {
+  const { record, sourceEvidence } = proof;
+  if (record.recordVersion === 4 && record.publicationKind === 'native-v5' && record.schemaVersion === 5 &&
+      sourceEvidence.version === 2 && sourceEvidence.registryFormat === 4 && sourceEvidence.schemaVersion === 5 &&
+      record.backupId === sourceEvidence.backupId) throw fail('RECOVERY_UNSUPPORTED');
+}
 export const recordCopy = (kind, value) => decodeRecoveryRecord(kind, encodeRecoveryRecord(kind, value));
 export function adapter(owner, name, args, code, literal = true) {
   try {
@@ -102,6 +108,7 @@ export function sourceTable(catalog, evidenceAuthority, now, createReleaser) {
     const entry = entries.get(input.sourceRef); if (!entry) invalid(); isolation(input, ctx);
     if (entry.kind === 'registered-backup') {
       const inspect = proof => {
+        rejectNative5(proof);
         const e = recordCopy('registeredSourceEvidence', proof.sourceEvidence);
         if (e.backupId !== entry.backupId || e.schemaVersion !== (input.candidateKind === 'snapshot_recovery' ? 4 : 3)) invalid();
         if (mode === 'held' && (JSON.stringify(proof.hold) !== JSON.stringify(identity.receipt) ||
@@ -110,18 +117,19 @@ export function sourceTable(catalog, evidenceAuthority, now, createReleaser) {
         isolation(input, ctx); budget.tick(); return result;
       };
       // Even a read-only scope first authenticates the registry through A's private
-      // WeakMap. An unestablished intent has no durable effects.
+      // WeakMap. Target4 admission rejects native5 before its durability resync
+      // and before old codec consumption or automatic hold/binding publication.
       if (mode === 'prepare') return withRecoverySource(entry.registry, { backupId: entry.backupId,
-        recoveryRunId: identity.recoveryRunId, stageHash: identity.stageHash, preparePlanHash: identity.preparePlanHash }, ctx, inspect);
+        recoveryRunId: identity.recoveryRunId, stageHash: identity.stageHash, preparePlanHash: identity.preparePlanHash }, ctx, inspect, budget, rejectNative5);
       if (mode === 'held') {
         if (!identity.receipt || identity.receipt.backupId !== entry.backupId) invalid();
-        return withRecoveryHold(entry.registry, { backupId: entry.backupId, holdId: identity.receipt.holdId }, ctx, inspect, budget);
+        return withRecoveryHold(entry.registry, { backupId: entry.backupId, holdId: identity.receipt.holdId }, ctx, inspect, budget, rejectNative5);
       }
       if (mode === 'read') {
-        withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, () => {});
-        return entry.registry.withVerifiedBackup({ backupId: entry.backupId }, ctx, inspect);
+        withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, rejectNative5, budget, rejectNative5);
+        return entry.registry.withVerifiedBackup({ backupId: entry.backupId }, ctx, inspect, budget, rejectNative5);
       }
-      return withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, inspect);
+      return withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, inspect, budget, rejectNative5);
     }
     if (input.candidateKind !== 'v3_import') invalid();
     const source = closed.get(entry.source), before = inspectClosed(source.path, budget);
@@ -146,7 +154,7 @@ export function sourceTable(catalog, evidenceAuthority, now, createReleaser) {
     const entry = entries.get(input.sourceRef);
     if (entry?.kind !== 'registered-backup') { if (receipt !== null) invalid(); return null; }
     if (!receipt || receipt.backupId !== entry.backupId) invalid();
-    withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, () => {});
+    withRecoverySourceIntent(entry.registry, { backupId: entry.backupId }, ctx, rejectNative5, undefined, rejectNative5);
     const actual = entry.registry.getHold({ holdId: receipt.holdId }, ctx);
     if (JSON.stringify(actual.hold) !== JSON.stringify(receipt) || actual.release !== null) invalid();
     return deepFreeze(actual);

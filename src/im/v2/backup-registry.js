@@ -6,12 +6,36 @@ import { withClosedBackupSnapshot } from '../backup-snapshot.js';
 import { withProtectedBackupCopy } from '../backup-registry.js';
 import { getInstanceIdentity } from '../schema.js';
 import { projectCandidateBudget } from './schema-internal.js';
-import { createImV2Backup, validationLimits, verifyV4 } from './backup.js';
+import { createImV2Backup, validationLimits, verifyNativeBackup } from './backup.js';
+import { decodeImV5BackupRecord, encodeImV5BackupRecord } from './backup-v5-records.js';
 import { authorize, canonical, decode, deepFreeze, directoryEntries, exists, fail, fileHash, hash, invalid, operationBudget, privateDirectory,
   protectedPath, publishBytes, publishPending, readBytes, reserve, same, sha, shape, storage,
   ref, rejectThenable, resyncPublished, streamFile, time, uuid, writeAll } from './recovery-records.js';
 
 const trustedRegistries = new WeakMap();
+function trustedFailure(error) {
+  try {
+    if (!utilTypes.isProxy(error)) {
+      const code = Object.getOwnPropertyDescriptor(error, 'code')?.value;
+      if (code === 'IM_V2_BUDGET_EXCEEDED') return fail('RECOVERY_BUSY');
+      if (['RECOVERY_INVALID', 'RECOVERY_EVIDENCE_MISMATCH', 'RECOVERY_AUTH_DENIED',
+        'RECOVERY_APPROVAL_DENIED', 'RECOVERY_BUSY', 'RECOVERY_UNSUPPORTED',
+        'RECOVERY_DURABILITY_UNCERTAIN', 'RECOVERY_CALLBACK_FAILED'].includes(code)) return fail(code);
+    }
+  } catch { /* Classification cannot invoke error getters or defeat poisoning. */ }
+  return fail('RECOVERY_EVIDENCE_MISMATCH');
+}
+function registeredRecord(bytes) {
+  try {
+    if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > 65536) invalid();
+    const tag = JSON.parse(bytes.toString('utf8'));
+    if (tag?.recordVersion === 4 && tag.publicationKind === 'native-v5')
+      return decodeImV5BackupRecord('record', bytes);
+    if (tag?.recordVersion === 3 && ['native-v4', 'imported-registered-v3'].includes(tag.publicationKind))
+      return decode('record', bytes);
+    invalid();
+  } catch { invalid(); }
+}
 const synchronous = fn => typeof fn === 'function' && !['[object AsyncFunction]', '[object AsyncGeneratorFunction]', '[object GeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 function adminGate(authority, context) {
   try {
@@ -102,25 +126,33 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
   };
   const read = (dir, id, kind, suffix, budget) => decode(kind, readBytes(leaf(dir, id, suffix), budget));
   const write = (dir, id, kind, data, suffix, budget) => publishBytes(leaf(dir, id, suffix), canonical(kind, data), budget);
-  function verifyLocked(backupId, budget, cache) {
+  function verifyLocked(backupId, budget, cache, admit) {
     if (cache?.has(backupId)) return cache.get(backupId);
-    const record = read('records', backupId, 'record', undefined, budget);
+    const record = registeredRecord(readBytes(leaf('records', backupId), budget));
     if (record.backupId !== backupId) invalid();
     const evidenceBytes = readBytes(leaf('records', backupId, '.source.json'), budget);
-    const sourceEvidence = decode('source', evidenceBytes);
+    const sourceEvidence = record.publicationKind === 'native-v5'
+      ? decodeImV5BackupRecord('source', evidenceBytes) : decode('source', evidenceBytes);
     if (sha(evidenceBytes) !== record.sourceEvidenceHash) invalid();
     for (const key of ['backupId', 'instanceId', 'instanceCreatedAt', 'schemaVersion', 'schemaChecksum', 'fileHash', 'manifestHash', 'completedAt'])
       if (record[key] !== sourceEvidence[key]) invalid();
     const path = leaf('artifacts', backupId, '.sqlite'), manifestPath = leaf('artifacts', backupId, '.manifest.json');
     const manifestBytes = readBytes(manifestPath, budget);
     if (sha(manifestBytes) !== record.manifestHash) invalid();
-    if (record.publicationKind === 'native-v4') {
-      if (sourceEvidence.registryFormat !== 3 || exists(leaf('records', backupId, '.import.json'))) invalid();
-      const { manifest } = verifyV4(path, manifestBytes, bounds, budget);
+    switch (record.publicationKind) {
+    case 'native-v4':
+    case 'native-v5': {
+      const v5 = record.publicationKind === 'native-v5';
+      if (sourceEvidence.version !== (v5 ? 2 : 1) || sourceEvidence.registryFormat !== (v5 ? 4 : 3) ||
+          exists(leaf('records', backupId, '.import.json'))) invalid();
+      const { manifest } = verifyNativeBackup(path, manifestBytes, bounds, budget, backupId);
       if (manifest.backupId !== backupId || manifest.sourceId !== record.instanceId || manifest.sourceCreatedAt !== record.instanceCreatedAt ||
+          manifest.formatVersion !== (v5 ? 3 : 2) || manifest.schemaVersion !== record.schemaVersion ||
           manifest.fileHash !== record.fileHash || manifest.schemaChecksum !== record.schemaChecksum || manifest.completedAt !== record.completedAt) invalid();
-    } else {
-      if (sourceEvidence.registryFormat !== 2) invalid();
+      break;
+    }
+    case 'imported-registered-v3': {
+      if (sourceEvidence.version !== 1 || sourceEvidence.registryFormat !== 2) invalid();
       const originalBytes = readBytes(leaf('records', backupId, '.import.json'), budget);
       if (sha(originalBytes) !== sourceEvidence.importedRecordHash) invalid();
       const original = oldRecord(originalBytes);
@@ -129,9 +161,23 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
       const manifest = JSON.parse(manifestBytes.toString('utf8'));
       if (manifest.approvalId !== original.backupApprovalId || manifest.toolVersion !== original.toolVersion) invalid();
       verifyV3(path, manifestPath, record, budget);
+      break;
+    }
+    default: invalid();
+    }
+    const verified = deepFreeze({ record, sourceEvidence });
+    // Presence of the trusted old-P5 admission guard only narrows this scope.
+    // Never invoke it with a pre-durability proof: no callback can consume or
+    // leak unresynced metadata through this internal refusal-only seam.
+    if (admit !== undefined && record.publicationKind === 'native-v5') throw fail('RECOVERY_UNSUPPORTED');
+    if (record.publicationKind === 'native-v5') {
+      // A visible final record after uncertain publication is not a durable
+      // proof. Reopen/scope verification reestablishes the whole chain, only
+      // after full validation and under this same lock and original budget.
+      for (const published of [path, manifestPath, leaf('records', backupId, '.source.json'), leaf('records', backupId)])
+        resyncPublished(published, budget);
     }
     budget.tick();
-    const verified = deepFreeze({ record, sourceEvidence });
     cache?.set(backupId, verified);
     return verified;
   }
@@ -139,60 +185,86 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
   // legacy bridge below. Neither facade nor callback receives it.
   function commitLocked(manifest, publicationKind, originalBytes, budget) {
     const backupId = manifest.backupId;
-    const imported = publicationKind === 'imported-registered-v3';
+    let imported = false, v5 = false;
+    switch (publicationKind) {
+      case 'imported-registered-v3':
+        if (manifest.schemaVersion !== 3) invalid();
+        imported = true; break;
+      case 'native-v4':
+        if (manifest.formatVersion !== 2 || manifest.schemaVersion !== 4 || originalBytes !== undefined) invalid();
+        break;
+      case 'native-v5':
+        if (manifest.formatVersion !== 3 || manifest.schemaVersion !== 5 || originalBytes !== undefined) invalid();
+        v5 = true; break;
+      default: invalid();
+    }
     const original = imported ? oldRecord(originalBytes) : null;
     const manifestBytes = readBytes(leaf('artifacts', backupId, '.manifest.json'), budget);
-    const sourceEvidence = { version: 1, kind: 'registered-backup', sourceRef: `backup:${backupId}`,
-      registryFormat: imported ? 2 : 3, instanceId: manifest.sourceId,
+    const sourceEvidence = { version: v5 ? 2 : 1, kind: 'registered-backup', sourceRef: `backup:${backupId}`,
+      registryFormat: imported ? 2 : v5 ? 4 : 3, instanceId: manifest.sourceId,
       instanceCreatedAt: imported ? original.instanceCreatedAt : manifest.sourceCreatedAt,
       backupId, fileHash: manifest.fileHash, manifestHash: sha(manifestBytes), schemaVersion: manifest.schemaVersion,
       schemaChecksum: manifest.schemaChecksum, completedAt: manifest.completedAt,
       importedRecordHash: imported ? sha(originalBytes) : null };
-    const sourceBytes = canonical('source', sourceEvidence);
-    const record = { recordVersion: 3, backupId, instanceId: sourceEvidence.instanceId, instanceCreatedAt: sourceEvidence.instanceCreatedAt,
+    const sourceBytes = v5 ? encodeImV5BackupRecord('source', sourceEvidence) : canonical('source', sourceEvidence);
+    const record = { recordVersion: v5 ? 4 : 3, backupId, instanceId: sourceEvidence.instanceId, instanceCreatedAt: sourceEvidence.instanceCreatedAt,
       schemaVersion: manifest.schemaVersion, schemaChecksum: manifest.schemaChecksum, fileHash: manifest.fileHash,
       manifestHash: sourceEvidence.manifestHash, completedAt: manifest.completedAt,
       artifactReference: `registry/artifacts/${backupId}.sqlite`, publicationKind, sourceEvidenceHash: sha(sourceBytes), registeredAt: now() };
     if (imported) publishBytes(leaf('records', backupId, '.import.json'), originalBytes, budget);
     publishBytes(leaf('records', backupId, '.source.json'), sourceBytes, budget);
-    write('records', backupId, 'record', record, undefined, budget);
+    publishBytes(leaf('records', backupId), v5 ? encodeImV5BackupRecord('record', record) : canonical('record', record), budget);
     return verifyLocked(backupId, budget);
   }
   function verify({ backupId } = {}, context) {
     authorize(authority, context); const budget = operationBudget(bounds);
     return store.withLock(() => verifyLocked(backupId, budget));
   }
-  function withVerifiedBackup({ backupId } = {}, context, callback) {
+  function withVerifiedBackup({ backupId } = {}, context, callback, inheritedBudget, admit) {
     authorize(authority, context);
-    if (typeof callback !== 'function' || Object.prototype.toString.call(callback) === '[object AsyncFunction]') invalid();
-    const budget = operationBudget(bounds);
-    return verifiedScope(backupId, budget, callback);
+    if (!synchronous(callback)) invalid();
+    const budget = operationBudget(bounds, inheritedBudget);
+    return verifiedScope(backupId, budget, callback, undefined, admit);
   }
-  function verifiedScope(backupId, budget, callback, prepare = undefined) {
+  function verifiedScope(backupId, budget, callback, prepare = undefined, admit = undefined) {
     let active = true;
-    let callerFailure;
+    let callerFailure, copying = false, poisoned;
+    const poison = error => {
+      if (poisoned) return poisoned;
+      poisoned = fail('RECOVERY_EVIDENCE_MISMATCH'); active = false;
+      poisoned = trustedFailure(error); return poisoned;
+    };
     const callerSentinel = fail('RECOVERY_CALLBACK_FAILED');
     try { return store.withLock(() => {
-    const verified = verifyLocked(backupId, budget), expectedHash = verified.record.fileHash;
+    const verified = verifyLocked(backupId, budget, undefined, admit), expectedHash = verified.record.fileHash;
     const { hold, binding } = prepare ? prepare(budget) : {};
     const copyTo = writeChunk => {
       if (!active) throw fail('RECOVERY_INVALID');
-      if (typeof writeChunk !== 'function' || Object.prototype.toString.call(writeChunk) === '[object AsyncFunction]') invalid();
-      streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
+      if (copying) throw poison(fail('RECOVERY_EVIDENCE_MISMATCH'));
+      if (!synchronous(writeChunk)) invalid();
+      copying = true;
+      try { streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
         let result;
         try { result = writeChunk(Buffer.from(chunk)); }
-        catch (error) { callerFailure = { error }; throw error; }
-        try { rejectThenable(result); } catch (e) { active = false; throw e; }
+        // Keep a synchronous sink throw local to copyTo: the consumer may
+        // catch it and continue, including falsy thrown values. Only an error
+        // escaping the outer callback needs the coordinator sentinel below.
+        catch (error) { throw error; }
+        try { rejectThenable(result); } catch (error) { throw poison(error); }
+        if (poisoned) throw poisoned;
       }, budget);
       if (fileHash(leaf('artifacts', backupId, '.sqlite'), budget) !== expectedHash) invalid();
+      } finally { copying = false; }
     };
       const proof = Object.freeze({ ...verified, ...(hold === undefined ? {} : { hold, binding }), copyTo });
       let result;
       try { result = callback(proof); }
-      catch (error) { if (error !== callerSentinel) callerFailure = { error }; throw callerSentinel; }
+      catch (error) { callerFailure = { error }; throw callerSentinel; }
       rejectThenable(result);
+      if (poisoned) throw poisoned;
       callerFailure = undefined;
-      verifyLocked(backupId, budget);
+      verifyLocked(backupId, budget, undefined, admit);
+      if (poisoned) throw poisoned;
       return result;
     }); } catch (error) {
       if (callerFailure && (error === callerSentinel || error?.code === 'RECOVERY_EVIDENCE_MISMATCH')) throw callerFailure.error;
@@ -271,49 +343,52 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     if (value.boundAt < hold.createdAt) invalid();
     write('holds', hold.holdId, 'binding', value, '.binding.json', budget); return deepFreeze(value);
   }
-  function withRecoverySourceLocked(input, context, callback) {
+  function withRecoverySourceLocked(input, context, callback, inheritedBudget, admit) {
     authorize(authority, context);
     shape(input, ['backupId', 'recoveryRunId', 'stageHash', 'preparePlanHash']);
     if (!uuid(input.backupId) || !uuid(input.recoveryRunId) || !hash(input.stageHash) ||
         (input.preparePlanHash !== null && !hash(input.preparePlanHash)) ||
-        typeof callback !== 'function' || Object.prototype.toString.call(callback) === '[object AsyncFunction]') invalid();
-    const budget = operationBudget(bounds);
+        !synchronous(callback)) invalid();
+    const budget = operationBudget(bounds, inheritedBudget);
     return verifiedScope(input.backupId, budget, callback, () => {
       const hold = createStageHoldLocked(input, budget);
       const binding = input.preparePlanHash === null ? null : bindPrepareHoldLocked({ holdId: hold.holdId, preparePlanHash: input.preparePlanHash }, budget);
       return { hold, binding };
-    });
+    }, admit);
   }
-  function withRecoverySourceIntentLocked(input, context, callback) {
+  function withRecoverySourceIntentLocked(input, context, callback, inheritedBudget, admit) {
     authorize(authority, context);
     shape(input, ['backupId']);
-    if (!uuid(input.backupId) || typeof callback !== 'function' ||
-        Object.prototype.toString.call(callback) === '[object AsyncFunction]') invalid();
-    const backupId = input.backupId, budget = operationBudget(bounds);
-    let state = 'open-unestablished', established, identity, latched, sinkFailure;
+    if (!uuid(input.backupId) || !synchronous(callback)) invalid();
+    const backupId = input.backupId, budget = operationBudget(bounds, inheritedBudget);
+    let state = 'open-unestablished', established, identity, latched, sinkFailure, copying = false;
     const callbackSentinel = fail('RECOVERY_CALLBACK_FAILED');
     const latch = error => { latched ??= { error }; state = 'poisoned'; };
-    const trustedFailure = error => error?.code?.startsWith('RECOVERY_') ? error : fail('RECOVERY_EVIDENCE_MISMATCH');
     const copyTo = (expectedHash, writeChunk) => {
       if (state !== 'established') throw fail('RECOVERY_INVALID');
-      if (typeof writeChunk !== 'function' || Object.prototype.toString.call(writeChunk) === '[object AsyncFunction]') invalid();
-      streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
+      if (copying) { const error = fail('RECOVERY_EVIDENCE_MISMATCH'); latch(error); throw error; }
+      if (!synchronous(writeChunk)) invalid();
+      copying = true;
+      try { streamFile(leaf('artifacts', backupId, '.sqlite'), chunk => {
         let result;
         try { result = writeChunk(Buffer.from(chunk)); }
         catch (error) { sinkFailure = { error }; throw callbackSentinel; }
         try { rejectThenable(result); } catch (error) { latch(error); throw error; }
+        if (latched) throw callbackSentinel;
       }, budget);
       if (fileHash(leaf('artifacts', backupId, '.sqlite'), budget) !== expectedHash) invalid();
+      } finally { copying = false; }
     };
     try {
       return store.withLock(() => {
-        const verified = verifyLocked(backupId, budget);
+        const verified = verifyLocked(backupId, budget, undefined, admit);
         const establish = value => {
           if (state === 'expired' || state === 'poisoned') throw fail('RECOVERY_INVALID');
           if (state === 'establishing') {
             const error = fail('RECOVERY_EVIDENCE_MISMATCH'); latch(error); throw error;
           }
           try {
+            if (utilTypes.isProxy(value)) invalid();
             shape(value, ['recoveryRunId', 'stageHash', 'preparePlanHash']);
             if (!uuid(value.recoveryRunId) || !hash(value.stageHash) ||
                 (value.preparePlanHash !== null && !hash(value.preparePlanHash))) invalid();
@@ -333,8 +408,12 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
             identity = requested; established = proof; state = 'established';
             return proof;
           } catch (error) {
-            const safe = trustedFailure(error);
-            latch(safe); throw latched.error;
+            // Poison before any classification of an arbitrary thrown value.
+            if (!latched) {
+              latch(fail('RECOVERY_EVIDENCE_MISMATCH'));
+              latched.error = trustedFailure(error);
+            }
+            throw latched.error;
           }
         };
         let result;
@@ -343,7 +422,7 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
         try { rejectThenable(result); }
         catch (error) { latch(error); throw error; }
         if (latched) throw callbackSentinel;
-        verifyLocked(backupId, budget);
+        verifyLocked(backupId, budget, undefined, admit);
         if (latched) throw callbackSentinel;
         return result;
       });
@@ -357,13 +436,13 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     authorize(authority, context); const budget = operationBudget(bounds);
     return store.withLock(() => holdLocked(holdId, budget));
   }
-  function heldLocked(input,budget) {
-    const cache=new Map(), verified=verifyLocked(input.backupId,budget,cache);
+  function heldLocked(input,budget,admit) {
+    const cache=new Map(), verified=verifyLocked(input.backupId,budget,cache,admit);
     const held=holdLocked(input.holdId,budget,cache,true);
     if (held.hold.backupId!==input.backupId) invalid();
     return deepFreeze({...verified,...held});
   }
-  function withRecoveryHoldLocked(input,context,callback,inheritedBudget) {
+  function withRecoveryHoldLocked(input,context,callback,inheritedBudget,admit) {
     const budget=operationBudget(bounds,inheritedBudget);
     const operation=holdInput(input,['backupId','holdId']);
     if (!synchronous(callback)) throw fail('RECOVERY_INVALID');
@@ -371,11 +450,11 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     const sentinel=fail('RECOVERY_CALLBACK_FAILED');
     let callbackFailure;
     try { return store.withLock(()=>{
-      const proof=heldLocked(operation,budget);
+      const proof=heldLocked(operation,budget,admit);
       let result;
       try { result=callback(proof); } catch (error) { callbackFailure={error}; throw sentinel; }
       rejectThenable(result);
-      verifyLocked(operation.backupId,budget);
+      verifyLocked(operation.backupId,budget,undefined,admit);
       return result;
     }); } catch (error) {
       if (error===sentinel&&callbackFailure) throw callbackFailure.error;
@@ -411,6 +490,10 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
     };
     try { return store.withLock(()=>{
       const proof=heldLocked(operation,budget);
+      // This releaser composes the current target4 terminal verifier only.
+      // Hold inspection remains version-aware, but no fake terminal callback
+      // can authorize native5 release ahead of the future target5 composition.
+      if (proof.record.publicationKind === 'native-v5') throw fail('RECOVERY_UNSUPPORTED');
       if (!proof.binding||proof.hold.recoveryRunId!==operation.runId) invalid();
       const publish=value=>{
         if (state==='expired'||fault) throw fail('RECOVERY_INVALID');
@@ -476,19 +559,19 @@ function build({ root, authority, clock = Date.now, limits } = {}) {
 
 export function createImV2BackupRegistry(options) { return build(options).registry; }
 
-export function withRecoverySource(registry, input, context, callback) {
+export function withRecoverySource(registry, input, context, callback, inheritedBudget, admit) {
   if (!trustedRegistries.has(registry)) invalid();
-  return trustedRegistries.get(registry).withRecoverySourceLocked(input, context, callback);
+  return trustedRegistries.get(registry).withRecoverySourceLocked(input, context, callback, inheritedBudget, admit);
 }
 
-export function withRecoverySourceIntent(registry, input, context, callback) {
+export function withRecoverySourceIntent(registry, input, context, callback, inheritedBudget, admit) {
   if (!trustedRegistries.has(registry)) invalid();
-  return trustedRegistries.get(registry).withRecoverySourceIntentLocked(input, context, callback);
+  return trustedRegistries.get(registry).withRecoverySourceIntentLocked(input, context, callback, inheritedBudget, admit);
 }
 
-export function withRecoveryHold(registry,input,context,callback,inheritedBudget) {
+export function withRecoveryHold(registry,input,context,callback,inheritedBudget,admit) {
   if (!trustedRegistries.has(registry)) invalid();
-  return trustedRegistries.get(registry).withRecoveryHoldLocked(input,context,callback,inheritedBudget);
+  return trustedRegistries.get(registry).withRecoveryHoldLocked(input,context,callback,inheritedBudget,admit);
 }
 
 // Trusted local composition, not a network/facade API or a defense against
@@ -510,10 +593,15 @@ export function createTrustedImV2BackupServices(options = {}) {
     const budget = operationBudget(bounds);
     const result = await backup.publish(input, context, budget);
     return store.withLock(() => {
-      const actual = verifyV4(leaf('artifacts', result.manifest.backupId, '.sqlite'),
-        readBytes(leaf('artifacts', result.manifest.backupId, '.manifest.json'), budget), bounds, budget);
+      const backupId = result.manifest.backupId;
+      const actual = verifyNativeBackup(leaf('artifacts', backupId, '.sqlite'),
+        readBytes(leaf('artifacts', backupId, '.manifest.json'), budget), bounds, budget, backupId);
       if (actual.manifestHash !== result.manifestHash) invalid();
-      return commitLocked(actual.manifest, 'native-v4', undefined, budget);
+      switch (actual.manifest.formatVersion) {
+        case 2: return commitLocked(actual.manifest, 'native-v4', undefined, budget);
+        case 3: return commitLocked(actual.manifest, 'native-v5', undefined, budget);
+        default: invalid();
+      }
     });
   }
   function importRegisteredV3(input, context) {

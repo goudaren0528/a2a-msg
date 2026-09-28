@@ -183,7 +183,7 @@ Independent **literal** bytes/hash golden vectors for all three kinds are
 required before C1 acceptance; expected values cannot be generated solely by
 the implementation under test. No literal vector/hash is fabricated here.
 
-## 4. B2: future native backup and private registry composition
+## 4. B2: frozen native backup and private registry composition
 
 B2 depends on accepted R1 and C1. Existing factories and caller DTOs remain
 unchanged: no caller-schema selector, tag, path or generic register method.
@@ -213,6 +213,102 @@ the original elapsed deadline; no filtered substitute, reset or raised cap.
 Count/length projections precede fetching variable data. Native calls remain
 soft-budgeted, not promised interruptible. Cleanup remains always false; there
 is no TTL adoption, automatic hold release or backup deletion executor.
+
+### 4.1 Bounded B2 implementation freeze (2026-09-28)
+
+This subsection freezes the authorized source lane at baseline
+`981cc158565434864a3ccf00b4143b8fe375781f`; implementation and independent
+verification remain separate gates. Writes are limited to `backup.js`,
+`backup-registry.js`, the old-P5 native5 rejection guard in `recovery-source.js`
+and this B2 subsection. C1, validators, storage helpers, historical schemas,
+clock/runtime and old recovery codecs are consumed unchanged.
+
+Factories, caller DTOs and facade keys stay unchanged. No caller schema,
+publication-kind, path or `registerArtifact` option is introduced. Primitive
+publish/verify return `{manifest,manifestHash}`; trusted publication and registry
+verify return `{record,sourceEvidence}`. Scoped proofs retain those correlated
+envelopes plus their existing `copyTo`, `establish`, `hold`, `binding` or `release`
+capabilities/metadata. `status()` is exactly `{nativeInFlight:boolean}` and
+`drain()` is `Promise<void>`. The six lower-only storage limits remain unchanged.
+
+| Strict registered family | Required source / provenance |
+| --- | --- |
+| Historical registered3 -> record 3 / `imported-registered-v3` | Source 1 / registry 2; genuine old bridge and original import/manifest bytes |
+| Manifest 2 / schema 4 -> record 3 / `native-v4` | Source 1 / registry 3; full exact4 native snapshot |
+| Manifest 3 / schema 5 -> record 4 / `native-v5` | Source 2 / registry 4; C1 exact codecs and full exact5 native snapshot; no import file |
+
+Unknown and crossed tags fail `RECOVERY_EVIDENCE_MISMATCH`; there is no fallback
+from failed native5 validation to exact4 or the legacy bridge. A bounded format
+discriminator selects a strict decoder over the original bytes, not a permissive
+replacement parser. Request/path/record/manifest backup IDs must agree. Actual
+file hash, identity, birth, schema/checksum and completion facts bind the whole
+chain; raw source bytes hash to `record.sourceEvidenceHash`, and raw manifest
+bytes hash to both source and record. C1 uses `im-v2-backup-2` and the exact v5
+checksum. No new timestamp inequalities are imposed beyond scalar formats and
+existing hold/binding/release rules.
+
+Native version selection occurs only after the asynchronous native operation
+really completes and SQLite normalizes/closes the exclusively reserved pending
+snapshot's WAL. The source connection is never normalized or closed here.
+Protected file/size/hash/sidecar checks surround a read-only snapshot transaction;
+bounded marker reads select the exact internal validator in that same transaction,
+then integrity/FK and actual facts are captured. Close, posthash, identity,
+sidecars and final budget checks precede success. Existing exact4 helpers remain
+exact4. Separate native orchestration and exact5 inspection confer no provenance.
+Snapshot publication preserves all business rows, epoch, anchor history, optional
+current head and sole conversion transition; it transfers no maintenance session.
+
+Capture the primitive approval reference and distinct actor strings before
+approval adapters can mutate their inputs. After the native asynchronous interval,
+recheck admin and independent approval for that same captured reference/actor pair
+before artifact publication; never resolve a replacement pair. Publish no-replace
+and fsync in artifact -> manifest -> exact verification -> source -> record order.
+Timeout retains pending evidence, cannot cancel native work and requires drain
+before the caller closes its source connection. Authorization errors stay fixed.
+
+The trusted publisher's original authenticated recovery budget flows through the
+primitive's existing trusted internal third argument, final verification, private
+registration and revalidation. The identical object reaches exact5 validation;
+its deadline and filesystem/entry accounting never reset. Maintenance caps stay
+internal defaults. Count/length/file/entry caps precede heavy reads.
+`IM_V2_BUDGET_EXCEEDED` maps to `RECOVERY_BUSY`.
+
+Every native5 registered proof, including facade reopen and scope pre/postchecks,
+first fully validates the chain under one registry lock/shared budget, then calls
+existing `resyncPublished` for artifact, manifest, source and final record (each
+protected file plus directory). Cache only after all resyncs succeed. Sync failure
+is `RECOVERY_DURABILITY_UNCERTAIN`; retain visible evidence, never roll back final
+files or manufacture missing metadata. Never resync the coordination inode.
+Native5 registered verification therefore reestablishes durability: it is not a
+zero-filesystem-effect read proof. Old native4/imported3 resync behavior and old-P5
+read-only paths are not broadened by this rule.
+
+The old-P5 source adapter supplies an internal refusal-only admission guard to
+the existing branded registry scope functions. Its presence rejects native5
+after full chain validation but before resync; no callback receives a
+pre-durability proof. Existing unguarded registered scopes still require resync
+for native5. Internal inherited-budget arguments also carry the original budget
+through intent, prepare, held and verified-copy admission. These are trusted
+composition arguments, not new caller DTO fields, facade keys or a success bypass.
+
+Registry branding, deep-frozen metadata, scoped copy lifetime, async/reentry
+poison (including exception-safe classification), original-source -> registry
+lock order and inherited operation budgets remain mandatory. Old target4 P5
+rejects a correlated native5 pair with `RECOVERY_UNSUPPORTED` before old codec
+copy/consume, hold creation or prepare auto-binding, including initial no-op
+intent admissions. The current target4 trusted releaser rejects native5 before
+terminal verification or publication capability disclosure. Genuine native5 hold
+inspection remains possible; release awaits real future target5 composition.
+Cleanup stays `{allowed:false,reason:"HOLD"|"DISABLED"}` or corruption refusal.
+
+Verification ownership: the source lane checks syntax, bounded pure dispatch,
+API/key/limit preservation and source/doc hashes without reading moving tests.
+The independent test lane owns native snapshot/chain preservation, corruption,
+authorization mutation/revocation, original-budget exhaustion, durable reopen/
+sync faults, scope lifetime/poison, old-P5 guards and v3/v4 regressions. Parent
+four-review/QA acceptance follows frozen-source native evidence. No actual
+backup/recovery operation, deletion rollout or operational v5 readiness is earned
+by source-only checks.
 
 ## 5. Future target-5 recovery direction (NOT READY for source work)
 
