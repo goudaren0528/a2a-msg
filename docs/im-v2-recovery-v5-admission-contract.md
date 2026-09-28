@@ -11,8 +11,9 @@ wrapper/observer is active only in its new scope while the old codec stays
 unchanged; exact hold selection includes explicit null semantics; coordination
 locking is distinct from evidence writes. No implementation was validated.
 The [C2-A archive/intake contract](im-v2-recovery-v5-intake-contract.md) remains
-accepted within its pure-codec scope and technically unchanged. Neither the full
-target5 facade nor terminal tables are frozen by this proposal.
+accepted within its pure-codec scope and technically unchanged. This B1 subset
+does not itself define the subsequently accepted
+[target5 facade/terminal tables](im-v2-recovery-v5-terminal-api-contract.md).
 
 Read with the [current ledger](im-v2-implementation-plan.md#52-接下来按依赖推进的-todo),
 [compatibility contract](im-v2-schema-v5-compatibility-contract.md),
@@ -157,8 +158,12 @@ Proxy/accessor/symbol rejection; no Promise, thenable or truthy non-true authori
 result is accepted. Known async/generator adapters reject before their prefix;
 unexpected asynchronous results refuse and cannot extend scope lifetime. Capture
 before callback mutation, latch faults/reentry before classification, sanitize
-errors and recheck final authority. The identity persistence fields and exact
-operation DTOs are **NOT YET FROZEN**; these protocols do not make operations ready.
+  errors and recheck final authority. Identity persistence is specified by
+  [phase intents](im-v2-recovery-v5-phase-contract.md#61-phaseintent) and terminal
+  [releaseIntent](im-v2-recovery-v5-terminal-api-contract.md#47-releaseintent);
+  exact operation DTOs are in the accepted
+  [terminal/API contract](im-v2-recovery-v5-terminal-api-contract.md). None is
+  implemented by this admission document or makes runtime operations ready.
 
 Historical contrast: [recovery-source.js](../src/im/v2/recovery-source.js) lines
 19-28 provide the old adapter; [recovery.js](../src/im/v2/recovery.js) lines 46-85
@@ -314,9 +319,11 @@ The source owner derives binding from genuinely verified facts; pure validation
 cannot authenticate those observations. Strict synchronous adapter rules in §3
 apply. Converted original closure remains the old full `closureProof`, old raw hash
 and original `authorizeSourceClosedEvidence` authorization; never relabel or replace
-it. A new target5 attestation is optional only on an explicit new-owner request,
-and supplements rather than overwrites the old proof. Its request/phase DTO remains
-unfrozen. Native5 needs its genuine new-source closure protocol.
+  it. A new target5 attestation remains a general B1 possibility only on an explicit
+  new-owner request, supplementing rather than overwriting the old proof. The accepted
+  [first facade](im-v2-recovery-v5-terminal-api-contract.md) offers no such converted
+  request and forbids a converted `V/source-closed.json`; native5 needs its genuine
+  new-source closure protocol.
 
 Historical comparison: [recovery-plan.js](../src/im/v2/recovery-plan.js) lines
 26-28, 65-68 define old `schemaVersion/schemaChecksum/fileHash` closure fields,
@@ -620,7 +627,7 @@ new stage's budget. Old P1 stage and explicit converter prerequisite operations
 have their own original budgets; they are not falsely included in the future
 handoff operation's elapsed/accounting span.
 
-## 10. Clock mutation and retry gates remain unresolved
+## 10. Historical clock mutation rationale and resolved later retry contract
 
 Actual [clock.js](../src/im/v2/clock.js) lines 94-111 retain sampled high-water and
 write an anchor; 178-209 perform an independently durable anchor **before** the
@@ -642,10 +649,11 @@ every greater clock floor admissible.
 Verify and activate need their **own** intents and exact projections; a failed
 activation may alter clock bytes and must not reuse an obsolete seal. Completed
 phase recognition must bind the real later chain and full schema5 state. Exact
-clock intents, reservations, digest allowlists and mutation records are **NOT
-FROZEN**. Do not invent reservation fields, mutation receipts or a partial phase
-protocol here. This is a blocking C2 requirement, not a claim that old clock APIs
-already supply the necessary durable evidence.
+  clock intents, reservations, digest allowlists and mutation records are now
+  specified by the accepted [phase protocol](im-v2-recovery-v5-phase-contract.md)
+  and [entry/plan contract](im-v2-recovery-v5-entry-plan-contract.md). They require
+  a private atomic clock/business executor, not the old guard; no runtime evidence
+  or implementation follows from these documents.
 
 Future snapshot prepare still atomically establishes epoch/counter/run/center/
 progress, revokes leases, remains paused and **DELETE HEAD ONLY**; preserve anchor
@@ -660,7 +668,7 @@ Only these admission additions are proposed; this is not a full phase inventory:
 | Derived reference | Presence / interpretation |
 | --- | --- |
 | `v5-runs/<runId>/conversion-selection.json` | Converted route; descriptive selection, never ownership/completion capability |
-| `v5-runs/<runId>/source-closed.json` | Only if a NEW target5 closure is required/requested; never overwrite `runs/<runId>/source-closed.json` |
+  | `v5-runs/<runId>/source-closed.json` | Native new closure only in the accepted first facade; converted original closure stays under `runs/<runId>/`, with no new converted V closure |
 | C2-A archive intent/archive/handoff files | C2-A exact fields, references and rules unchanged |
 | sourceObservation | Transient detached observation; never stored as source or terminal authority |
 
@@ -684,7 +692,8 @@ Error vocabulary for future target5 boundaries is the existing fixed local famil
 details cross the boundary. Existing converter `MAINTENANCE_*` and old facade
 `RECOVERY_CONVERSION_PENDING` semantics remain unchanged; a future boundary must
 map only authenticated internal errors, not trust an arbitrary thrown `code`.
-Exact per-method error/result/status tables remain in the later package.
+  Exact per-method error/result/status tables are in the accepted
+  [terminal/API contract](im-v2-recovery-v5-terminal-api-contract.md); runtime remains pending.
 
 ## 12. Actual API map and remaining historical ambiguities
 
@@ -693,7 +702,7 @@ are under `src/im/v2/`; operation names alone do not freeze target5 inputs/resul
 
 | Actual API / location | Checked behavior / consequence |
 | --- | --- |
-| recovery.js:194-195,1174-1177 `createImV2RecoveryServices` | Existing factory and frozen eight-operation facade, private WeakMap; no target5 factory signature is defined here |
+  | recovery.js:194-195,1174-1177 `createImV2RecoveryServices` | Existing factory and frozen eight-operation facade, private WeakMap; target5 factory is defined separately in the accepted terminal/API contract |
 | recovery.js:852-856 `stageCandidate` | Old input `{requestRef,candidateKind,sourceRef,isolationAckRef}`; uses old route and its own budget |
 | recovery.js:937-950 `previewRecovery` / `prepareRecovery` | Old `{runId}` / `{runId,preparePlanHash,approvalRef}`; not the new schema/actor protocol |
 | recovery.js:1002-1005,1028-1032 `verifyRecovery` / `previewActivation` | Old `{runId,preparePlanHash}` / `{runId,sealReference,authReviewRef,isolationAckRef,activationRef}` |
@@ -709,19 +718,24 @@ are under `src/im/v2/`; operation names alone do not freeze target5 inputs/resul
 
 Do not silently resolve these shape mismatches by adding fields: the future concept
 often called `minReleasedAt` is **`minimumReleasedAt` in the actual old publisher**,
-not a release-marker field; new publisher spelling/table is still unfrozen. The
+  not a release-marker field; accepted [terminal release bindings](im-v2-recovery-v5-terminal-api-contract.md) define the new publisher. The
 old closure uses schemaVersion/fileHash, while the new proposal uses source-prefixed
 names and adds version/sourceEvidenceHash/target. New sourceObservation contains
 neither stage nor manifest nor terminal chain and cannot certify facts absent from
 that DTO. Legacy v3 raw manifest and release failed-marker boundaries are as §7.3.
-The present old conversion inventory will reject new archive files until a reviewed
-phase-aware bridge is implemented. None of these gaps permits changing C2-A.
+  The present old conversion inventory will reject new archive files until the
+  accepted [terminal inventory](im-v2-recovery-v5-terminal-api-contract.md) is
+  implemented as a phase-aware bridge. None of these gaps permits changing C2-A.
 
-## 13. Complete unresolved C2 package and next gate
+## 13. Historical B1 package checklist and current next gate
 
-The following remain **unresolved / NOT FROZEN** and must be documented as one
-substantive phase-protocol package after independent B1 review. No final target5
-factory signature is proposed here.
+  The following historical B1 handoff checklist is now mapped to accepted
+  [phase](im-v2-recovery-v5-phase-contract.md),
+  [state manifest](im-v2-recovery-v5-state-manifest.md),
+  [state-v1 grammar](im-v2-recovery-v5-state-digest-contract.md),
+  [entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+  [terminal/API](im-v2-recovery-v5-terminal-api-contract.md) documents. The first
+  facade signature is defined in terminal/API, not in this B1 subset.
 
 | Remaining contract | Required complete decision |
 | --- | --- |
@@ -734,12 +748,12 @@ factory signature is proposed here.
 | Release/status/results and new terminal publisher | Actual new-family terminal proof, min-release-time protocol, exact result/status/null/error tables, release ownership/durability and current authority checks |
 | Inventories and independent golden fixtures | Every required/forbidden file per phase, pending/response-loss/crash classifications, exact references, independent canonical byte/hash literals and all historical regressions |
 
-Next: **parent independent C2-B1 document review -> remaining C2 substantive
-phase-protocol document package together -> acceptance of complete required
-contracts -> S3 -> H4 -> Q5**. A pure-codec writer may start only after its own
-accepted complete contract and independent-fixture assignment; this proposal is
-not that acceptance. Runtime S3/H4 and Q5 remain blocked until their required
-records/phase contracts exist and are accepted. C2-A's accepted technical scope
+Current closeout (2026-09-29): **development is paused at the user's request**.
+See the [PRD closeout](im-v2-prd-closeout.md). The four pure record kinds and five
+exports remain accepted design, not implemented admission functionality or a new
+source/fixture assignment. Any later admission/entry/plan/phase implementation
+requires a separate human scope decision. Runtime S3/H4 and Q5 remain pending
+implementation and evidence. C2-A's accepted technical scope
 stays unchanged. Operational ownership/time, B1 writer, P6 faults, P7 and H1-H3
 remain later separate gates; C2-B1 is not whole-C2 completion.
 

@@ -106,7 +106,9 @@ closed WAL header is read only through its genuine immutable backup scope; that
 exception never permits opening a mutable candidate with an immutable/journal
 bypass. Normalize only the owned candidate, under its own durable intent/completion,
 with all logical schema, cells and rowids identical. Copy/base/normalization exact
-records, byte-retry rules and links are **PENDING**, not inferred from this paragraph.
+  records, byte-retry rules and links are in accepted
+  [entry/plan §3](im-v2-recovery-v5-entry-plan-contract.md#3-native-only-copy-base-and-normalization),
+  not inferred from this paragraph or implemented here.
 
 ### 3.1 baseline exact ordered nested layout
 
@@ -216,21 +218,20 @@ all maintenance-history/head/transition rows in caps and scans. Stream at most o
 row and one BLOB at a time; do not accumulate row arrays or retained BLOBs. Budget
 checks surround native calls and each row/chunk, with all original caps preserved.
 
-**Artifact gate remains open:** the supplied tag/order decisions do not yet fully
-specify, for example, nullable objectSql framing versus empty SQL, pragmaValue
-scalar spelling, rowid versus integer frame composition, or tableEnd payload.
-Literal framing examples/golden bytes must resolve every such ambiguity, together
-with the exact schema/column/type/object manifest. Do not silently choose encodings
-or claim digest implementation readiness. The separate read-only explorer's
-literal extraction is an input to review, not automatic acceptance.
+  **Document artifact resolved:** the accepted
+  [state-v1 byte grammar](im-v2-recovery-v5-state-digest-contract.md) specifies
+  nullable objectSql, pragmaValue, rowid and tableEnd framing, with the accepted
+  [literal manifest](im-v2-recovery-v5-state-manifest.md) supplying objects and
+  columns. Independent full golden vectors and runtime extractor evidence remain
+  pending; these document artifacts do not imply digest implementation readiness.
 
 The parallel static-DDL review's corrected summary is **32 tables + 26 explicit
 indexes = 58 manifest objects**, plus **42 derived automatic indexes**, for a
 global allowlist total of **100**. Its item-by-item check reported no omissions.
 These are static DDL deductions, not SQLite runtime observations. Earlier totals
 of 31 tables / 27 explicit indexes and 44 automatic indexes were report arithmetic
-errors and are superseded, not evidence to reuse. This summary does not expand or
-accept the full literal manifest; that artifact remains PENDING.
+  errors and are superseded, not evidence to reuse. This summary does not expand the
+  independently accepted [literal manifest](im-v2-recovery-v5-state-manifest.md).
 
 New recovery admission is stricter than general `im_*` validation: allow only the
 exact V5 manifest objects/DDL and declared autoindex names/owners/null SQL. Reject
@@ -269,17 +270,23 @@ deeply frozen. Fixed encode/hash error `RECOVERY_INVALID`; decode/binding error
 | Target pair | Exactly 5 / V5_CHECKSUM |
 
 V3/V4/V5 checksums are the existing constants identified by C2-A, not arbitrary H.
-These layouts are central decisions **pending document and full binding-artifact
-review**. No pure-codec module/export list is ready with incomplete bindings.
+  These layouts are central decisions reconciled with accepted
+  [entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+  [terminal/API](im-v2-recovery-v5-terminal-api-contract.md) bindings. Later
+  phase/entry module and export allocation remains a parent decision; runtime
+  implementation and independent golden evidence are pending.
 
 ```text
 newRecordHash = SHA256(UTF8('a2a-msg.im.v2/recovery-v5/' + kind + '\n')
                       || canonicalRecordBytes)
 ```
 
-Named record kinds here are phaseIntent, phaseResult, phaseObservation and seal;
-seal.version is 2, other core records version1. Plan names below identify pending
-plan artifacts, not completed record definitions. Baseline/effect are nested layouts.
+  Named record kinds here are phaseIntent, phaseResult, phaseObservation and seal;
+  seal.version is 2, other core records version1. Plans are defined in accepted
+  [entry/plan §6](im-v2-recovery-v5-entry-plan-contract.md#6-four-fully-expanded-plan-records).
+  Semantic Chain pause/prepare/verify/activationResult roles are all phaseResult;
+  intent roles are phaseIntent. Baseline/effect/Entry/Chain/Terminal/Held/Operation
+  are not serialized kinds; baseline/effect are nested layouts.
 Historical raw, NUL-domain and maintenance newline-domain hashes remain unchanged.
 
 ### 6.1 phaseIntent
@@ -296,7 +303,7 @@ Historical raw, NUL-domain and maintenance newline-domain hashes remain unchange
 | intakeHash | H; new-domain exact intake hash |
 | handoffHash | H?; null native, C2-A handoff hash converted |
 | baseline | Exact §3.1 nested layout |
-| predecessorKind | Phase-correlated; §6.4 unresolved pause link |
+  | predecessorKind | Exactly normalizationCompletion, convertedIntake, phaseResult or seal; §6.4 route mapping |
 | predecessorHash | H; actual appropriate persisted predecessor |
 | planKind | pausePlan, preparePlan, verifyPlan or activationPlan, phase-correlated |
 | planHash | H; actual persisted corresponding plan |
@@ -349,16 +356,18 @@ Historical raw, NUL-domain and maintenance newline-domain hashes remain unchange
 | phase | pause, prepare, verify or activate |
 | intentHash | H; actual authenticated intent |
 | classification | noop-matched, initial, committed or indeterminate |
-| actualStateDigest | H when actual settled state can be authenticated |
-| actualFileHash | H when actual settled bytes can be authenticated |
-| actualClock | N when actual settled floor can be authenticated |
+  | actualStateDigest | Nonnull H from complete authenticated settled facts; otherwise throw |
+  | actualFileHash | Nonnull H from complete authenticated settled bytes; otherwise throw |
+  | actualClock | Nonnull N from complete authenticated settled floor; otherwise throw |
 | resultHash | H?; exact existing result hash or null when absent |
 
 This is descriptive observation, not mutation/completion/disclosure authority.
-**Pending status artifact:** exact unknown-fact nullability and whether an
-unauthenticated/unsafe state throws rather than yields partial phaseObservation
-must be frozen in complete binding/result tables. Do not fabricate actual facts
-for indeterminate state or infer optional omitted fields from these descriptions.
+  Accepted [entry/plan §9](im-v2-recovery-v5-entry-plan-contract.md#9-complete-facts-observations-or-refusal)
+  requires complete nonnull actual facts or refusal, not partial observation. With
+  a present result, digest/clock/file must exactly match result.stateDigest,
+  result.clockFloor and result.candidateFileHash; mismatch throws. With no result,
+  resultHash is null and the mode-first initial/committed/noop-matched/indeterminate
+  rules apply. No unknown fact is fabricated.
 
 ### 6.4 Shared route and predecessor bindings
 
@@ -370,15 +379,16 @@ The same baseline and intake must bind every phase of the run.
 
 | Phase | Required predecessor / plan relationship |
 | --- | --- |
-| pause native | Completed native normalization precedes pause; **exact predecessor enum/hash/link PENDING** |
-| pause converted | C2-A converted intake/handoff precedes pause; **exact predecessor enum/hash/link PENDING** |
-| prepare | pauseResult / pause result hash; preparePlan |
-| verify | prepareResult / prepare result hash; verifyPlan |
-| activate | seal / seal hash; activationPlan |
+  | pause native | normalizationCompletion / Hnew(normalizationCompletion); pausePlan |
+  | pause converted | convertedIntake / Hnew(convertedIntake); pausePlan |
+  | prepare | phaseResult / Hnew(phaseResult, pause result); preparePlan |
+  | verify | phaseResult / Hnew(phaseResult, prepare result); verifyPlan |
+  | activate | seal / Hnew(seal); activationPlan |
 
-An earlier intake-only pause predecessor proposal conflicts with revised native
-normalization dependency. Do not silently choose `intake` or fabricate a
-normalization record kind. The next artifact must resolve the exact union/link.
+  Earlier intake-only native pause was superseded by the accepted
+  [entry/plan §7.1](im-v2-recovery-v5-entry-plan-contract.md#71-exact-plan-and-phaseintent-comparisons)
+  exact enum and links. `pauseResult`/`prepareResult` are semantic roles, not new
+  serialized kinds. Do not relabel old C2-A records.
 Prior phase results and seal remain fully crossbound, not merely hash-equal DTOs.
 
 ## 7. Fixed effect unions and actual database projections
@@ -702,7 +712,9 @@ is added to this supplied reference.
 Seal binds actual full verification and completed verify result, identity/intake/
 stage/source-target/epoch/counter and exact closed candidate. Pure booleans alone
 do not certify verification. Exact seal binding bundle, issuance/durability and
-later activation comparisons still require artifact review. No old seal reuse or
+  later activation comparisons are specified by accepted
+  [entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+  [terminal/API](im-v2-recovery-v5-terminal-api-contract.md) bindings. No old seal reuse or
 hash regeneration to conceal changed bytes. §8 same-intent rollback allowance is
 not a general permission to issue a new seal over changed candidate bytes.
 
@@ -717,8 +729,10 @@ phase records does not rewrite either historical hold or conversion chain.
 Retain the C0 publisher input concept exactly
 `{stateEvidenceHash,minimumReleasedAt}`. Actual spelling/chronology is in
 [backup-registry.js](../src/im/v2/backup-registry.js) lines 498-523: release time
-meets both boundAt and terminal minimum. New terminal evidence/hash/result bundles
-are pending; phaseResult alone is not invented activationCompletion or terminal
+  meets both boundAt and terminal minimum. Accepted
+  [terminal release bindings](im-v2-recovery-v5-terminal-api-contract.md) include
+  the operation selector and canonical actual marker equal to actual held.release;
+  phaseResult alone is not activationCompletion or terminal
 capability. Existing target4 native5 release guard at lines 493-496 remains unchanged.
 Release needs its own independent approval, not reconciliation or old conversion
 approval. Source missing after release remains unsupported; cleanup stays false.
@@ -734,38 +748,39 @@ or listener follows from active recovery state.
 | Modified live candidate becomes the oracle, or implicit rowid allocation makes replay match by adopting actual maxima | Authenticate immutable B2 artifact/C2-A archive; independent streaming virtual replay, explicit signed64 predecessor-derived rowids and conflict/cardinality checks; actual hash never expected output; missing baseline refuses |
 | Exact expired poststate is either remutated under a new actor or accepted solely because hashes match, despite revocation | Completion-only reconciliation policy with persisted actors/current authority may deny; exact preexpired remains stale with no automatic replan, exact post/noop completion may be expiry-exempt; recognition never grants disclosure |
 
-Limits remain: literal manifest/framing and complete binding artifacts pending;
+  Limits remain: independent goldens and runtime binding implementation pending;
 size-admissible workloads can exhaust the existing elapsed budget; native calls
 are not hard interruptible; settled-close uncertainty remains indeterminate;
 unknown pending files preserved; no five-second reservation or automatic manual
 replan mechanism. This document closes conceptual protocol choices, not these
 artifact gaps or runtime validation obligations.
 
-## 14. Remaining artifact gate and explicit unresolved contradictions
+## 14. Reconciled artifact map and remaining implementation evidence
 
 | Required artifact before implementation | Still-required complete decision |
 | --- | --- |
-| Literal manifest and frame specifics | Exact V5 tables/columns/types/DDL/autoindexes/object inventory, scalar/null/rowid/tableEnd framing, independent byte examples; read-only extraction and independent review pending |
-| Stage/locator/copy/normalization/predecessor links/phase plans | Exact native/converted field sets, persisted plan TTL and identity, initial file/hash links and normalization result; resolve native normalization versus older intake-only pause predecessor union |
-| Complete binding bundles | Exhaustive ordered validator inputs/nullability/equality/chronology for intent/result/observation/effect/baseline/seal and all routes; no ready codec exports until accepted |
-| Activation completion/release/status/eight DTOs | Actual new terminal chain/publisher/minimum time, exact status/unknown-fact nulls/errors and all operation inputs/results/factory; not inferred from these core records |
-| Inventories/goldens | Every phase's required/forbidden/pending files, exact publication/retry boundaries, independent canonical/hash/digest fixtures and historical regressions |
+  | Literal manifest and frame specifics | Accepted [manifest](im-v2-recovery-v5-state-manifest.md) and [state-v1 grammar](im-v2-recovery-v5-state-digest-contract.md); independent full golden vectors and runtime validation remain |
+  | Stage/locator/copy/normalization/predecessor links/phase plans | Accepted [entry/plan](im-v2-recovery-v5-entry-plan-contract.md), including exact predecessor union and observation semantics; implementation pending |
+  | Complete binding bundles | Accepted entry/plan and [terminal/API](im-v2-recovery-v5-terminal-api-contract.md) document bindings; later module/export allocation by parent, implementation and fixtures pending |
+  | Activation completion/release/status/eight DTOs | Accepted terminal/API document; no runtime authority or evidence inferred |
+  | Inventories/goldens | Accepted terminal physical inventory refinements; independent canonical/hash/digest fixtures, native faults and runtime evidence pending |
 
 Real differences are explicit rather than silently normalized:
 
 - Old prepare/verify/activate use ordinary guard and implicit rowid insertion;
   new executor requires atomic reserved clock and explicit rowids. Old source is
   behavioral field mapping, not implementation that already satisfies this design.
-- Native pause must follow normalization, whereas an earlier intake-only link
-  omitted it; exact predecessor enum/hash remains unresolved.
-- Supplied digest tag vocabulary leaves nullable metadata and several payload
-  spellings unspecified; no literal digest or manifest is frozen here.
-- phaseObservation's unreadable/indeterminate actual-fact handling still needs
-  exact nullable/throw rules; do not fabricate successful observation metadata.
+  - Native pause follows normalization, not the earlier intake-only link; the
+    accepted entry/plan exact enum/hash resolves this discrepancy.
+  - Earlier tag vocabulary omitted nullable metadata/payload spellings; accepted
+    state-v1 grammar and manifest supersede that omission.
+  - Accepted entry/plan observation rules require complete nonnull facts or throw;
+    do not fabricate successful observation metadata.
 
-Next: **parent independent central-document review -> literal and remaining
-binding/API/inventory artifact gate -> accepted complete required contracts ->
-S3 -> H4 -> Q5**. No source or pure codec work starts from incomplete bindings.
+Current closeout (2026-09-29): **pause further development at the user's request**.
+The next action is [PRD closeout](im-v2-prd-closeout.md) and a human scope decision,
+not an automatic admission codec, fixture or S3/H4 assignment. Accepted designs
+are retained; later implementation remains separately authorized work.
 C2-A/B1 stay accepted unchanged; whole C2 remains IN_PROGRESS, S3/H4 NOT READY.
 Operational ownership/time, later writer/fault/production gates remain separate.
 

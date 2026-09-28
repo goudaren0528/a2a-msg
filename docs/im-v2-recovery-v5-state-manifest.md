@@ -2,7 +2,9 @@
 
 **ACCEPTED DOCUMENT ARTIFACT after independent joint review (2026-09-28).
 Static source transcription only; no SQLite runtime observation or runtime
-validation. Whole C2 remains IN_PROGRESS; codec lanes and S3/H4 NOT READY.**
+validation. Whole C2 remains IN_PROGRESS; state-v1 runtime and S3/H4 NOT READY.
+Further development is paused for the user's 2026-09-29 PRD closeout; document
+acceptance does not assign admission codec or runtime work.**
 
 Checked HEAD: `f1b2bd781ce343e9a41b676eac26a995a3e61b59` (2026-09-28).
 This document supplies the literal schema inventory requested by the accepted
@@ -11,7 +13,8 @@ its remaining artifact gates. Independent joint document/manifest review passed:
 32 tables, 237 columns, 26 explicit and 42 automatic indexes (100 objects),
 with nine source anchors/checksum fixtures checked statically; no product runtime
 or SQLite observation is inferred.
-The phase contract, ledger, accepted C2-A/B1, source and fixtures are unchanged.
+This static manifest does not change accepted C2-A/B1, source or fixtures;
+subsequent document-status reconciliation in phase and ledger is separate.
 Digest byte grammar is owned by a separate read-only oracle: this artifact makes
 **no new framing, record API, codec export or digest-encoding decision**.
 

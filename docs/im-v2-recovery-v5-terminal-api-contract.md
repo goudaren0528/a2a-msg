@@ -1044,18 +1044,20 @@ authorized outside recovery; no source/anchor-history mutation is inferred.
 | backup-registry.js:579-585 | Existing internal operation backupId/runId/holdId/releasePlanHash/approvalRef order |
 | registry-lock.js:74-99 | Existing writable coordination BEGIN IMMEDIATE/ROLLBACK housekeeping, not business/evidence publication |
 
-This proposal fixes deferred auth-review adapter name/mandatory status behavior,
+This accepted document fixes deferred auth-review adapter name/mandatory status behavior,
 terminal/release records and marker equality, nine receipt/terminal kinds, exact
 eight operations, status single-subject/action matrix, coordination mapping and
 archive metadata basenames. It explicitly refines converted V hold from optional
-pre-staged cross-check to **required completed-stage inventory**. No accepted
-technical document is rewritten, old4 guard weakened or existing codec relabeled.
+pre-staged cross-check to **required completed-stage inventory**. Cross-contract
+status/enum/inventory references are reconciled separately without changing the
+record/API tables, weakening the old4 guard or relabeling an existing codec.
 
-Remaining before implementation/readiness: parent independent review of this
-document and its integration with accepted contracts; independent literal/golden
-vectors for all new kinds/routes/nullable/action/error/graph cases; native source-
-bound fault/retry/authorization/lock/budget evidence; separately authorized codec
-and runtime work. Module/file placement and native operational mechanics must be
+Current instruction (2026-09-29): retain these accepted documents and pause further
+development for [PRD closeout](im-v2-prd-closeout.md). No new source/fixture
+assignment follows. Independent literal/golden vectors and native source-bound
+fault/retry/authorization/lock/budget evidence remain unexecuted future work,
+subject to a separate human scope decision. Module/file placement
+and native operational mechanics must be
 assigned in implementation scope, not exposed as extra caller options. No missing
 public authority field is filled by a loose proof bag. Any reviewer-discovered
 technical contradiction must be resolved explicitly rather than marking whole C2

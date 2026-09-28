@@ -91,7 +91,9 @@ Sources: [backup-v5-records.js](../src/im/v2/backup-v5-records.js),
 [maintenance-v5-records.js](../src/im/v2/maintenance-v5-records.js).
 New request fingerprint is owner-constructed from authenticated selection facts.
 Callers never provide record hashes, stage hashes, source witnesses or plan objects.
-Actual public operation input DTOs are still pending, not inferred from these records.
+Actual public operation input DTOs are defined by the accepted
+[terminal/API contract](im-v2-recovery-v5-terminal-api-contract.md), not inferred
+from these records or implemented here.
 
 ## 2. Selection, source identity and immutable locator
 
@@ -643,9 +645,12 @@ same tuple MUST be rechecked according to the phase protocol.
 
 Actual old precedent is [recovery.js](../src/im/v2/recovery.js) lines 989-991,
 which constructs this subject tuple; lines 1033-1054 validate the run/prepare/seal
-and recheck authorization around activation-plan binding. This citation does not
-freeze a new adapter API. Exact adapter name, public DTO and full runtime signature
-remain PENDING (§13); these required subject-binding facts are **not pending**.
+and recheck authorization around activation-plan binding. The accepted
+[terminal/API §3.1](im-v2-recovery-v5-terminal-api-contract.md#31-mandatory-trusted-auth-review-adapter)
+fixes `evidenceAuthority.assertAuthReview({runId,preparePlanHash,sealHash,newEpoch,authReviewRef},ctx) -> literal true`,
+with this exact five-field tuple. Status must call it once activationPlan exists;
+no activationPlan means no auth-review call. These bindings are accepted documents,
+not runtime adapter implementation or authorization evidence.
 
 ## 7. Full Chain, public binding validator contracts and pure graphs
 
@@ -708,11 +713,11 @@ normalizationCompletion | convertedIntake | phaseResult | seal
 | verify | phaseResult / Hnew(phaseResult, prepareResult) |
 | activate | seal / Hnew(seal) |
 
-This resolves the pending native normalization versus provisional intake link, and
+This resolves the earlier native normalization versus provisional intake link, and
 uses generic serialized kind phaseResult rather than treating semantic roles
-pauseResult/prepareResult as new record kinds. This **unimplemented pending-review
-enum amendment** changes no C2-A field or existing codec. Prior accepted document
-snapshots are not edited to suggest runtime implementation already exists.
+pauseResult/prepareResult as new record kinds. This accepted, **unimplemented enum
+amendment** changes no C2-A field or existing codec. The reconciled central phase
+document now links this exact rule without claiming runtime implementation.
 
 Intent must match plan/entry run/path/stage/intake/handoff/baseline/identity/source/
 target facts, exact planKind and planHash, predecessorKind/hash, initialFileHash=
@@ -805,7 +810,7 @@ hashes. Current reconciliation policy may deny a revoked historical actor/caller
 
 ## 9. Complete-facts observations or refusal
 
-This proposal resolves the previous observation unknown-fact gate as follows:
+This accepted document resolves the previous observation unknown-fact gate as follows:
 phaseObservation actualStateDigest **H**, actualFileHash **H**, actualClock **N**
 are always nonnull when returned; resultHash is required H or null. Other ordered
 fields stay version,runId,phase,intentHash,classification before those facts and
@@ -905,9 +910,13 @@ filesystem-write claim; missing lock DB is not initialized by status.
    derive request selection and exact B1 conversionSelection.
 2. Under source -> workspace controls perform unique target5 locator reservation
    for original run, before any new handoff. Retain old request locator unchanged.
-3. Establish new phase namespace/owned coordination only after that locator, while
-   using original candidate control once. Publish new stage and selection witness;
-   cross-check optional local original hold. Never create a replacement native hold.
+3. Establish new phase namespace while using original candidate coordination
+   `O/coordination.sqlite` once, only after that locator. Do not create a second
+   converted `V/coordination.sqlite`. Publish new stage and selection witness;
+   before staged, an explicit stage retry may reconstruct the exact genuine-hold
+   receipt; safe status may observe `O/hold.json` but never publish V. Completed
+   entry requires canonical `V/hold.json` equal to the genuine `O/hold.json` for
+   registered converted sources. Never create a replacement native hold.
 4. Use C2-A genuine completed-conversion archive/handoff under same controls/budget:
    validate original current completion posthash; durable archive intent, independent
    archive copy/protection/sync/no-replace; handoff. New target5 takes ownership only
@@ -940,9 +949,9 @@ executor, full replay/digest/rowid rules and source/candidate/evidence durabilit
 remain mandatory. Result phaseAt=reservedAt, not publication time. Completion
 reconciliation may establish missing result durability, never rerun known commit.
 
-## 11. Proposed filename inventory for these records
+## 11. Reconciled filename inventory for these records
 
-These derived record filenames are part of this **pending-review proposal**, not
+These derived record filenames are part of this **accepted document artifact**, not
 claims of files already supported by the old conversion inventory. `V` below means
 `v5-runs/<runId>/` and is expanded only for presentation; no caller path is accepted.
 Protected ownership/coordination/pending-file rules remain central/B1 requirements.
@@ -955,7 +964,7 @@ Protected ownership/coordination/pending-file rules remain central/B1 requiremen
 | intake | `V/intake.json` | Both; exact C2-A nativeIntake or convertedIntake |
 | staged | `V/staged.json` | Both; last complete entry publication |
 | sourceClosedEvidence | `V/source-closed.json` | Native new B1 closure; converted retains old `runs/<runId>/source-closed.json` for nonfresh |
-| hold cross-check | `V/hold.json` | Native genuine new hold; converted registered may retain exact optional old-hold cross-check, never authority |
+| hold cross-check | `V/hold.json` | Native genuine new hold; converted registered required at completed stage, canonical equal genuine `O/hold.json`, never independent authority |
 | conversionSelection | `V/conversion-selection.json` | Converted only; canonical equal locator witness |
 | copyIntent | `V/copy-intent.json` | Native only |
 | base | `V/base.json` | Native only |
@@ -969,18 +978,23 @@ Protected ownership/coordination/pending-file rules remain central/B1 requiremen
 | phaseObservation | Transient DTO, no stored observation authority file | Both |
 
 Candidate remains `v5-runs/<runId>/candidate.sqlite` native or original
-`runs/<runId>/candidate.sqlite` converted. Converted archive remains
-`runs/<runId>/conversion-archive.sqlite`; C2-A archive intent/handoff fields and
-publication rules unchanged. Original historical files stay under runs/requests.
+`runs/<runId>/candidate.sqlite` converted. Shared workspace coordinator is
+`R/requests/coordination.sqlite`; native uses `V/coordination.sqlite`, converted
+uses `O/coordination.sqlite` without a second V coordinator. Converted archive
+metadata is `O/conversion-archive-intent.json` and
+`O/conversion-handoff.json`, with `O/conversion-archive.sqlite`; C2-A original
+fields and publication rules unchanged. Original historical files stay under
+runs/requests. `V/normalization-completion.json`, suffixless
+`V/seals/<sealHash>`, `registry/releases/<holdId>.json` and owned exclusive
+`.<lowercase-UUID>.pending` follow the accepted
+[terminal inventory](im-v2-recovery-v5-terminal-api-contract.md#10-exact-physical-namespaces-and-inventory);
+unknown pending is preserved and refused.
 No public copy path, DB handle, receipt factory or decoded-record brand is added.
 
-**Remaining physical inventory detail:** exact final archiveIntent/handoff metadata
-basenames were not fixed in the supplied accepted C2-A tables; preserve their
-contract rather than guess names here. The same-root private mapping of new phase
-coordination versus original converted candidate coordination, pending identities
-and optional extra new-owner closure request needs final operational inventory
-review. These gaps do not relax one acquisition, locator-first ownership or any
-forbidden-file rule. No second converted closure file is silently required by Entry.
+These metadata basenames are later explicit accepted refinements, not retroactive
+C2-A original decisions. No extra converted new-source-closed file is offered by
+the first facade. One acquisition, locator-first ownership and forbidden-file
+rules remain unchanged; native fault/coordination runtime evidence is still pending.
 
 ## 12. Conservative fault matrix and counterexample closures
 
@@ -1017,16 +1031,16 @@ hold/source-gone/cleanup remain separate terminal gates; no backup deletion here
 
 ## 13. Still pending and document-only validation
 
-This proposal resolves entry/plan field orders, retained native record witness,
+This accepted document resolves entry/plan field orders, retained native record witness,
 route chronology, full-envelope validation, predecessor enum and complete-facts
-observation semantics. It does **not** freeze the public eight operations/factory,
-terminal activationCompletion/release/status DTOs, independent golden vectors,
-native fault evidence or runtime implementation. Entry/Chain role names above do
-not invent export names or trusted callback APIs. The exact auth-review adapter
-name, public DTO and full runtime signature remain PENDING; §6.4's required
-`{runId,preparePlanHash,sealHash,newEpoch,authReviewRef}` subject binding is **not
-deferred**. Those interface details and the remaining private coordination/archive
-metadata names in §11 must be explicitly settled before consumers implement them.
+observation semantics. Public eight operations/factory, terminal completion/release/
+status DTOs, exact auth-review adapter and physical inventory are accepted in
+[terminal/API](im-v2-recovery-v5-terminal-api-contract.md); Entry/Chain role names
+still do not invent additional serialized kinds or exports. Later module/export
+allocation remains a future human scope decision. Per the user's 2026-09-29
+[PRD closeout](im-v2-prd-closeout.md), source/fixture development is paused;
+native fault/lock/auth/budget evidence and implementation remain pending.
+§6.4's five-field subject binding is mandatory if this design is later implemented.
 
 Current admin/isolation/closure requirements, completion-only reconciliation and
 separate release approval remain accepted central/B1 protocols. Plans/intents do

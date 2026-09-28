@@ -322,8 +322,9 @@ verifyRecovery, previewActivation, activateRecovery, releaseRecoveryHold
 
 It is **target-5-only**, consuming a new strict evidence family. The old target-4
 factory, operation contracts and canonical family remain unchanged. The name and
-operation set do not freeze new options, inputs, DTOs or field orders; C2 must
-do that before source work. No new network/admin endpoint is implied.
+operation set alone did not freeze options, inputs, DTOs or field orders; those
+are now defined by the accepted [terminal/API contract](im-v2-recovery-v5-terminal-api-contract.md).
+No new network/admin endpoint or implemented target5 runtime is implied.
 
 | Source / requested target | Approved route |
 | --- | --- |
@@ -341,7 +342,8 @@ SHA256(UTF8('a2a-msg.im.v2/recovery-v5/' + kind + '\n') || canonicalRecordBytes)
 ```
 
 The separator is one newline byte. Exact `kind` vocabulary, version tags and
-ordered record preimages remain C2 gates; do not guess them. Seal version 2
+ordered record preimages are mapped to accepted C2 document families below;
+do not guess them or infer runtime implementation. Seal version 2
 explicitly binds schema 5 and its checksum. Never reuse, relabel or update an old
 seal/activation chain to bless conversion or later changed bytes.
 
@@ -357,8 +359,12 @@ byte ownership domains after recovery mutates the candidate.
 The immutable handoff must bind run/stage, identity, source/target schema facts,
 owner/paused/plan/proof/completion hashes, conversion posthash, derived archive
 reference/hash, live initial hash and time. These are required binding groups,
-**not a newly invented field order or DTO**. C2 freezes exact encoding, grammar,
-chronology, inventory and interruption classification.
+**not a newly invented field order or DTO**. Accepted C2-A
+[intake](im-v2-recovery-v5-intake-contract.md),
+[entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+[terminal/API](im-v2-recovery-v5-terminal-api-contract.md) documents specify
+encoding, chronology, inventory and interruption classification; implementation
+and evidence remain separate.
 
 Only durable handoff transfers the mutable candidate to the new recovery owner.
 After it, converter operations refuse **before obsolete current-posthash checks**;
@@ -379,7 +385,7 @@ progress state, revokes leases, keeps paused mode and **deletes the maintenance
 head only**. Preserve all anchor history and the sole conversion transition;
 perform full v5 validation before commit. Never reset history-tip generation or
 lower the clock floor. Exact fresh/import/snapshot phase bindings and committed
-projections remain part of C2, not guessed old-family DTO reuse.
+projections are in accepted C2 phase/entry documents, not guessed old-family DTO reuse.
 
 The new closed target owns **no maintenance authority/session**. Stored nonce
 does not transfer private process authority; recovery revokes the old session
@@ -394,12 +400,23 @@ all v5 anchor history, optional head and conversion metadata. Preserve old 3/4
 byte algorithms. Use bounded count/length-before-fetch accounting and the same
 authentic operation budget through source, validation, candidate and final
 checks. A global version replacement or dropping unknown tables is not v5
-support. Full table orders, projections and phase allowances are C2 artifacts.
+support. Full table orders, projections and phase allowances are accepted C2
+[manifest](im-v2-recovery-v5-state-manifest.md),
+[state-v1](im-v2-recovery-v5-state-digest-contract.md) and
+[phase](im-v2-recovery-v5-phase-contract.md) document artifacts, not runtime proof.
 
 ## 6. C2 finite contract package required before recovery implementation
 
-**PENDING; no recovery writer is ready.** The following finite package must be
-fixed and reviewed together, rather than invented incrementally by consumers:
+**Document families accepted; whole C2 IN_PROGRESS; no recovery writer is ready.**
+The following historical finite checklist maps to authoritative accepted families:
+[C2-A intake](im-v2-recovery-v5-intake-contract.md),
+[B1 admission](im-v2-recovery-v5-admission-contract.md),
+[central phase](im-v2-recovery-v5-phase-contract.md),
+[state manifest](im-v2-recovery-v5-state-manifest.md),
+[state-v1 digest](im-v2-recovery-v5-state-digest-contract.md),
+[entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+[terminal/API/inventory](im-v2-recovery-v5-terminal-api-contract.md).
+Independent full goldens, code and native/runtime evidence remain separate.
 
 | Required artifact | Must freeze |
 | --- | --- |
@@ -410,8 +427,12 @@ fixed and reviewed together, rather than invented incrementally by consumers:
 | Digests and validation | Exact 3/4/5 allowlists/order/projections, unchanged historical 3/4 algorithms, all v5 metadata, source/target/phase validators and original-budget propagation |
 | Literal vectors | Independently reviewed canonical bytes and hashes for every new kind and route union, mixed-family rejection and old-family golden regression |
 
-This table is the finite remaining contract gate, not an assertion that these
-layouts or new DTOs already exist. S3/H4 source work waits for its acceptance.
+This table records the original finite gate, not a claim that the accepted
+layouts or DTOs are implemented. Per the user's 2026-09-29 instruction, further
+admission/entry/plan/phase source and fixture work is paused for
+[PRD closeout](im-v2-prd-closeout.md), not automatically assigned after document
+reconciliation. S3/H4 remain unimplemented/NOT READY and Q5 pending; any restart
+requires a separate human scope decision.
 
 ## 7. Required evidence and truthful acceptance scope
 

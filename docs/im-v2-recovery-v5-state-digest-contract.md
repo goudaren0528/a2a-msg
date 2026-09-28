@@ -1,6 +1,6 @@
 # C2 state-v1 逻辑摘要字节语法（NONRELEASE）
 
-**概念语法已裁决；本文为独立联合审查通过的 DOCUMENT ARTIFACT（2026-09-28）。**这是 [C2-B2 中央 phase 协议](im-v2-recovery-v5-phase-contract.md) §5 的独立字节交接，不是新运行时实现、测试通过或 codec writer 授权。Whole C2 仍 IN_PROGRESS；codec lanes 与 S3/H4 NOT READY，Q5 blocked。[literal schema/object/column manifest](im-v2-recovery-v5-state-manifest.md) 已单独接受为静态文档产物；两者均无 SQLite/product runtime 证据。前缀 35 字节、空表片段 262 字节仅经独立静态字节复算；本文不把未定的 phase plans、binding bundles 或终态记录冒充已冻结产物。旧 3/4 digest、clock DDL/checksum 与通用 schema validator 均不变。
+**概念语法已裁决；本文为独立联合审查通过的 DOCUMENT ARTIFACT（2026-09-28）。**这是 [C2-B2 中央 phase 协议](im-v2-recovery-v5-phase-contract.md) §5 的独立字节交接，不是新运行时实现、测试通过或 state-v1 runtime writer 授权。Whole C2 仍 IN_PROGRESS；S3/H4 NOT READY，Q5 blocked；按用户 2026-09-29 收尾要求暂停后续开发，不自动分配 admission codec，见 [PRD 收尾](im-v2-prd-closeout.md)。[literal schema/object/column manifest](im-v2-recovery-v5-state-manifest.md) 已单独接受为静态文档产物；两者均无 SQLite/product runtime 证据。前缀 35 字节、空表片段 262 字节仅经独立静态字节复算；[entry/plan](im-v2-recovery-v5-entry-plan-contract.md) 与 [terminal/API](im-v2-recovery-v5-terminal-api-contract.md) 已接受为文档产物而未实现。旧 3/4 digest、clock DDL/checksum 与通用 schema validator 均不变。
 
 ## 1. 完整帧与全流顺序
 
@@ -83,6 +83,6 @@ rowCount:1:0tableEnd:0:
 
 ## 5. 后续证据与未决门禁
 
-后续独立 literal vectors 须覆盖前缀、三 pragma 的整数边界与非零保留、nested NULL/空 SQL、signed64 两端、REAL ±0/±infinity/NaN 拒绝、NULL/畸形及空文本、空/多行、IPK 重复编码与复合 PK 隐藏 rowid、SQL 空白、完整 100 object/32 table、chunk size 不变性、UTF-16 准入拒绝、extra object、帧开销预算边界、baseline/virtual/actual 一致性。新的 runtime extractor/platform 行为 **UNTESTED**。未来 `recovery-v5-state.js` 只能在 literal manifest、phase plans 和 binding bundles 获独立接受后再立项；本文不授予实现权限。
+后续独立 literal vectors 须覆盖前缀、三 pragma 的整数边界与非零保留、nested NULL/空 SQL、signed64 两端、REAL ±0/±infinity/NaN 拒绝、NULL/畸形及空文本、空/多行、IPK 重复编码与复合 PK 隐藏 rowid、SQL 空白、完整 100 object/32 table、chunk size 不变性、UTF-16 准入拒绝、extra object、帧开销预算边界、baseline/virtual/actual 一致性。新的 runtime extractor/platform 行为 **UNTESTED**。`recovery-v5-state.js` 的模块分工和运行时立项需由 parent 单独授权；接受的 manifest、phase plans 和 binding bundles 文档不等于实现权限，独立 goldens 可与源码并行编写。
 
-剩余的 stage/normalization predecessor links、observation null/throw 语义、phase plans、完整 binding bundles、八个 DTO、activation/release/status/terminal 和 fault inventories 仍需独立 artifact 设计/审查；不据本文推出 target5 restore、运营隔离、写启用、清理或发布授权。
+stage/normalization predecessor links、observation null/throw、phase plans 和 binding bundles 见已接受的 [entry/plan](im-v2-recovery-v5-entry-plan-contract.md)；八个 DTO、activation/release/status/terminal 和 physical inventory 见已接受的 [terminal/API](im-v2-recovery-v5-terminal-api-contract.md)。独立 goldens、native faults 与运行时证据仍待办；不据本文推出 target5 restore、运营隔离、写启用、清理或发布授权。

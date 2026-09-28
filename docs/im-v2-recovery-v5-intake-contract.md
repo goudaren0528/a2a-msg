@@ -1,7 +1,8 @@
 # C2-A recovery-v5 archive and intake records (NONRELEASE)
 
-**C2 document gate IN PROGRESS. C2-A pure-codec subset accepted within its
-bounded scope; C2-B remains PENDING. No recovery runtime writer is ready.**
+**C2 document gate IN PROGRESS. C2-A pure-codec subset implemented and accepted
+within its bounded scope; later C2-B document artifacts accepted but unimplemented.
+No recovery runtime writer is ready.**
 Checked committed baseline: `e161f37f8a690b9a54310393d04b5c923306fbc1`
 (2026-09-28). This document records the accepted C2-A pure-codec subset and
 maps it to the committed historical codecs; see the [bounded validation record](im-v2-recovery-v5-intake-validation.md).
@@ -17,9 +18,9 @@ Their older package-status snapshots do not replace the current ledger. This
 subset supplies the four records and two pure binding validators below; it does
 not freeze the rest of C2 or claim runtime, provenance or operational readiness.
 
-## 1. Exact future pure module and boundaries
+## 1. Exact accepted pure module and boundaries
 
-Future `src/im/v2/recovery-v5-intake-records.js` has exactly five exports:
+Implemented and accepted `src/im/v2/recovery-v5-intake-records.js` has exactly five exports:
 
 ```text
 encodeRecoveryV5IntakeRecord(kind, record) -> owned Buffer
@@ -605,9 +606,10 @@ DTOs and remaining exact inventories still require C2-B/H4 review.
 - A visible handoff with uncertain durability requires exact handoff retry and
   resync before successful receipt issuance. Observation alone never repairs it.
 - **Before the first clock-floor or prepare mutation**, a durable prepare intent
-  is required. Its exact later record/plan/result layouts and clock-only versus
-  committed projections are **not yet frozen**. Later records cannot be guessed
-  from these four intake kinds; unknown byte changes require reconciliation.
+  is required. Its later layouts and projections are specified by accepted
+  [phase](im-v2-recovery-v5-phase-contract.md) and
+  [entry/plan](im-v2-recovery-v5-entry-plan-contract.md) documents, not C2-A.
+  Unknown byte changes require reconciliation.
 
 ## 9. Future read-only registry observation and release boundaries
 
@@ -623,22 +625,32 @@ actual-source and hold validation under the original authentic shared budget,
 with protected scope pre/postchecks and lifetime/poison checks. This observation
 has **no resync, copy or establish capability** and makes no durable publication,
 hold/binding creation or repair. Its detached frozen observation is neither a
-durable B2 proof nor terminal/release authority. Exact observation DTOs remain
-with the C2-B status/API tables. This seam is **not implemented by C2-A**.
+durable B2 proof nor terminal/release authority. Exact observation DTOs are in
+the accepted [entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+[terminal/API](im-v2-recovery-v5-terminal-api-contract.md) documents. This seam
+is **not implemented by C2-A**.
 
 Existing B2 durable-proof scopes continue their native5 artifact/manifest/source/
 record resync requirements. Do not weaken them into read-only proofs or use them
 to satisfy zero-write status. Existing old target4 admission/release guards
 continue denying native5. Future target5 release requires the new-family actual
 terminal composition and `minReleasedAt`, including genuine version-aware source,
-hold, binding, terminal chain and approval checks; matching pure JSON is not a
+hold, binding, terminal chain and approval checks per the accepted
+[terminal/API](im-v2-recovery-v5-terminal-api-contract.md) contract; matching pure JSON is not a
 release authorizer. Missing backup after release remains unsupported, pending
 the separate future P6 decision. Cleanup remains nonexecutable.
 
 ## 10. C2-B NOT READY tables and downstream gates
 
 C2-A is a finite schema subset, not the complete C2 contract. The following
-remaining tables must be frozen and reviewed before S3/H4 runtime source work:
+historical checklist now maps to accepted document artifacts in
+[admission](im-v2-recovery-v5-admission-contract.md),
+[phase](im-v2-recovery-v5-phase-contract.md),
+[manifest](im-v2-recovery-v5-state-manifest.md),
+[state-v1](im-v2-recovery-v5-state-digest-contract.md),
+[entry/plan](im-v2-recovery-v5-entry-plan-contract.md) and
+[terminal/API](im-v2-recovery-v5-terminal-api-contract.md); cross-contract
+reconciliation and runtime evidence remain. It does not reopen C2-A layouts:
 
 | C2-B table / artifact | Exact remaining responsibility |
 | --- | --- |
@@ -657,7 +669,8 @@ remaining tables must be frozen and reviewed before S3/H4 runtime source work:
 
 Direction remains a separate target5-only `createImV5RecoveryServices` factory
 with the same eight operation names, not new loose evidence bags or extensions
-to old target4 APIs. Exact options/DTOs await the above tables. Raw closed5 stays
+to old target4 APIs. Exact options/DTOs are accepted in terminal/API, not
+implemented by C2-A. Raw closed5 stays
 unsupported. No global schema substitution or implicit conversion is permitted.
 
 For snapshot prepare, atomically establish the new epoch/counter/run/center/
@@ -669,9 +682,13 @@ private time session or new operational-time opener follows from this work.
 
 Dependency order is **R1/C1 completed -> B2 completed -> C2-A subset review ->
 C2-B remaining document gate -> S3 -> H4 -> Q5 -> separate operational
-ownership/time -> B1 -> P6 fault -> P7 / H1-H3**. C2-A codec/fixture work, when
-separately authorized after review, is pure subset work, not permission to skip
-C2-B or start a runtime writer. Q5 roundtrips and all later evidence remain
+ownership/time -> B1 -> P6 fault -> P7 / H1-H3**. This historical dependency
+sequence does not reverse accepted C2-A implementation or later document acceptance.
+C2-A codec/fixture work is an accepted pure subset, not permission to skip C2-B or
+start a runtime writer. Per the user's 2026-09-29 closeout instruction, further
+admission codec/fixture and runtime work is paused; see the
+[PRD closeout](im-v2-prd-closeout.md). Document acceptance is not a new assignment.
+Q5 roundtrips and all later evidence remain
 future work; no v5 recovery operational-readiness statement is earned here.
 
 ## 11. Document-only verification and handoff
