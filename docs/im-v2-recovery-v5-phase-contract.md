@@ -16,11 +16,13 @@ retains the dependency order. Read with the
 [prepare](im-v2-recovery-prepare-contract.md) and
 [conversion](im-v2-recovery-conversion-contract.md) contracts.
 
-The literal schema/object/column manifest is **PENDING** a separate read-only
-extraction and independent artifact review. This document does not expand that
-manifest, invent unresolved byte framing or claim complete binding bundles, a
-final facade signature, or ready pure-codec exports. Sections below distinguish
-central decisions from still-missing exact artifacts.
+The literal [schema/object/column manifest](im-v2-recovery-v5-state-manifest.md)
+and exact [state-v1 byte grammar](im-v2-recovery-v5-state-digest-contract.md) are
+independently accepted **document artifacts**; this earlier central-protocol text
+does not expand either, or claim complete binding bundles, a final facade
+signature, ready pure-codec exports or runtime verification. Its historical §5
+artifact-gap wording is superseded only for those two accepted documents;
+remaining artifact gaps still apply.
 
 ## 1. Private owned executor and original operation budget
 
