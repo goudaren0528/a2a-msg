@@ -229,3 +229,47 @@ P1额外固定：mapping准确拼接CHECK、旧v1 storage UUID/hash不变；live
 - 停止新功能时：停新写/新监听器/维护，保留全部新accepted、key、ACK/receipt、journal、完成证明。旧服务独立继续不是把新DB回滚成旧DB。
 - 技术实现全部通过仍只是NONRELEASE；真实LAN双机/公网不同网络、恢复切换、实际删除、TLS资源/DNS/费用、备份保留窗口、许可证/仓库治理仍各有人工门禁。
 - 本轮交付只修改两份文档，报告字段/章节核对与具体剩余阶段门禁；不commit/push、不请求立即执行真实运维操作。
+
+## 5. 当前执行账本（2026-09-28；B0.3 限定范围收口）
+
+本节追加记录当前进度，**第 1–4 节及其复选框、顺序和优先级保留为历史交接**；其中“下一包 P5-A”“P5 未完成”和旧 write-set 不是本次任务状态或新增写权限。当前已核本地 HEAD 为 `cc5bed7bb18eac36ee3cc2a412ac47fb29c1b96e`；用户已要求更新 TODO 并继续按 PRD 推进 NONRELEASE 开发。原 [PRD](prd/a2a-msg-agent-im-v1.md)、[路线图](roadmap.md)的发布与外部验收门禁仍独立存在。
+
+### 5.1 已接受与当前包
+
+| 工作包 | 当前状态 | 证据及边界 |
+| --- | --- | --- |
+| P1–P5 | 已接受并本地提交 | 分阶段限定范围验收；P5 A–D 收口见 [进程恢复验证](im-v2-p5-process-validation.md)及其上游记录。不代表生产恢复或整份 PRD 发布验收。 |
+| P6-A | 已接受并本地提交（`65d0727`） | [只读预览验证](im-v2-p6-preview-validation.md)；v4 预览不可执行，备份预览仅配置诊断。 |
+| P6-B0.1 | 已接受并本地提交（`7c98249`） | [schema 5 验证](im-v2-p6-schema-v5-validation.md)；存储、完整校验和纯记录不授予写权限。 |
+| P6-B0.2a | 已接受并本地提交（`d9d0907`） | [转换所有权桥验证](im-v2-p6-conversion-bridge-validation.md)。 |
+| P6-B0.2b | 已接受并本地提交（`cc5bed7`） | [候选转换引擎验证](im-v2-p6-conversion-engine-validation.md)；隔离转换通过不等于 converter rollout。 |
+| P6-B0.3 | 限定范围代码、安全、PRD 忠实度、独立 QA 与完整兼容门禁已接受；本次提交收口 | 以 [最终时间契约](im-v2-maintenance-time-contract.md)及 [B0.3 验证记录](im-v2-p6-time-validation.md)为准；仅内部时间权威，不代表整个 P6 或生产启用。 |
+
+B0.3 当前仅为**内部 synthetic ACTIVE / PAUSED schema 5 时间引擎**：可信 fixture owner 关闭构造连接后独占目标；不是生产 ownership 集成，也不是未完成或已完成 recovery conversion candidate 的 writer。精确三个内部导出、factory-only 薄转导出、三个 facade 方法及私有会话检查的语义按最终时间契约执行；未接 server/MCP/CLI/recovery 运营入口，未复用转换候选，未交付 maintenance executor。
+
+最终 B0.3 审查绑定 SHA-256（基于 `cc5bed7` 加限定 overlay，而非提交后 clean-commit 重跑）：
+
+- `src/im/v2/maintenance-time-internal.js`：`605e1f74191160b708514f0212b9674637c78d7069e4bb6c7bcd4992ed5956f9`。
+- `src/im/v2/maintenance-time-authority.js`：`b28b969f2be8d9419b2069e91ad0e4d0ff5fa3f48d6da67b00938403a10dbe6e`。
+- `docs/im-v2-maintenance-time-contract.md`：`e66097355cbd15ba8f51aafe4486be2c9184c4fbddec24ac97d577fb67fb0855`。
+- 原生生命周期 fixture `error-lifecycle.js`：`2df8a2b29328eb0103a02f99eb2a05d132193a5b6fcca2026394202151db58f6`；schema 5 契约的过时生命周期句仅在最终测试**之后**作本文档收口修订，新文档 hash 不冒充当时测试输入。
+
+最终固定输入证据：Windows Node 24.19 / SQLite 3.53.3，专项 115 total / 3 pass / 112 skip，关联专项分别 133 / 33 / 25 pass；全量 2338 total / 1536 pass / 802 skip / 0 fail，五个显式插件测试 46 pass / 0 skip。原生专项 115 total / 114 pass / 1 skip，关联专项分别 133 / 33 / 25 pass；原生套件与独立 WSL 外层均退出 0。各范围重叠，**不得求和**；详细输入与环境限制见验证记录。旧 104/1 与 3/102 是先前快照，不是最终结果。
+
+### 5.2 接下来按依赖推进的 TODO
+
+1. [x] 完成 B0.3 最终代码、安全、PRD 忠实度与独立 QA 的限定范围合并裁决，并取得固定输入的完整兼容证据；四线及源码/测试 hash、平台和 skip 边界见 [验证记录](im-v2-p6-time-validation.md)。
+2. [x] 补齐 B0.3 验证文档并在本次提交收口；专项 PASS 不标记整个 P6 完成，提交哈希由提交交接报告记录。
+3. [ ] **IN_PROGRESS（下一设计/兼容门禁，未交付实现）：**按 [schema 5 兼容门禁](im-v2-maintenance-schema-v5-contract.md#7-backuprecovery-compatibility-and-rollout-gate)推进 v5 runtime/clock → backup manifest 3 → registry 4/source evidence 2 → 新版 recovery family/candidate → facade；冻结精确字段、版本、phase digest 与 3/4/5 allowlist，证明 v5 backup→注册→restore→verify→activation 仍 paused 的 roundtrip，连同生产 ownership/时间审批集成门禁通过后才可考虑 converter rollout。
+4. [ ] 单独批准并冻结 B1 maintenance writer 的目标/事务、逐批审批、拒绝时 floor、持久结果/status 契约，再实现 expire、scrub、audit 原子执行及独立 P6 故障/预算矩阵；B0.3 时间就绪证据不替代删除批准。
+5. [ ] 完成 P7 跨平台、clean 环境、跨框架和真实双机 LAN / 不同网络互联网验收；H1 真实恢复/来源隔离/RPO/切换、H2 启用与逐批删除/备份窗口/容量、H3 TLS/部署位置/公网资源与成本分别取得人工确认。原 WP0–WP4 治理和发布门禁继续保留。
+
+历史发现（B0.3-CR-01）：内部锁存错误与抛给回调的 Error 对象曾共享身份；回调改写 `code` 可使后续分类执行外来 getter。旧快照专项 PASS 不覆盖此反例；该反例不被追认。
+
+后续历史复审又发现回滚失败的 `MAINTENANCE_DURABILITY_UNCERTAIN` 被先前 fault 遮蔽、构造失败未确认关闭异常缺乏全新安全边界。最终 `605e1f74…` 修正与 `2df8a2b2…` 生命周期回归、独立复审已关闭三项；最终固定输入 QA 另证实可变错误隔离、回滚拒绝、构造清理及 cross-target/restart 路径。回调抛出外来 public Error 的分类视实际路径而定：事后抛出是 `MAINTENANCE_APPROVAL_DENIED`，被捕获的重入是 `MAINTENANCE_INVALID`；并非一切外来错误都归为 INVALID。原生测试所有权下清理未确认资源，不证明产品回滚、物理断电或全局 fencing。
+
+### 5.3 持续边界与独立运维记录
+
+- 默认 `enabled=false`、`writeMode=paused`，expiry/purge/backup cleanup 全部 OFF；内容/重试/普通审计策略仍为 90/7/180 天，备份 TTL 为 null/未确认，30 天不进入默认值。备份 cleanup 保持 configuration-only preview，无枚举或删除执行器。
+- MCP 缺失依赖修复属于**另获用户批准且已完成的独立操作**，不列为本 PRD 功能 TODO，也不把其他 MCP 工作树改动并入 B0.3 范围。
+- 此次 TODO 更新仅修改本节现时账本及契约一处过时句；第 1–4 节历史交接仍为当时快照。未配置项目/父目录 `.sybermem`，不创建或声称记忆索引 PASS；仓库验证文档是本次记录。生产操作、服务、配置、真实删除和 push 不由本账本授予权限。

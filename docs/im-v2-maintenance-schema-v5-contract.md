@@ -4,6 +4,8 @@
 Original reconciliation HEAD: `65d0727cde532f6909a5166c5028b3998e54d6a7`.
 B0.2a document-only scope reconciliation HEAD:
 `7c982499920354706ffa973aa74cfe478222c34a`.
+B0.3 document-only appendix reference HEAD:
+`cc5bed7bb18eac36ee3cc2a412ac47fb29c1b96e`.
 This records the additive center-schema decision and its compatibility gates.
 It authorizes no production migration, enablement or deletion.
 
@@ -15,6 +17,9 @@ Read with the [maintenance handoff](im-v2-maintenance-contract.md),
 [recovery storage contract](im-v2-recovery-storage-contract.md),
 [recovery activation contract](im-v2-recovery-activation-contract.md), and the
 [B0.2a conversion ownership bridge contract](im-v2-recovery-conversion-contract.md).
+The [B0.3 isolated maintenance time appendix](im-v2-maintenance-time-contract.md)
+freezes the internal synthetic-target engine scope, exact DTOs and lifecycle/time
+rules; it is not recovery or production composition and grants no runtime acceptance.
 The completed [P6-A plan/codec contract](im-v2-maintenance-plan-contract.md) is
 design-approved with the Oracle amendments: offline borrowed-connection v4
 preview, pure codec, and configuration-only backup diagnostic. Implementation
@@ -37,8 +42,10 @@ later compatibility gate. Neither specification grants execution authority.
 - **B0.2a:** private recovery ownership bridge, canonical conversion owner/pause
   records and old-v4-facade exclusion only. **B0.2b:** candidate converter only
   after that bridge independently passes. **B0.3:** time authority only after a
-  separately branded owned-v5 target seam. The bridge contract freezes behavior
-  and records and lists the finite session DTO/signature choices still requiring
+  separately branded owned-v5 target seam, now scoped by the B0.3 appendix to a
+  closed, exclusively owned synthetic ACTIVE/PAUSED v5 fixture. Neither unfinished
+  nor completed conversion candidates are time targets. The bridge contract freezes
+  behavior and records and lists the finite session DTO/signature choices still requiring
   parent freeze before source work. No migration engine, converter exposure,
   time writer or v5 runtime/service support belongs to B0.2a. Interfaces below
   remain specifications; no implementation files are created by this handoff.
@@ -345,10 +352,13 @@ No deletion approval substitutes for it. The maintenance handoff's strict
 snapshot, async/thenable denial and capability-lifetime rules apply.
 
 The target must be a separately branded genuine **owned-v5 private capability**,
-not the P6-A read-only target. Composition remains test-only until rollout gates
-pass. Wall time is native `Date.now()` and monotonic time is native
-`process.hrtime.bigint()`; injection is private test composition only, with no
-operation-level adapter. Each proposal has a freshly generated nonce registered
+not the P6-A read-only target. The [B0.3 appendix](im-v2-maintenance-time-contract.md)
+fixes the isolated internal constructor, private connection and synthetic-only
+ownership boundary; its path input does not certify arbitrary production ownership.
+It excludes both unfinished and completed conversion candidates. Wall time is
+privately captured native `Date.now()` and monotonic time is native
+`process.hrtime.bigint()`; no public setter, sampler or operation-level adapter
+is exported. Each proposal has a freshly generated nonce registered
 by the current authority generation. Decoding/replaying caller proposal bytes
 cannot register a nonce or establish authority.
 
@@ -614,7 +624,7 @@ merely because its isolated migration transaction passes.
 | B0.1 generated artifacts | Expand constraints into exact SQL/marker/index bytes, generate DDL full-byte hash and V5 manifest checksum and independently review goldens; no literal V5 constant is claimed here; retain 1–4 bytes/goldens |
 | B0.2a bridge prerequisite | Genuine factory-owned private target/scope, canonical owner/pause records and all-eight-method old-v4 exclusion only; freeze the bridge contract §10 DTO/signature choices, implement and independently verify before B0.2b; no v5 engine or converter exposure |
 | B0.2b future converter | Only after B0.2a independently passes: fixed approved 4-to-5 engine and protected plan/completion integration; §3.1 converter API and B0.1 plan/proof/complete formats remain fixed; no runtime rollout permission |
-| B0.3 prerequisite | Separately branded owned-v5 private target seam and time implementation evidence; §4–5 fix factory/operations/status, native clock units, sample ordering, nonce registration, chain and replay/session rules; test composition only until rollout |
+| B0.3 isolated implementation | The [time appendix](im-v2-maintenance-time-contract.md) fixes the synthetic ACTIVE/PAUSED owned-v5 target, exact internal exports, approval binding, budgets, transaction/session and fault matrix; its finite lifecycle return convention is frozen (`undefined` and idempotent confirmed close). Isolated implementation evidence is recorded in [B0.3 validation](im-v2-p6-time-validation.md); no recovery/production composition or conversion-candidate handoff |
 | New versioned P5 field tables | Still unfrozen: manifest-3 exact tool tag/fields; registry-4/sourceEvidence-2; source/target/conversion bindings across the coherent stage/prepare/verification/seal-2/activation/completion/status family; exact version tags, phase digests and 3–5 allowlists. Head-only reset behavior is fixed; integration evidence remains |
 | Hold/release verification | Prove retained formats bind the correct new-version records through real version-aware verification; otherwise freeze an explicit new variant before use |
 | B1 writer handoff | Future persisted result/status, candidate projection/completion audit and execution approval/rejection semantics remain separate freezes; B0 time approval is not deletion approval |
@@ -663,3 +673,6 @@ existing links and whitespace. The original reconciliation covered this contract
 and the maintenance handoff. The B0.2a reconciliation creates only the recovery
 conversion contract and updates linking/scope here; it supplies no source/test
 or runtime acceptance evidence and does not stage, commit or push.
+The B0.3 reconciliation adds only the isolated time appendix and concise scope
+links here. It preserves frozen DDL/checksum/record orders and B0.1/B0.2 history;
+production ownership and runtime/backup/recovery compatibility gates remain pending.
