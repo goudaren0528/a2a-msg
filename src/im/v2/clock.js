@@ -1,5 +1,5 @@
 import { ImV2Error } from './contracts.js';
-import { assertImSchemaV4 } from './schema.js';
+import { assertSupportedImV2Center } from './schema-dispatch.js';
 import { withImmediateTransaction } from '../transaction.js';
 
 const guards = new WeakMap();
@@ -22,18 +22,32 @@ export function createImV2ClockGuard({ db, clock = Date.now } = {}) {
     if (db.prepare('PRAGMA foreign_keys').get()?.foreign_keys !== 1 ||
         ![2, 3].includes(db.prepare('PRAGMA synchronous').get()?.synchronous)) throw unsafe();
   } catch (error) { throw error instanceof ImV2Error ? error : storage(); }
-  let last, update, cookie, marker, schemaVersion, checksum;
+  let last, update, cookie, marker, schemaCookie, schemaVersion, checksum, timeHead;
   try {
     // The expensive initial assertion and trusted baseline must see one SQLite
     // snapshot. A concurrent writer must not become the baseline after validation.
     db.exec('BEGIN');
-    assertImSchemaV4(db);
+    const validated = assertSupportedImV2Center(db);
+    schemaVersion = validated.schemaVersion;
+    checksum = validated.schemaChecksum;
     cookie = db.prepare('PRAGMA schema_version');
     marker = db.prepare('SELECT version,migration_checksum FROM im_schema LIMIT 2');
-    schemaVersion = cookie.get()?.schema_version;
+    schemaCookie = cookie.get()?.schema_version;
     const rows = marker.all();
-    if (rows.length !== 1 || rows[0].version !== 4) throw storage();
-    checksum = rows[0].migration_checksum;
+    if (rows.length !== 1 || rows[0].version !== schemaVersion ||
+        rows[0].migration_checksum !== checksum) throw storage();
+    if (schemaVersion === 5) {
+      // One snapshot, two singleton/rowid lookups and one reverse rowid tip seek.
+      // Full chain/hash validation belongs to admission, not every clock sample.
+      timeHead = db.prepare(`SELECT c.center_epoch AS current_epoch,
+        h.generation AS head_generation,h.anchor_hash AS head_hash,h.center_epoch AS head_epoch,
+        t.generation AS tip_generation,t.anchor_hash AS tip_hash,t.center_epoch AS tip_epoch
+        FROM im_center_state c
+        LEFT JOIN im_maintenance_time_head h ON h.singleton=1
+        LEFT JOIN im_maintenance_time_anchors t ON t.generation=(
+          SELECT generation FROM im_maintenance_time_anchors ORDER BY generation DESC LIMIT 1)
+        WHERE c.singleton=1`);
+    }
     last = db.prepare('SELECT last_observed_at FROM im_clock WHERE singleton=1');
     update = db.prepare('UPDATE im_clock SET last_observed_at=? WHERE singleton=1');
     if (db.isTransaction !== true) throw storage();
@@ -51,8 +65,16 @@ export function createImV2ClockGuard({ db, clock = Date.now } = {}) {
   function unchanged() {
     try {
       const rows = marker.all();
-      if (cookie.get()?.schema_version !== schemaVersion || rows.length !== 1 ||
-          rows[0].version !== 4 || rows[0].migration_checksum !== checksum) throw storage();
+      if (cookie.get()?.schema_version !== schemaCookie || rows.length !== 1 ||
+          rows[0].version !== schemaVersion || rows[0].migration_checksum !== checksum) throw storage();
+      if (timeHead) {
+        const row = timeHead.get();
+        // Recovery can atomically change the current epoch and delete the head.
+        // Retained history without a head is valid; never bind the initial epoch.
+        if (!row || (row.head_generation !== null &&
+            (row.head_generation !== row.tip_generation || row.head_hash !== row.tip_hash ||
+             row.head_epoch !== row.current_epoch || row.head_epoch !== row.tip_epoch))) throw storage();
+      }
     } catch { throw storage(); }
   }
   function ready() {
@@ -143,6 +165,7 @@ export function createImV2ClockGuard({ db, clock = Date.now } = {}) {
     if (!scope || !scope.fresh || db.isTransaction !== true) throw failure('INVALID_REQUEST');
     if (scope.fault) throw scope.fault;
     try {
+      if (timeHead) unchanged();
       const now = sample(Math.max(persisted(), scope.now));
       writeFloor(now);
       scope.now = now;

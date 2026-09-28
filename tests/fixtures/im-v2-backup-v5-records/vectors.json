@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "manifest",
+    "canonical": "{\"formatVersion\":3,\"backupId\":\"11111111-2222-4333-8444-555555555555\",\"sourceId\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"sourceCreatedAt\":1700000000000,\"schemaVersion\":5,\"schemaChecksum\":\"80eba5e6ce61261d31ec495216c3b6eb8c7a8f0c87edcbb1440372353f495435\",\"fileHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"completedAt\":1700000001000,\"toolVersion\":\"im-v2-backup-2\",\"approval\":{\"approvalRef\":\"change:C1/备份\",\"executorActorId\":\"actor:执行😀\",\"approverActorId\":\"actor:reviewer\"}}",
+    "sha256": "325e1d76a193dc41ff884436fe1ddc0bfe592e4d11faa827a7c3231dc66c2819"
+  },
+  {
+    "kind": "record",
+    "canonical": "{\"recordVersion\":4,\"backupId\":\"11111111-2222-4333-8444-555555555555\",\"instanceId\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"instanceCreatedAt\":1700000000000,\"schemaVersion\":5,\"schemaChecksum\":\"80eba5e6ce61261d31ec495216c3b6eb8c7a8f0c87edcbb1440372353f495435\",\"fileHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifestHash\":\"325e1d76a193dc41ff884436fe1ddc0bfe592e4d11faa827a7c3231dc66c2819\",\"completedAt\":1700000001000,\"artifactReference\":\"registry/artifacts/11111111-2222-4333-8444-555555555555.sqlite\",\"publicationKind\":\"native-v5\",\"sourceEvidenceHash\":\"a65d4f1c60cd79a234d7589d6522844dc2c325e991d39b8911b1add81de85eb4\",\"registeredAt\":1700000002000}",
+    "sha256": "b98597c2939598601e2f9877d56a12fda4be7fed79d19d1a3b5cad7fd6d6e8c2"
+  },
+  {
+    "kind": "source",
+    "canonical": "{\"version\":2,\"kind\":\"registered-backup\",\"sourceRef\":\"backup:11111111-2222-4333-8444-555555555555\",\"registryFormat\":4,\"instanceId\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"instanceCreatedAt\":1700000000000,\"backupId\":\"11111111-2222-4333-8444-555555555555\",\"fileHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"manifestHash\":\"325e1d76a193dc41ff884436fe1ddc0bfe592e4d11faa827a7c3231dc66c2819\",\"schemaVersion\":5,\"schemaChecksum\":\"80eba5e6ce61261d31ec495216c3b6eb8c7a8f0c87edcbb1440372353f495435\",\"completedAt\":1700000001000,\"importedRecordHash\":null}",
+    "sha256": "a65d4f1c60cd79a234d7589d6522844dc2c325e991d39b8911b1add81de85eb4"
+  }
+]
