@@ -172,3 +172,25 @@ test('confirmed terminal outcomes cannot change, but needs_approval can resolve'
     assert.deepEqual(store.listUnfinishedByProject('projectA'), []);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('only an associated submitted unconfirmed failure can reopen for approval', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bridge-tasks-'));
+  const store = createTaskStore(join(dir, 'tasks.db'));
+  try {
+    for (const id of ['uncertain', 'confirmed', 'unassociated']) {
+      store.registerTask({ senderAgentId, taskId: id, projectKey: 'projectA', requirementFingerprint: requirementFingerprint(id) });
+      store.markSubmittedOutcomeUnknown(senderAgentId, id);
+      store.recordStatus(senderAgentId, id, 'failed', 'Unknown result');
+    }
+    store.setSessionID(senderAgentId, 'uncertain', 'ses_prior');
+    store.setSessionID(senderAgentId, 'confirmed', 'ses_done');
+    store.recordStatus(senderAgentId, 'confirmed', 'failed', 'Confirmed', { outcomeConfirmed: true });
+    assert.throws(() => store.recordStatus(senderAgentId, 'confirmed', 'needs_approval', 'Waiting'));
+    assert.throws(() => store.recordStatus(senderAgentId, 'unassociated', 'needs_approval', 'Waiting'));
+    const reopened = store.recordStatus(senderAgentId, 'uncertain', 'needs_approval', 'Waiting');
+    assert.equal(reopened.outcomeConfirmed, false);
+    assert.equal(reopened.submittedOutcomeUnknown, true);
+    assert.equal(reopened.sessionID, 'ses_prior');
+    assert.deepEqual(store.listUnfinishedByProject('projectA').map(row => row.taskId), ['unassociated', 'uncertain']);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

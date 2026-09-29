@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { createImJournal } from '../src/im/journal.js';
 import { createBridgeConfig } from '../src/bridge/config.js';
 import { createTaskStore } from '../src/bridge/tasks.js';
 import { createBridge } from '../src/bridge/bridge.js';
@@ -22,7 +24,7 @@ function setup(t, runTask = async () => ({ status: 'completed', summary: 'done' 
     replyPermission() { throw Error('must never auto approve'); } };
   const imClient = { renewLease: async () => ({ expiresAt: 1000000 }), ackPending: async () => ({}), receiveOnce: async () => ({ items: incoming.splice(0).map(message => ({ message })) }),
     ensureConversation: async () => ({ conversationId: randomUUID() }),
-    send: async request => { sent.push({ request, body: JSON.parse(request.text) }); } };
+    send: async request => { sent.push({ request, body: JSON.parse(request.text) }); return { status: 'accepted' }; } };
   const bridge = createBridge({ config, tasks, runner, imClient, clock: () => 100 });
   const put = (body, from = sender) => incoming.push({ senderAgentId: from, conversationId: randomUUID(),
     messageId: randomUUID(), text: typeof body === 'string' ? body : JSON.stringify(body) });
@@ -39,6 +41,64 @@ test('unauthorized sender denied, unknown project rejected with only visible pro
   assert.equal(x.sent[0].body.projects, undefined);
   assert.deepEqual(x.sent[1].body.projects, [{ projectKey: 'alpha', description: 'Alpha' }, { projectKey: 'beta', description: 'Beta' }]);
   assert.equal(x.calls.length, 0);
+});
+
+test('retained unauthorized receipt uses one journaled rejection across polls and bridge recreation', async t => {
+  const x = setup(t);
+  const db = new DatabaseSync(x.config.journalPath);
+  db.exec('PRAGMA synchronous=FULL');
+  const openJournal = () => createImJournal({ db, centerId: x.config.serverUrl, agentId: bridgeId });
+  let journal = openJournal();
+  // Close this extra journal handle before setup's temp-directory cleanup.
+  const center = new Map(), sendIDs = [], recoverIDs = [];
+  const message = { senderAgentId: sender, recipientAgentId: bridgeId, conversationId: randomUUID(), messageId: randomUUID(),
+    text: JSON.stringify(task('Denied', 'Update docs', 'hidden')) };
+  const otherMessage = { ...message, messageId: randomUUID() };
+  const receipts = [message];
+  x.imClient.listReceived = async () => receipts.map(item => ({ message: item }));
+  let acceptedResponseLost = true;
+  x.imClient.send = async request => {
+    sendIDs.push(request.clientMessageId);
+    const staged = journal.stageOutgoing(request);
+    if (!center.has(request.clientMessageId)) center.set(request.clientMessageId, structuredClone(request));
+    assert.equal(center.get(request.clientMessageId).text, staged.request.text);
+    if (acceptedResponseLost) { acceptedResponseLost = false; throw Error('accepted response lost'); }
+    journal.markAccepted(request.clientMessageId, { messageId: randomUUID(), acceptedAt: 1 });
+    return { status: 'accepted' };
+  };
+  x.imClient.recoverSend = async id => {
+    recoverIDs.push(id);
+    const staged = journal.getOutgoing(id);
+    if (!staged) throw Object.assign(Error('not found'), { code: 'RESOURCE_NOT_FOUND' });
+    assert.deepEqual(center.get(id).text, staged.request.text);
+    if (!staged.messageId) journal.markAccepted(id, { messageId: randomUUID(), acceptedAt: 1 });
+    return { status: 'accepted' };
+  };
+  await x.bridge.processOnce();
+  assert.equal(center.size, 1);
+  assert.equal(sendIDs.length, 1);
+  assert.ok(recoverIDs.includes(sendIDs[0]));
+  await x.bridge.processOnce();
+  assert.equal(center.size, 1);
+  assert.equal(x.tasks.getTask(sender, 'Denied'), null);
+  assert.equal(x.calls.length, 0);
+  const original = center.get(sendIDs[0]);
+  assert.deepEqual(JSON.parse(original.text).projects, [{ projectKey: 'alpha', description: 'Alpha' }, { projectKey: 'beta', description: 'Beta' }]);
+  journal = openJournal(); // Fresh journal handle, same persistent SQLite file.
+  const changedConfig = { ...x.config, visibleProjects: () => [{ projectKey: 'changed', description: 'New visibility' }] };
+  const restarted = createBridge({ config: changedConfig, tasks: x.tasks, runner: x.runner, imClient: x.imClient, clock: () => 100 });
+  await restarted.processOnce();
+  assert.equal(center.size, 1);
+  assert.equal(sendIDs.length, 1);
+  assert.equal(center.get(sendIDs[0]).text, original.text);
+  receipts.push(otherMessage);
+  await restarted.processOnce();
+  assert.equal(center.size, 2);
+  assert.equal(sendIDs.length, 2);
+  assert.notEqual(sendIDs[0], sendIDs[1]);
+  assert.equal(x.tasks.getTask(sender, 'Denied'), null);
+  assert.equal(x.calls.length, 0);
+  db.close();
 });
 
 test('project listing does not disclose directories and malformed payload does not break loop', async t => {
@@ -91,6 +151,74 @@ test('read-only inspection confirms approval completed and releases project with
   assert.equal(x.tasks.getTask(sender, 'Task1').status, 'completed');
   assert.equal(x.tasks.getTask(sender, 'Following').status, 'completed');
   assert.match(x.sent.find(s => s.body.taskId === 'Task1' && s.body.status === 'completed').body.summary, /Approved task finished safely/);
+});
+
+test('unconfirmed failed submission reconciles to approval once, keeps project blocked, then reports original completion', async t => {
+  const x = setup(t);
+  const { requirementFingerprint } = await import('../src/bridge/protocol.js');
+  x.tasks.registerTask({ senderAgentId: sender, taskId: 'Task1', projectKey: 'alpha',
+    requirementFingerprint: requirementFingerprint('Update docs') });
+  x.tasks.markSubmittedOutcomeUnknown(sender, 'Task1');
+  x.tasks.setSessionID(sender, 'Task1', 'ses_prior');
+  x.tasks.recordStatus(sender, 'Task1', 'failed', 'Unconfirmed', { outcomeConfirmed: false });
+  const message = { senderAgentId: sender, conversationId: randomUUID(), messageId: randomUUID(), text: JSON.stringify(task()) };
+  x.imClient.listReceived = async () => [{ message }];
+  let remote = { status: 'needs_approval', sessionID: 'ses_prior', pendingPermissions: [
+    { requestID: 'per_private', action: 'shell', resources: ['private command'] }] };
+  x.runner.inspectSession = async input => {
+    assert.equal(input.sessionID, 'ses_prior');
+    return remote;
+  };
+  await x.bridge.processOnce();
+  const approval = x.tasks.getTask(sender, 'Task1');
+  assert.equal(approval.status, 'needs_approval');
+  assert.equal(approval.outcomeConfirmed, false);
+  assert.equal(approval.submittedOutcomeUnknown, true);
+  assert.equal(approval.sessionID, 'ses_prior');
+  assert.doesNotMatch(JSON.stringify(x.sent), /private command|per_private/);
+  assert.equal(x.sent.filter(s => s.body.status === 'needs_approval').length, 1);
+  await x.bridge.processOnce();
+  assert.equal(x.sent.filter(s => s.body.status === 'needs_approval').length, 1);
+  x.put(task('Blocked')); await x.bridge.processOnce();
+  assert.equal(x.calls.length, 0);
+  assert.match(x.tasks.getTask(sender, 'Blocked').summary, /Task1/);
+  remote = { status: 'completed', summary: 'Original task finished' };
+  await x.bridge.processOnce();
+  assert.equal(x.tasks.getTask(sender, 'Task1').status, 'completed');
+  assert.equal(x.tasks.getTask(sender, 'Task1').outcomeConfirmed, true);
+  assert.equal(x.sent.filter(s => s.body.taskId === 'Task1' && s.body.status === 'completed').length, 1);
+  x.put(task('Following', 'Different work')); await x.bridge.processOnce();
+  assert.equal(x.tasks.getTask(sender, 'Following').status, 'completed');
+  assert.equal(x.calls.length, 1);
+});
+
+test('approval notification failed send retries same journal ID and never marks delivered prematurely', async t => {
+  const x = setup(t);
+  const { requirementFingerprint } = await import('../src/bridge/protocol.js');
+  x.tasks.registerTask({ senderAgentId: sender, taskId: 'Task1', projectKey: 'alpha',
+    requirementFingerprint: requirementFingerprint('Update docs') });
+  x.tasks.markSubmittedOutcomeUnknown(sender, 'Task1');
+  x.tasks.setSessionID(sender, 'Task1', 'ses_prior');
+  x.tasks.recordStatus(sender, 'Task1', 'failed', 'Unconfirmed', { outcomeConfirmed: false });
+  x.runner.inspectSession = async () => ({ status: 'needs_approval', pendingPermissions: [{ requestID: 'per_private', action: 'shell' }] });
+  const message = { senderAgentId: sender, conversationId: randomUUID(), messageId: randomUUID(), text: JSON.stringify(task()) };
+  x.imClient.listReceived = async () => [{ message }];
+  const send = x.imClient.send;
+  const ids = [];
+  x.imClient.send = async request => {
+    if (JSON.parse(request.text).status === 'needs_approval') {
+      ids.push(request.clientMessageId);
+      if (ids.length === 1) throw Error('IM temporarily unavailable');
+    }
+    return send(request);
+  };
+  await x.bridge.processOnce();
+  assert.equal(x.tasks.getTask(sender, 'Task1').status, 'needs_approval');
+  assert.deepEqual(ids, [ids[0], ids[0]]);
+  assert.equal(x.sent.filter(s => s.body.status === 'needs_approval').length, 1);
+  await x.bridge.processOnce();
+  assert.deepEqual(ids, [ids[0], ids[0]]);
+  assert.equal(x.calls.length, 0);
 });
 
 test('session is durably recorded before prompt and recording failure prevents submission', async t => {

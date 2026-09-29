@@ -63,36 +63,50 @@ export function discoverService({ registrationPath, env = process.env } = {}) {
   };
 }
 
-export function createOpenCodeRunner({ baseUrl, headers = {}, fetchImpl = globalThis.fetch } = {}) {
+export function createOpenCodeRunner({ baseUrl, headers = {}, fetchImpl = globalThis.fetch,
+  requestTimeoutMs = 10000, pollIntervalMs = 1000, maxWaitMs = 300000 } = {}) {
   if (typeof baseUrl !== 'string' || !/^https?:\/\//i.test(baseUrl)) {
     throw new TypeError('baseUrl must be an explicit HTTP(S) service URL');
   }
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
+  if (![requestTimeoutMs, pollIntervalMs, maxWaitMs].every(value => Number.isFinite(value) && value > 0))
+    throw new TypeError('OpenCode time limits must be positive');
   const root = baseUrl.replace(/\/+$/, '');
 
   async function request(method, path, body) {
     let response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
-      response = await fetchImpl(`${root}${path}`, {
+      response = await Promise.race([fetchImpl(`${root}${path}`, {
         method,
+        signal: controller.signal,
         headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch (error) {
-      throw new OpenCodeTransportError('OpenCode transport failure', { cause: error });
-    }
-    if (!response?.ok) {
-      throw new OpenCodeTransportError(`OpenCode HTTP failure (${response?.status ?? 'no status'})`, {
-        httpStatus: response?.status,
-      });
-    }
-    if (response.status === 204) return undefined;
-    try {
-      const json = await response.json();
+      }), new Promise((_, reject) => controller.signal.addEventListener('abort', () =>
+        reject(new Error('OpenCode request timed out')), { once: true }))]);
+      if (!response?.ok) {
+        throw new OpenCodeTransportError(`OpenCode HTTP failure (${response?.status ?? 'no status'})`, {
+          httpStatus: response?.status,
+        });
+      }
+      if (response.status === 204) return undefined;
+      const json = await Promise.race([response.json(), new Promise((_, reject) =>
+        controller.signal.addEventListener('abort', () => reject(new Error('OpenCode request timed out')), { once: true }))]);
       return json && typeof json === 'object' && !Array.isArray(json) && Object.hasOwn(json, 'data') ? json.data : json;
     } catch (error) {
-      throw new OpenCodeTransportError('Invalid OpenCode JSON response', { cause: error });
+      if (error instanceof OpenCodeTransportError) throw error;
+      throw new OpenCodeTransportError('OpenCode transport failure', { cause: error });
+    } finally {
+      clearTimeout(timeout);
     }
+  }
+
+  async function isActive(id) {
+    const active = await request('GET', '/api/session/active');
+    if (!active || typeof active !== 'object' || Array.isArray(active))
+      throw new OpenCodeTransportError('Invalid OpenCode active session response');
+    return Object.hasOwn(active, id);
   }
 
   async function runTask({ directory, requirement, sessionID, agent, permissions, onSessionCreated } = {}) {
@@ -131,39 +145,15 @@ export function createOpenCodeRunner({ baseUrl, headers = {}, fetchImpl = global
 
       const path = `/api/session/${encodeURIComponent(id)}`;
       await request('POST', `${path}/prompt`, { text: requirement });
-      await request('POST', `/api/experimental/session/${encodeURIComponent(id)}/wait`);
-      // Idle may mean an agent is blocked on a permission request, not that it succeeded.
-      const pending = await request('GET', `${path}/permission`);
-      validatePermissions(pending);
-      if (pending.length) {
-        let summary = null;
-        try {
-          const messages = await request('GET', `${path}/message`);
-          validateMessages(messages);
-          summary = assistantSummary(messages);
-        } catch (error) {
-          if (!(error instanceof OpenCodeTransportError)) throw error;
-          // Already known to be waiting for approval; output retrieval is optional here.
-        }
-        return {
-          status: 'needs_approval', sessionID: id,
-          ...(summary === null ? {} : { summary }),
-          pendingPermissions: pending.map(({ id: requestID, action, resources }) => ({
-            requestID, action, resources,
-          })),
-        };
+      const deadline = Date.now() + maxWaitMs;
+      while (true) {
+        const observed = await inspectSession({ sessionID: id, directory });
+        if (observed.status === 'needs_approval' || observed.status === 'completed' || observed.status === 'failed' ||
+            observed.status === 'transport_error' || observed.httpStatus === 404 || observed.active !== true) return observed;
+        if (Date.now() >= deadline) return { status: 'unknown', sessionID: id,
+          reason: '状态未知：OpenCode 等待执行结果超时；不会自动重新提交' };
+        await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, Math.max(1, deadline - Date.now()))));
       }
-      const session = await request('GET', path);
-      const messages = await request('GET', `${path}/message`);
-      validateMessages(messages);
-      const summary = assistantSummary(messages);
-      const detail = { sessionID: id, ...(summary === null ? {} : { summary }) };
-      if (session?.outcome === 'succeeded') return { status: 'completed', ...detail };
-      if (session?.outcome === 'failed') return { status: 'failed', ...detail, reason: 'OpenCode run failed' };
-      if (session?.outcome === 'interrupted') {
-        return { status: 'failed', ...detail, reason: 'OpenCode run interrupted' };
-      }
-      return { status: 'unknown', ...detail, reason: '状态未知：OpenCode outcome 未记载或无法识别' };
     } catch (error) {
       if (!(error instanceof OpenCodeTransportError)) throw error;
       return {
@@ -186,8 +176,7 @@ export function createOpenCodeRunner({ baseUrl, headers = {}, fetchImpl = global
         let summary;
         try {
           const messages = await request('GET', `${path}/message`);
-          validateMessages(messages);
-          summary = assistantSummary(messages, null);
+          summary = assistantSummary(validateMessages(messages));
         } catch (error) {
           if (!(error instanceof OpenCodeTransportError)) throw error;
           // A known pending approval remains actionable even if messages cannot be read.
@@ -202,10 +191,11 @@ export function createOpenCodeRunner({ baseUrl, headers = {}, fetchImpl = global
       if (session?.id !== sessionID || (session.location?.directory && session.location.directory !== directory)) {
         throw new OpenCodeTransportError('OpenCode session validation failed');
       }
+      const active = await isActive(sessionID);
       const messages = await request('GET', `${path}/message`);
-      validateMessages(messages);
-      const summary = assistantSummary(messages, null);
+      const summary = assistantSummary(validateMessages(messages));
       const detail = { sessionID, ...(summary === null ? {} : { summary }) };
+      if (active) return { status: 'unknown', active: true, ...detail, reason: '状态未知：OpenCode 会话仍在执行' };
       if (session.outcome === 'succeeded') return { status: 'completed', ...detail };
       if (session.outcome === 'failed') return { status: 'failed', ...detail, reason: 'OpenCode run failed' };
       if (session.outcome === 'interrupted') return { status: 'failed', ...detail, reason: 'OpenCode run interrupted' };
@@ -255,9 +245,11 @@ function assistantSummary(messages) {
 }
 
 function validateMessages(messages) {
-  if (!Array.isArray(messages)) {
+  const list = Array.isArray(messages) ? messages : messages?.data;
+  if (!Array.isArray(list)) {
     throw new OpenCodeTransportError('Invalid message list response');
   }
+  return list;
 }
 
 function validatePermissions(pending) {

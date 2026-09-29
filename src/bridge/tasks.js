@@ -66,7 +66,9 @@ export function createTaskStore(path) {
     if (!current) return null;
     if (['completed', 'failed'].includes(current.status) && current.status !== status &&
         !(current.status === 'failed' && !current.outcomeConfirmed && status === 'completed' &&
-          outcomeConfirmed === true)) invalid();
+          outcomeConfirmed === true) &&
+        !(current.status === 'failed' && !current.outcomeConfirmed && current.submittedOutcomeUnknown &&
+          current.sessionID && status === 'needs_approval' && outcomeConfirmed === undefined)) invalid();
     // A confirmed terminal result cannot be made uncertain again.
     if (['completed', 'failed'].includes(current.status) && current.outcomeConfirmed &&
         outcomeConfirmed === false) invalid();

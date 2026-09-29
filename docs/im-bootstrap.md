@@ -18,3 +18,15 @@ NODE_EXTRA_CA_CERTS='/absolute/path/to/repo/tests/fixtures/im-tls/localhost-test
 ```
 
 Windows PowerShell 的桥接命令使用 `$env:NODE_EXTRA_CA_CERTS = '...'; node src/bridge/run.mjs '...'`。桥接运行还需要事先启动并配置 OpenCode 服务。默认 `https://localhost:8787`，可用 `--server-url https://host:port` 指定同一个中心/桥接地址。初始化配置指向仓库现有的 localhost **测试专用**证书与密钥，仅用于本机试运行；脚本**不会生成生产证书**。正式部署必须由操作者提供真实 TLS 证书、密钥与客户端信任链，并相应更新中心配置及客户端 CA 信任设置。不要将测试证书用于生产。
+
+## 人工派发任务
+
+中心和桥接启动后，使用初始化输出的 **Bridge agentId**；`--root` 指向同一个初始化目录。派发器从 `bridge.json` 读取中心地址与上游身份，从 `credentials/upstream-credential` 读取凭据，无需手动拼装。另开终端运行（测试 TLS 证书时，先按上文设置 `NODE_EXTRA_CA_CERTS`）：
+
+```sh
+node scripts/im-dispatch.mjs --root '/absolute/private/im-instance' --bridge '<Bridge agentId>' projects
+node scripts/im-dispatch.mjs --root '/absolute/private/im-instance' --bridge '<Bridge agentId>' task --id Task1 --project MyProject --requirement-file './requirement.txt'
+node scripts/im-dispatch.mjs --root '/absolute/private/im-instance' --bridge '<Bridge agentId>' watch
+```
+
+`task` 也支持 `--requirement '文本'` 或 `--requirement -` 从标准输入读取；文件方式可避免 PowerShell 长文本引号问题。`watch` 用于之后观察未完成任务；同一上游身份一次只能运行一个接收者。任务默认等待 600 秒（`--timeout 秒数` 可调整），超时不代表任务失败；`needs_approval` 须在目标机器人工批准，桥接不会自动批准。

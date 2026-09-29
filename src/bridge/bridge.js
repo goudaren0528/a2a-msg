@@ -17,6 +17,12 @@ function terminalID(sender, taskId, status = 'failed', confirmed = false) {
   const hex = createHash('sha256').update(`${sender.toLowerCase()}\0${taskId}\0${status}\0${confirmed}\0terminal`).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
+function receiptID(message, kind) {
+  // Scope to the authenticated inbound receipt, not taskId: fresh messages get fresh replies.
+  if (typeof message.messageId !== 'string' || !message.messageId) return null;
+  const hex = createHash('sha256').update(`${message.senderAgentId.toLowerCase()}\0${message.recipientAgentId ?? ''}\0${message.messageId}\0${kind}\0receipt`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 export function createBridge({ config, tasks, runner, imClient, clock = Date.now, secrets = [] }) {
   if (!config || !tasks || !runner || !imClient || typeof clock !== 'function') throw new TypeError('Bridge dependencies required');
@@ -55,10 +61,28 @@ export function createBridge({ config, tasks, runner, imClient, clock = Date.now
       clientMessageId, title, text: JSON.stringify(payload), inReplyTo: message.messageId ?? null,
       correlation: message.correlation ?? null };
     const result = await imClient.send(request);
-    if (result?.status === 'pending') await imClient.recoverSend(clientMessageId);
+    if (result?.status === 'pending') return imClient.recoverSend(clientMessageId);
+    return result;
   }
   const reply = (message, taskId, status, summary, extra = {}, id) =>
     send(message, { ...buildTaskReply({ taskId, status, summary }), ...extra }, id);
+  async function receiptReply(message, kind, payload, title = 'Bridge reply') {
+    const id = receiptID(message, kind);
+    if (!id) return send(message, payload, randomUUID(), title);
+    if (delivered.has(id)) return;
+    try {
+      // Recover the journaled ORIGINAL request, even if current visible projects changed.
+      const recovered = typeof imClient.recoverSend === 'function' ? await imClient.recoverSend(id).catch(error => {
+        if (error?.code !== 'RESOURCE_NOT_FOUND') throw error;
+        return null;
+      }) : null;
+      const result = recovered ?? await send(message, payload, id, title);
+      if (result?.status === 'pending') return;
+      if (result) delivered.add(id);
+    } catch { /* The original durable id is retried on the next reconciliation. */ }
+  }
+  const rejection = (message, kind, taskId, summary, extra = {}) =>
+    receiptReply(message, kind, { ...buildTaskReply({ taskId, status: 'failed', summary }), ...extra });
   async function terminal(message, task) {
     // Use the same envelope for every retry, including a restart. Conversation and reply
     // metadata are recovered from the persisted incoming message where available.
@@ -97,6 +121,15 @@ export function createBridge({ config, tasks, runner, imClient, clock = Date.now
       let result;
       try { result = await runner.inspectSession({ sessionID: task.sessionID, directory: project.directory }); }
       catch { continue; }
+      if (result?.status === 'needs_approval') {
+        if (!Array.isArray(result.pendingPermissions) || !result.pendingPermissions.length) continue;
+        const actions = result.pendingPermissions.map(p => p?.action).filter(a => typeof a === 'string' && /^[a-z_]{1,50}$/.test(a));
+        const summary = `等待人工批准：${result.pendingPermissions.length} 项权限请求${actions.length ? `（${actions.join(', ')}）` : ''}；不会自动批准。${safeSession(task.sessionID)}`;
+        const updated = task.status === 'needs_approval' && task.summary === summary ? task :
+          tasks.recordStatus(task.senderAgentId, task.taskId, 'needs_approval', summary);
+        if (updated.status === 'needs_approval') await terminal(message, updated);
+        continue;
+      }
       if (!['completed', 'failed'].includes(result?.status)) continue;
       const summary = result.status === 'completed' ? `OpenCode 已报告完成：${detail(result, secrets)}。${safeSession(task.sessionID)}` :
         `${result.reason === 'OpenCode run interrupted' ? 'OpenCode 已确认执行中断' : 'OpenCode 已报告执行失败'}：${detail(result, secrets)}。${safeSession(task.sessionID)}`;
@@ -171,8 +204,7 @@ export function createBridge({ config, tasks, runner, imClient, clock = Date.now
       const updated = tasks.recordStatus(message.senderAgentId, input.taskId, status, summary,
         status === 'needs_approval' ? {} : { outcomeConfirmed: confirmed });
       active.delete(`${message.senderAgentId.toLowerCase()}\0${input.taskId}`);
-      if (status === 'completed' || status === 'failed') await terminal(message, updated);
-      else await bestEffort(message, input.taskId, status, summary);
+      await terminal(message, updated);
     })();
     queues.set(key(directory), work);
     try { await work; } finally { if (queues.get(key(directory)) === work) queues.delete(key(directory)); }
@@ -184,7 +216,7 @@ export function createBridge({ config, tasks, runner, imClient, clock = Date.now
     try { payload = JSON.parse(message.text); } catch { return; }
     if (payload?.type === 'project_list') {
       try { parseProjectListQuery(payload); } catch { return; }
-      await send(message, buildProjectListReply(config.visibleProjects(message.senderAgentId)), randomUUID(), 'Project list');
+      await receiptReply(message, 'project_list', buildProjectListReply(config.visibleProjects(message.senderAgentId)), 'Project list');
       return;
     }
     let input;
@@ -192,15 +224,15 @@ export function createBridge({ config, tasks, runner, imClient, clock = Date.now
     const project = config.resolveProject(message.senderAgentId, input.projectKey);
     if (!project.ok) {
       const projects = project.code === 'UNKNOWN_SENDER' ? [] : config.visibleProjects(message.senderAgentId);
-      try { await reply(message, input.taskId, 'failed', project.code,
-        projects.length ? buildProjectListReply(projects) : {}); } catch { /* Receipt is durable. */ }
+      await rejection(message, 'project_denied', input.taskId, project.code,
+        projects.length ? buildProjectListReply(projects) : {});
       return;
     }
     const registration = tasks.registerTask({ senderAgentId: message.senderAgentId, taskId: input.taskId,
       projectKey: input.projectKey, requirementFingerprint: requirementFingerprint(input.requirement),
       summary: '已接单，排队等待执行。' });
     if (registration.kind === 'conflict') {
-      await bestEffort(message, input.taskId, 'failed', 'taskId 冲突：需求与已登记任务不同。'); return;
+      await rejection(message, 'task_conflict', input.taskId, 'taskId 冲突：需求与已登记任务不同。'); return;
     }
     if (registration.kind === 'existing') {
       const old = registration.task;
@@ -241,7 +273,7 @@ export function createBridge({ config, tasks, runner, imClient, clock = Date.now
       if (!existing) await handle(message);
       else if (existing.requirementFingerprint !== requirementFingerprint(input.requirement) ||
           existing.projectKey !== input.projectKey) {
-        await bestEffort(message, input.taskId, 'failed', 'taskId 冲突：需求或项目与已登记任务不同。');
+        await rejection(message, 'task_conflict', input.taskId, 'taskId 冲突：需求或项目与已登记任务不同。');
       } else if (['completed', 'failed'].includes(existing.status)) await terminal(message, existing);
       else if (['accepted', 'running'].includes(existing.status) && !existing.submittedOutcomeUnknown) {
         const project = config.resolveProject(message.senderAgentId, input.projectKey);

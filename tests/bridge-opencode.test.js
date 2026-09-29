@@ -15,6 +15,7 @@ function fakeService({ outcome = 'succeeded', pending = [], messages = [], sessi
     let value;
     if (path === '/api/session' && options.method === 'POST') value = { id: sessionID };
     else if (path === `/api/session/${sessionID}`) value = outcome === null ? { id: sessionID } : { id: sessionID, outcome };
+    else if (path === '/api/session/active') value = {};
     else if (path === `/api/session/${sessionID}/permission`) value = pending;
     else if (path === `/api/session/${sessionID}/message`) value = messages;
     else if (path.endsWith('/reply')) return { ok: true, status: 204 };
@@ -116,9 +117,7 @@ test('pending permissions take precedence over idle and succeeded outcome', asyn
   assert.equal(result.summary, 'Waiting for approval');
   assert.equal(calls.some((call) => call.path.endsWith('/reply')), false);
   assert.deepEqual(calls.find((call) => call.path === '/api/session').data.location, { directory: task.directory });
-  const wait = calls.find((call) => call.path.endsWith('/wait'));
-  assert.equal(wait.method, 'POST');
-  assert.equal(wait.body, undefined);
+  assert.equal(calls.some(call => call.path.endsWith('/wait')), false);
 });
 
 test('succeeded uses last assistant text, not prompt inbox; prompt never carries agent', async () => {
@@ -245,7 +244,7 @@ test('inspection maps succeeded, failed, interrupted and unrecognized outcomes w
     assert.equal(result.status, status);
     assert.equal(result.summary, 'Last answer');
     if (outcome === 'interrupted') assert.match(result.reason, /interrupt/i);
-    assert.deepEqual(calls.map(({ path }) => path), ['/api/session/ses_test/permission', '/api/session/ses_test', '/api/session/ses_test/message']);
+    assert.deepEqual(calls.map(({ path }) => path), ['/api/session/ses_test/permission', '/api/session/ses_test', '/api/session/active', '/api/session/ses_test/message']);
     assert.equal(calls.some(({ method }) => method === 'POST'), false);
   }
 });
@@ -272,6 +271,62 @@ test('inspection distinguishes transport failure from a legitimate failed sessio
   assert.equal(result.status, 'transport_error');
   assert.match(result.reason, /transport/i);
   assert.equal(calls.some(({ method }) => method === 'POST'), false);
+});
+
+test('active permission surfaces promptly without waiting or a second prompt; stale success cannot complete active run', async () => {
+  let pending = [], abortedWait = false;
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const path = new URL(url).pathname;
+    calls.push({ path, method: options.method });
+    if (path.endsWith('/wait')) return new Promise(resolve => options.signal.addEventListener('abort', () => {
+      abortedWait = true; resolve({ ok: false, status: 499 });
+    }));
+    if (path.endsWith('/prompt')) pending = [{ id: 'per_live', action: 'shell', resources: ['private command'] }];
+    const value = path === '/api/session' ? { id: 'ses_test' } : path === '/api/session/active' ? { ses_test: { type: 'running' } } :
+      path.endsWith('/permission') ? pending : path.endsWith('/message') ? [realAssistant('Waiting')] :
+        { id: 'ses_test', outcome: 'succeeded' };
+    return { ok: true, status: 200, json: async () => ({ data: value }) };
+  };
+  const runner = createOpenCodeRunner({ baseUrl: 'http://localhost:1234', fetchImpl, pollIntervalMs: 1, maxWaitMs: 100 });
+  const result = await Promise.race([runner.runTask(task), new Promise((_, reject) => setTimeout(() => reject(Error('run hung')), 300))]);
+  assert.equal(result.status, 'needs_approval');
+  assert.equal(result.pendingPermissions[0].requestID, 'per_live');
+  assert.equal(calls.filter(call => call.path.endsWith('/prompt')).length, 1);
+  assert.equal(calls.some(call => call.path.endsWith('/wait') || call.path.endsWith('/reply')), false);
+  assert.equal(abortedWait, false); // No idle-wait request exists to leave dangling.
+  pending = [];
+  const stale = await runner.inspectSession({ sessionID: 'ses_test', directory: task.directory });
+  assert.equal(stale.status, 'unknown');
+  assert.equal(stale.active, true);
+});
+
+test('unreachable or malformed activity probe cannot turn stale outcome into completion', async () => {
+  for (const options of [{ failAt: '/api/session/active' }, { overrides: { '/api/session/active': null } }]) {
+    const { runner } = fakeService(options);
+    const result = await runner.inspectSession({ sessionID: 'ses_test', directory: task.directory });
+    assert.equal(result.status, 'transport_error');
+  }
+});
+
+test('running without permission is polled until approval appears, without reposting', async () => {
+  let probes = 0;
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    const data = path === '/api/session' ? { id: 'ses_test' } : path.endsWith('/permission') ?
+      (++probes >= 2 ? [{ id: 'per_late', action: 'shell' }] : []) :
+      path === '/api/session/active' ? { ses_test: { type: 'running' } } :
+        path.endsWith('/message') ? [] : { id: 'ses_test', outcome: 'succeeded' };
+    return { ok: true, status: 200, json: async () => ({ data }) };
+  };
+  const runner = createOpenCodeRunner({ baseUrl: 'http://localhost:1234', fetchImpl, pollIntervalMs: 1, maxWaitMs: 100 });
+  const result = await runner.runTask(task);
+  assert.equal(result.status, 'needs_approval');
+  assert.equal(probes, 2);
+  assert.equal(calls.filter(path => path.endsWith('/prompt')).length, 1);
+  assert.equal(calls.some(path => path.endsWith('/wait') || path.endsWith('/reply')), false);
 });
 
 function tempRegistration(t) {
