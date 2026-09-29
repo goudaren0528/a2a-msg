@@ -9,7 +9,7 @@ import { initInstanceIdentity, migrateImSchemaV3 } from '../src/im/schema.js';
 import { parseImConfig } from '../src/im/config.js';
 import { createBridgeConfig, PROJECT_KEY } from '../src/bridge/config.js';
 
-const usage = 'Usage: node scripts/im-bootstrap.mjs --root <ABSOLUTE_NONEXISTENT_DIR> [--server-url <https://host:port>] --project <key>=<absolute-dir>[|<description>] [--project ...] [--trust-windows-permissions] (quote --project; | separates optional description, never :)';
+const usage = 'Usage: node scripts/im-bootstrap.mjs --root <ABSOLUTE_NONEXISTENT_DIR> [--server-url <https://host:port>] --project <key>=<absolute-dir>[|<description>] [--project ...] [--tls-key <ABSOLUTE_FILE> --tls-cert <ABSOLUTE_FILE>] [--ca-cert <ABSOLUTE_FILE>] [--trust-windows-permissions] (quote --project; | separates optional description, never :)';
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const fixtureCert = join(repo, 'tests/fixtures/im-tls/localhost-test-only.crt');
 const fixtureKey = join(repo, 'tests/fixtures/im-tls/localhost-test-only.key');
@@ -17,14 +17,14 @@ const defaultUrl = 'https://localhost:8787';
 
 function args(argv) {
   if (argv.length === 1 && argv[0] === '--help') return null;
-  let root, serverUrl = defaultUrl, trustWindowsPermissions = false;
+  let root, serverUrl = defaultUrl, trustWindowsPermissions = false, tlsKey, tlsCert, caCert;
   const projects = [], keys = new Set(), directories = new Set();
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '--trust-windows-permissions') {
       if (trustWindowsPermissions) throw Error('duplicate --trust-windows-permissions');
       trustWindowsPermissions = true;
-    } else if (flag === '--root' || flag === '--server-url' || flag === '--project') {
+    } else if (['--root', '--server-url', '--project', '--tls-key', '--tls-cert', '--ca-cert'].includes(flag)) {
       const value = argv[++i];
       if (!value || value.startsWith('--')) throw Error(`missing value for ${flag}`);
       if (flag === '--root') {
@@ -33,6 +33,17 @@ function args(argv) {
       } else if (flag === '--server-url') {
         if (serverUrl !== defaultUrl) throw Error('duplicate --server-url');
         serverUrl = value;
+      } else if (flag === '--tls-key' || flag === '--tls-cert' || flag === '--ca-cert') {
+        if (flag === '--tls-key') {
+          if (tlsKey !== undefined) throw Error('duplicate --tls-key');
+          tlsKey = value;
+        } else if (flag === '--tls-cert') {
+          if (tlsCert !== undefined) throw Error('duplicate --tls-cert');
+          tlsCert = value;
+        } else {
+          if (caCert !== undefined) throw Error('duplicate --ca-cert');
+          caCert = value;
+        }
       } else {
         const equal = value.indexOf('=');
         if (equal < 1) throw Error('invalid --project: expected key=absolute-dir[|description]');
@@ -54,6 +65,15 @@ function args(argv) {
       }
     } else throw Error(`unknown option: ${flag}`);
   }
+  if (tlsKey && !tlsCert) throw Error('--tls-key requires --tls-cert');
+  if (tlsCert && !tlsKey) throw Error('--tls-cert requires --tls-key');
+  for (const [flag, path] of [['--tls-key', tlsKey], ['--tls-cert', tlsCert], ['--ca-cert', caCert]]) {
+    if (path === undefined) continue;
+    if (!isAbsolute(path)) throw Error(`${flag} must be an absolute path to an existing regular file (not a symlink)`);
+    let regular = false;
+    try { regular = lstatSync(path).isFile(); } catch { /* missing or inaccessible */ }
+    if (!regular) throw Error(`${flag} must be an absolute path to an existing regular file (not a symlink)`);
+  }
   if (!root || !isAbsolute(root) || existsSync(root)) throw Error('--root must be absolute and must not already exist');
   if (!projects.length) throw Error('at least one --project is required (bridge configuration cannot have empty projects)');
   let url;
@@ -62,7 +82,7 @@ function args(argv) {
     throw Error('--server-url must be a bare https origin');
   if (process.platform === 'win32' && !trustWindowsPermissions)
     throw Error(`Windows protected-file checks fail closed. Pass --trust-windows-permissions only after independently verifying restrictive NTFS ACLs and protected parent directories. ${WINDOWS_PERMISSION_WARNING}`);
-  return { root, serverUrl, projects, trustWindowsPermissions };
+  return { root, serverUrl, projects, trustWindowsPermissions, tlsKey, tlsCert, caCert, remoteHost: !['localhost', '127.0.0.1'].includes(url.hostname.toLowerCase()) };
 }
 
 function privateRoot(root) {
@@ -89,7 +109,7 @@ function quote(value) { return process.platform === 'win32' ? `'${value.replaceA
 function main() {
   const input = args(process.argv.slice(2));
   if (!input) { console.log(usage); return; }
-  const { root, serverUrl, projects, trustWindowsPermissions } = input;
+  const { root, serverUrl, projects, trustWindowsPermissions, tlsKey, tlsCert, caCert, remoteHost } = input;
   process.umask(0o077);
   privateRoot(root);
   let db;
@@ -134,7 +154,7 @@ function main() {
     const migration = createImMigration({ db, authorizeAdmin: ctx =>
       authority.authorizeAdmin(ctx) === true ? 'local-admin' : false });
     migration.setImWriteMode({ mode: 'enabled', reason: 'bootstrap enabled policy', policy }, context);
-    const center = { dbPath, policy, tls: { keyPath: fixtureKey, certPath: fixtureCert } };
+    const center = { dbPath, policy, tls: { keyPath: tlsKey ?? fixtureKey, certPath: tlsCert ?? fixtureCert } };
     const bridge = { agentId: agents[1].agentId, serverUrl,
       credentialFile: agents[1].credentialFile, journalPath: join(root, 'bridge-journal.sqlite'),
       statePath: join(root, 'bridge-tasks.sqlite'), allowedSenders: [agents[0].agentId], projects };
@@ -146,13 +166,21 @@ function main() {
     for (const [name, path] of Object.entries({ database: dbPath, adminSecret: secretFile,
       credentialDirectory, upstreamCredential: agents[0].credentialFile,
       bridgeCredential: agents[1].credentialFile, centerConfig: centerPath, bridgeConfig: bridgePath,
-      tlsTestOnlyKey: fixtureKey, tlsTestOnlyCertificate: fixtureCert })) console.log(`${name}: ${path}`);
-    console.log('TLS fixture is TEST-ONLY, never production. Supply real TLS key/certificate and trusted CA for deployment; this script does not generate certificates.');
-    console.log('Next commands (local test only; requires OpenCode service before bridge):');
+      tlsKey: center.tls.keyPath, tlsCertificate: center.tls.certPath, ...(caCert ? { caCertificateToCopyToOtherMachine: caCert } : {}) })) console.log(`${name}: ${path}`);
+    if (!tlsKey) {
+      console.log('WARNING: TLS test fixture only works for localhost on this machine; it cannot be used from another machine. Supply real TLS key/certificate and a trusted CA for LAN deployment. This script does not generate certificates.');
+      if (remoteHost) console.log('WARNING: --server-url is not localhost/127.0.0.1 but no --tls-key/--tls-cert were supplied; the resulting config will not be reachable from other machines.');
+    }
+    if (tlsKey && !caCert) console.log('For clients using a private CA, set NODE_EXTRA_CA_CERTS to your trusted CA certificate path (not the repo test fixture).');
+    if (caCert) console.log(`Copy CA certificate to the other machine and point NODE_EXTRA_CA_CERTS at the copied file: ${caCert}`);
+    console.log('Next commands (requires OpenCode service before bridge):');
     console.log(`node scripts/im-center.mjs ${quote(centerPath)}`);
-    console.log(process.platform === 'win32'
-      ? `$env:NODE_EXTRA_CA_CERTS = ${quote(fixtureCert)}; node src/bridge/run.mjs ${quote(bridgePath)}`
-      : `NODE_EXTRA_CA_CERTS=${quote(fixtureCert)} node src/bridge/run.mjs ${quote(bridgePath)}`);
+    const trustedCert = caCert ?? (tlsKey ? null : fixtureCert);
+    console.log(trustedCert
+      ? (process.platform === 'win32'
+        ? `$env:NODE_EXTRA_CA_CERTS = ${quote(trustedCert)}; node src/bridge/run.mjs ${quote(bridgePath)}`
+        : `NODE_EXTRA_CA_CERTS=${quote(trustedCert)} node src/bridge/run.mjs ${quote(bridgePath)}`)
+      : `node src/bridge/run.mjs ${quote(bridgePath)}`);
     if (process.platform !== 'win32') console.log('POSIX root/credential directory: 0700; files: 0600.');
   } catch (error) {
     throw Error(`bootstrap failed (${error.message}); retained root for inspection: ${root}`);

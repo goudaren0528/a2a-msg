@@ -19,6 +19,14 @@ NODE_EXTRA_CA_CERTS='/absolute/path/to/repo/tests/fixtures/im-tls/localhost-test
 
 Windows PowerShell 的桥接命令使用 `$env:NODE_EXTRA_CA_CERTS = '...'; node src/bridge/run.mjs '...'`。桥接运行还需要事先启动并配置 OpenCode 服务。默认 `https://localhost:8787`，可用 `--server-url https://host:port` 指定同一个中心/桥接地址。初始化配置指向仓库现有的 localhost **测试专用**证书与密钥，仅用于本机试运行；脚本**不会生成生产证书**。正式部署必须由操作者提供真实 TLS 证书、密钥与客户端信任链，并相应更新中心配置及客户端 CA 信任设置。不要将测试证书用于生产。
 
+LAN 部署时用 `--tls-key <绝对文件路径>` 和 `--tls-cert <绝对文件路径>` 同时指定中心使用的真实证书密钥；可选 `--ca-cert <绝对文件路径>` 指定要复制到另一台机器的 CA 证书。三个路径都必须指向现有普通文件（不能是符号链接）；CA 路径仅用于输出下一步命令，不写入 `center-config.json`。PowerShell 示例（先自行准备已包含 LAN IP 的证书）：
+
+```powershell
+node scripts/im-bootstrap.mjs --root D:\a2a-msg --server-url https://192.168.11.40:8787 --project 'demoapi=D:\projects\demo-api|示例服务' --tls-key D:\a2a-tls\server-key.pem --tls-cert D:\a2a-tls\server-cert.pem --ca-cert D:\a2a-tls\ca-cert.pem --trust-windows-permissions
+```
+
+将 `D:\a2a-tls\ca-cert.pem` 复制到另一台机器，并在该机器上将 `NODE_EXTRA_CA_CERTS` 指向复制后的文件；脚本输出的本机桥接命令会使用指定的 CA 路径。仓库测试证书只适用于本机 localhost，其他机器不可使用。
+
 ## 人工派发任务
 
 中心和桥接启动后，使用初始化输出的 **Bridge agentId**；`--root` 指向同一个初始化目录。派发器从 `bridge.json` 读取中心地址与上游身份，从 `credentials/upstream-credential` 读取凭据，无需手动拼装。另开终端运行（测试 TLS 证书时，先按上文设置 `NODE_EXTRA_CA_CERTS`）：

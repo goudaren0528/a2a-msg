@@ -4,6 +4,8 @@ import { isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { existsSync, lstatSync, readdirSync, mkdirSync, chmodSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createServer, get } from 'node:https';
+import { checkServerIdentity } from 'node:tls';
 
 const usage = 'Usage: node scripts/im-lan-cert.mjs --out <ABSOLUTE_DIR> --host <ip-or-dns> [--host ...] [--days N]';
 
@@ -27,7 +29,14 @@ export function integer(bytes) {
   const unsigned = bytes.subarray(first);
   return der(0x02, ...(unsigned[0] & 0x80 ? [Buffer.from([0])] : []), unsigned);
 }
-const bitString = (unused, bytes) => der(0x03, Buffer.from([unused]), bytes);
+export function bitString(unused, bytes) {
+  if (!Buffer.isBuffer(bytes) || !Number.isInteger(unused) || unused < 0 || unused > 7 ||
+    (!bytes.length && unused !== 0) ||
+    (bytes.length && (bytes[bytes.length - 1] & ((1 << unused) - 1)))) {
+    throw new TypeError('Invalid DER BIT STRING padding');
+  }
+  return der(0x03, Buffer.from([unused]), bytes);
+}
 const sha256Ecdsa = seq(oid(0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02));
 const cn = (text) => seq(der(0x31, seq(oid(0x55, 0x04, 0x03), der(0x0c, Buffer.from(text, 'utf8')))));
 export function time(date) {
@@ -121,16 +130,7 @@ function parseArgs(args) {
   return { out, days, hosts: [...new Set(hosts)] };
 }
 
-function main() {
-try {
-  const options = parseArgs(process.argv.slice(2));
-  if (options.help) {
-    console.log(usage);
-  } else {
-    const { out, days, hosts } = options;
-    if (existsSync(out)) {
-      if (!lstatSync(out).isDirectory() || readdirSync(out).length) throw new Error('--out must be nonexistent or an empty directory');
-    }
+function buildPair({ days, hosts }) {
     const caKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const serverKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const caName = cn('IM LAN test CA');
@@ -164,6 +164,55 @@ try {
       hosts.some(host => isIP(host) ? server.checkIP(host) !== host : !server.checkHost(host))) {
       throw new Error('Generated certificates failed X.509 verification');
     }
+    return { caKeys, serverKeys, caPem, serverPem };
+}
+
+export async function verifyTlsHandshake({ caPem, serverPem, serverKeys }, host) {
+  const key = serverKeys.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const server = createServer({ key, cert: serverPem }, (_request, response) => response.end('OK'));
+  const probeHost = host;
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    await new Promise((resolve, reject) => {
+      get(`https://127.0.0.1:${server.address().port}/`, {
+        ca: caPem, agent: false, rejectUnauthorized: true,
+        // Probe loopback while verifying the certificate against an actual requested SAN.
+        checkServerIdentity: (_name, cert) => checkServerIdentity(probeHost, cert)
+      }, response => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => { body += chunk; });
+        response.on('end', () => body === 'OK' && response.statusCode === 200 ? resolve() : reject(new Error('TLS probe response failed')));
+        response.on('error', reject);
+      }).on('error', reject);
+    });
+  } finally {
+    if (server.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}
+
+export async function runGenerator({ out, days, hosts }, { build = buildPair, handshake = verifyTlsHandshake, stderr = process.stderr } = {}) {
+    if (existsSync(out)) {
+      if (!lstatSync(out).isDirectory() || readdirSync(out).length) throw new Error('--out must be nonexistent or an empty directory');
+    }
+    let pair;
+    const failures = [];
+    // Retry only whole generations that fail construction or real, CA-validated TLS self-verification.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const candidate = build({ days, hosts });
+        await handshake(candidate, hosts[0]);
+        pair = candidate;
+        break;
+      } catch (error) {
+        failures.push(`Attempt ${attempt} failed: ${error.message}`);
+        if (attempt === 3) throw error;
+      }
+    }
+    const { caKeys, serverKeys, caPem, serverPem } = pair;
     if (!existsSync(out)) mkdirSync(out, { mode: 0o700 });
     if (process.platform !== 'win32') chmodSync(out, 0o700);
     const files = { 'ca-key.pem': caKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }),
@@ -173,12 +222,22 @@ try {
     for (const [name, content] of Object.entries(files)) {
       writeFileSync(join(out, name), content, { mode: name.includes('-key') ? 0o600 : 0o644, flag: 'wx' });
     }
+    if (failures.length) stderr.write(`${failures.join('\n')}\nFresh certificates passed verification and TLS handshake on attempt ${failures.length + 1}.\n`);
     console.log(`CA certificate to copy to OTHER machine: ${join(out, 'ca-cert.pem')}`);
     console.log(`IM center TLS key: ${join(out, 'server-key.pem')}`);
     console.log(`IM center TLS certificate: ${join(out, 'server-cert.pem')}`);
     console.log(`Verified SAN hosts: ${hosts.join(', ')}`);
     console.log('WARNING: The CA private key (ca-key.pem) must NEVER leave this machine.');
     if (process.platform === 'win32') console.log('Windows: mode bits are not ACLs; restrict access to the keys and directory with Windows ACLs.');
+}
+
+async function main() {
+try {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(usage);
+  } else {
+    await runGenerator(options);
   }
 } catch (error) {
   console.error(`Certificate generation failed: ${error.message}`);

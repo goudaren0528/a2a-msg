@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import { createServer, get } from 'node:https';
-import { integer, time } from '../scripts/im-lan-cert.mjs';
+import { bitString, integer, time, runGenerator, verifyTlsHandshake } from '../scripts/im-lan-cert.mjs';
 
 const script = resolve('scripts/im-lan-cert.mjs');
 const run = (...args) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
@@ -23,6 +23,28 @@ test('DER INTEGER uses minimal positive encoding at sign and zero boundaries', (
   ]) {
     assert.equal(integer(Buffer.from(input, 'hex')).toString('hex'), expected, input);
   }
+});
+
+test('adversarial full-length serials encode as minimal positive INTEGERs', () => {
+  for (const [value, expected] of [
+    ['0001' + '00'.repeat(14), '020f01' + '00'.repeat(14)],
+    ['000001' + '00'.repeat(13), '020e01' + '00'.repeat(13)],
+    ['80' + '00'.repeat(15), '02110080' + '00'.repeat(15)],
+    ['7f' + '00'.repeat(15), '02107f' + '00'.repeat(15)],
+    ['00'.repeat(16), '020100'],
+    ['01', '020101'], // minimum serial length
+    ['ff'.repeat(16), '021100' + 'ff'.repeat(16)], // maximum serial length including sign byte
+  ]) {
+    assert.equal(integer(Buffer.from(value, 'hex')).toString('hex'), expected, value);
+  }
+});
+
+test('BIT STRING always prefixes unused-bit count and rejects nonzero padding', () => {
+  assert.equal(bitString(0, Buffer.from('308180', 'hex')).toString('hex'), '030400308180');
+  assert.equal(bitString(1, Buffer.from('06', 'hex')).toString('hex'), '03020106');
+  assert.equal(bitString(7, Buffer.from('80', 'hex')).toString('hex'), '03020780');
+  assert.throws(() => bitString(1, Buffer.from('07', 'hex')), /padding/);
+  assert.throws(() => bitString(7, Buffer.from('81', 'hex')), /padding/);
 });
 
 test('RFC 5280 UTCTime/GeneralizedTime encoding at the 2050 boundary', () => {
@@ -126,6 +148,62 @@ test('generated key/cert and CA complete a real HTTPS handshake', async () => {
     if (server?.listening) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('happy path writes exactly four files after its TLS self-check', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'im-lan-test-'));
+  try {
+    const out = join(dir, 'certs');
+    let checks = 0;
+    await runGenerator({ out, days: 7, hosts: ['127.0.0.1'] }, {
+      handshake: async (pair, host) => {
+        assert.equal(existsSync(out), false, 'no files before handshake');
+        await verifyTlsHandshake(pair, host);
+        checks++;
+      }
+    });
+    assert.equal(checks, 1);
+    assert.deepEqual(readdirSync(out).sort(), ['ca-cert.pem', 'ca-key.pem', 'server-cert.pem', 'server-key.pem']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('three failed self-checks write no files and preserve the last error', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'im-lan-test-'));
+  try {
+    const out = join(dir, 'certs');
+    let checks = 0;
+    await assert.rejects(runGenerator({ out, days: 7, hosts: ['localhost'] }, {
+      handshake: async () => {
+        assert.equal(existsSync(out), false);
+        throw new Error(`probe failure ${++checks}`);
+      }
+    }), /probe failure 3/);
+    assert.equal(checks, 3);
+    assert.equal(existsSync(out), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('retry note with underlying error goes to stderr, never stdout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'im-lan-test-'));
+  const stderr = [];
+  const stdout = [];
+  const originalLog = console.log;
+  try {
+    console.log = (...args) => stdout.push(args.join(' '));
+    let attempts = 0;
+    await runGenerator({ out: join(dir, 'certs'), days: 7, hosts: ['localhost'] }, {
+      stderr: { write: message => stderr.push(message) },
+      handshake: async (pair, host) => {
+        attempts++;
+        if (attempts === 1) throw new Error('injected rare failure');
+        await verifyTlsHandshake(pair, host);
+      }
+    });
+    assert.equal(attempts, 2);
+    assert.match(stderr.join(''), /Attempt 1 failed: injected rare failure/);
+    assert.match(stderr.join(''), /passed verification and TLS handshake on attempt 2/);
+    assert.doesNotMatch(stdout.join('\n'), /Attempt 1|injected rare failure/);
+  } finally { console.log = originalLog; rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('30 independently issued CA/server pairs all parse and verify', () => {
