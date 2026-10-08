@@ -90,7 +90,7 @@ MCP 可独立收发，插件失败不会丢消息；但缺装或加载失败须�
 1. 记录 checkout revision 与 OpenCode V2 版本；旧版 1.18.31 的显示记录不证明 V2 兼容。
 2. 对四个侧栏文件各自记录源文件及安装副本 SHA-256 并比较（PowerShell 可用 `Get-FileHash -Algorithm SHA256 -LiteralPath '<文件路径>'`），确认安装副本同目录；Skill 和 command 在同作用域安装/更新。
 3. 备份并核对全局 `cli.json` 的 `plugins` 恰有一个 team-mailbox `{package, options}` 对象，显式配置管理员中心 `serverUrl` 和 `pollMs: 30000`。不在 `tui.json` 配置本插件；保留其他插件/设置。无需永久环境变量或绝对下载目录配置。
-4. 完全退出重启 OpenCode，确认十一个 MCP 工具、doctor 身份正确，以及 `/team-mailbox-read` 可用，不打开真实消息。
+4. 完全退出重启 OpenCode，确认十二个 MCP 工具（包括 `capabilities`）、doctor 身份正确，以及 `/team-mailbox-read` 可用，不打开真实消息。
 5. 进入会话并展开侧栏；中心可达、`get_unread_summary` 返回 `total > 0` 时，等待本次拉取或下一轮更新后核对区块与条数（通常 0–30 秒加网络耗时，非硬实时）。零未读应显示空态；异常旧数据不能用于当前数量验收。点击发件人核对按需短标题及分页、失败提示，点击标题会发起真实阅读，不得为验收擅自打开消息。
 6. 每项报告通过、阻塞或未验收及证据。无法观察 UI 时明确记录未验收、标准安装/更新未完成。不能自动发测试消息、读真实正文或标读来验证；缺装/加载失败必须排障，不能降为跳过项。
 
@@ -121,7 +121,7 @@ MCP 可独立收发，插件失败不会丢消息；但缺装或加载失败须�
 
 中心地址及端口由管理员提供，不是自己的 localhost（除非本机就是中心）。自动收件首选 receive_attachment，仅传 attachment_id，强制自动命名、不覆盖；save_attachment 仅用于用户指定路径，旧语义保留。高级 MSG_DOWNLOAD_DIR 可覆盖到已有绝对目录，不支持相对值；恢复默认时获准后仅清除本 MCP entry 的旧项，保留其他配置与旧文件。详见[保存契约](../../docs/tools.md)。选中后先保存校验再读全文，失败用原生 question 重试/明确跳过/取消，正文重试不重复下载；成功附 cleanupWarning 时报告后继续，不再次下载。不自动打开或执行附件。
 
-bridge 现在提供 11 个工具。receive_attachment 只有一个必填 ID，即使宿主把 schema 的全部 properties 强制 required，也无需填写路径。缺少此工具时提示更新客户端 bridge、重新连接并刷新工具列表，以及更新已安装 Skill，不能猜路径或手动 mkdir 绕过。已运行 bridge 不会因源码更新自动注册新工具；中心无需重启。本次仓库修改不会自动更新用户已安装 Skill 副本。
+bridge 现在提供 12 个工具，新增的 `capabilities` 是不访问中心的本地只读能力概览。receive_attachment 只有一个必填 ID，即使宿主把 schema 的全部 properties 强制 required，也无需填写路径。缺少工具时提示更新客户端 bridge、重新连接并刷新工具列表，以及更新已安装 Skill，不能猜路径或手动 mkdir 绕过。已运行 bridge 不会因源码更新自动注册新工具；中心无需重启。本次仓库修改不会自动更新用户已安装 Skill 副本。
 
 Skill 属于 Agent 编排指令，不是运行时强制 UI；question 不可用时应说明并确认降级，不静默改回 Markdown。安装后完全退出重启 OpenCode。此处只定义安装契约，不授权 Agent 自行选择目录或改配置。
 

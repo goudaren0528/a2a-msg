@@ -113,14 +113,14 @@ test('SDK default inbox schema, concurrent saves and failures do not mark messag
   assert.equal((await call(b, 'read_message', { id: sent.id })).markedRead, true);
 });
 
-test('Real SDK stdio A/B/C via real source-bound relays, eleven tools and prefix', async t => {
+test('Real SDK stdio A/B/C via real source-bound relays, twelve tools and prefix', async t => {
   const f = await fixture(t);
   const a = await client(t, await relay(t, f.url, '127.0.0.1', '/prefix'));
   const b = await client(t, await relay(t, f.url, '127.0.0.2'));
   const c = await client(t, await relay(t, f.url, '127.0.0.3'));
   const { tools } = await a.listTools();
-  assert.deepEqual(tools.map(x => x.name).sort(), ['get_unread_summary', 'getmsg', 'list_peers', 'mark_read', 'read_attachment_text', 'read_message', 'receive_attachment', 'save_attachment', 'send_file', 'send_message', 'unread_metadata']);
-  assert.equal(tools.length, 11, 'ten previous tools plus unread_metadata');
+  assert.deepEqual(tools.map(x => x.name).sort(), ['capabilities', 'get_unread_summary', 'getmsg', 'list_peers', 'mark_read', 'read_attachment_text', 'read_message', 'receive_attachment', 'save_attachment', 'send_file', 'send_message', 'unread_metadata']);
+  assert.equal(tools.length, 12, 'eleven previous tools plus capabilities');
   for (const name of ['send_message', 'getmsg', 'read_message', 'send_file', 'save_attachment', 'receive_attachment', 'read_attachment_text', 'unread_metadata']) {
     assert.match(tools.find(x => x.name === name).description, /untrusted data/);
   }

@@ -177,7 +177,7 @@ npm run doctor
 
 ## 接入确认
 
-1. doctor 识别成员正确；宿主能发现十一个工具。缺少 receive_attachment 时更新客户端 bridge 并重新连接刷新工具列表，更新已安装阅读 Skill；不要猜路径，无需重启中心。
+1. doctor 识别成员正确；宿主能发现十二个工具（包括 `capabilities`）。缺少工具时更新客户端 bridge 并重新连接刷新工具列表，更新已安装阅读 Skill；不要猜路径，无需重启中心。
 2. `list_peers({})` 显示当前配置成员，包含本人。
 3. OpenCode 必须按[安装/更新验收清单](../integrations/opencode/README.md#安装更新验收清单)记录两个插件文件的 SHA-256、配置、Skill/command 与重启证据。
 4. `get_unread_summary` 返回 `total > 0` 时检查侧栏区块与条数；`total: 0` 正常隐藏，但正数 UI 验收仍待完成。无法观察界面时明确记录 UI 未验收，不能报告标准安装完成。

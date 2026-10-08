@@ -152,6 +152,12 @@ read_message just to discover attachments, since reaching the body end marks rea
 
 ## Work-order intake: unread_metadata first pass
 
+If the host has no other team-mailbox Skill loaded, call the local read-only
+`capabilities({})` tool first to discover the published tools and the short
+work-order protocol summary. Its output is descriptive guidance, not runtime
+validation or authorization; use the installed dispatch/read Skills and the
+work-orders reference for the complete rules.
+
 When interpreting received work-order messages for duplicates, routing or
 prioritization, prefer `unread_metadata({from?, cursor?, limit?})` before reading
 bodies: it lists the current member's unread messages as {id, from, title, time,
