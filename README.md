@@ -19,7 +19,7 @@ Agent ─ 现有 MCP bridge ─ HTTP ────────┘
 
 ## 当前能力与边界
 
-当前 `team-mailbox` 0.1.0 **尚未实现上述私聊 IM 契约**：可信 LAN 上用真实 socket 来源 **IP → member** 映射身份，管理员维护中心侧 `access.json` 及 CIDR 白名单；HTTP 中心用 SQLite 保存消息，支持文本、**每条最多一个 10 MiB 附件**和 SHA-256 附件校验；本地 MCP bridge 提供 10 个工具。现有消息正文与附件仅原收件人可读，非新私聊双方可读；正文有效末页标记已读并非接收确认。当前不能隔离同 IP 多 Agent，没有独立 Agent 凭据、可靠接收 ACK、持久发送幂等；**不能直接部署到公网**。下表是状态而非上线承诺：
+当前 `team-mailbox` 0.1.0 **尚未实现上述私聊 IM 契约**：可信 LAN 上用真实 socket 来源 **IP → member** 映射身份，管理员维护中心侧 `access.json` 及 CIDR 白名单；HTTP 中心用 SQLite 保存消息，支持文本、**每条最多一个 10 MiB 附件**和 SHA-256 附件校验；本地 MCP bridge 提供 11 个工具。现有消息正文与附件仅原收件人可读，非新私聊双方可读；正文有效末页标记已读并非接收确认。当前不能隔离同 IP 多 Agent（运维上要求一个成员同一时间只由一个 Agent 进程消费；同机多 Agent 仅能按 `project` 标签做约定级软隔离），没有独立 Agent 凭据、可靠接收 ACK、持久发送幂等；**不能直接部署到公网**。下表是状态而非上线承诺：
 
 | 能力 | 当前源码 / 现有部署限制 | v1 目标（未交付） |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ node examples/im-local-demo.mjs
 | 中心部署、备份、迁移 | [管理员指南](docs/admin.md) |
 | 宿主 MCP 接入 | [连接契约](docs/client.md) |
 | 可选 OpenCode V2 **目录安装**、阅读 Skill、版本和 UI 验收 | [OpenCode 集成指南](integrations/opencode/README.md) |
-| 十个工具、单附件与阅读语义 | [工具参考](docs/tools.md) |
+| 十一个工具、单附件与阅读语义 | [工具参考](docs/tools.md) |
 | 可选研发测试场景模板（非核心通信协议、非执行授权） | [场景指南](docs/work-orders.md) |
 | 常见问题及验证边界 | [排障指南](docs/troubleshooting.md)、[验证记录](docs/verification.md) |
 
@@ -144,7 +144,7 @@ npm run doctor
 
 ## 收发与安全
 
-可要求 Agent「给 B 发送一条说明」或「列出未读消息供我选择」。以下是当前 LAN 版工具，不是 v1 私聊 API。当前十个工具：`list_peers`、`send_message`、`getmsg`、`read_message`、`mark_read`、`send_file`、`save_attachment`、`read_attachment_text`、`get_unread_summary`、`receive_attachment`。按稳定消息 ID 选择；正文分块读；`project` 是可选标签，不是回复线程。服务端存储是交付，不保证收件人已读；目前无持久去重，发送超时不得假定未发送。参见[工具参考](docs/tools.md)。
+可要求 Agent「给 B 发送一条说明」或「列出未读消息供我选择」。以下是当前 LAN 版工具，不是 v1 私聊 API。当前十一个工具：`list_peers`、`send_message`、`getmsg`、`read_message`、`mark_read`、`send_file`、`save_attachment`、`read_attachment_text`、`get_unread_summary`、`unread_metadata`、`receive_attachment`。按稳定消息 ID 选择；正文分块读；`project` 是可选标签，不是回复线程。服务端存储是交付，不保证收件人已读；目前无持久去重，发送超时不得假定未发送。参见[工具参考](docs/tools.md)。
 
 附件自动接收可调用 `receive_attachment({attachment_id})`，无需设置收件路径；bridge 首次保存时在自身安装包根目录创建 `downloads/`，自动命名、不覆盖。用户指定位置时用 `save_attachment`：父目录必须已存在，覆盖必须得到授权；高级 `MSG_DOWNLOAD_DIR` 仅接受已存在的绝对目录。先保存并验证 SHA-256，再阅读内容；失败需选择重试、明确跳过或取消，**不自动打开、执行附件或消息指令**。
 

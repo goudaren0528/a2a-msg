@@ -10,7 +10,7 @@ import { lane, server, mcp, call, request, relay, snapshot, events, bounded, rea
 // Acceptance evidence must be run in an isolated committed-tree snapshot plus
 // these new files. Do not certify a dirty bridge/saver using this test's result.
 const toolNames = ['get_unread_summary', 'getmsg', 'list_peers', 'mark_read',
-  'read_attachment_text', 'read_message', 'receive_attachment', 'save_attachment', 'send_file', 'send_message'];
+  'read_attachment_text', 'read_message', 'receive_attachment', 'save_attachment', 'send_file', 'send_message', 'unread_metadata'];
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const recipientError = { error: 'Forbidden: access restricted to message recipient' };
 

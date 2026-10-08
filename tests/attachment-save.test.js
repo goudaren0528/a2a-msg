@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { buildTraceableName, saveAttachment, MAX_NAME_ATTEMPTS } from '../src/attachment-save.js';
+import { buildTraceableName, saveAttachment, MAX_NAME_ATTEMPTS, MAX_RECEIVED_ATTACHMENT_BYTES } from '../src/attachment-save.js';
 import { temp, sha256 } from './helpers.js';
 
 const bytes = Buffer.from('完整内容😀');
@@ -49,7 +50,7 @@ test('default downloads refuses file/junction, create denial and leaves only own
   fs.symlinkSync(outside, directory, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(saveAttachment({}, download, '', root), /symlink/);
   assert.deepEqual(fs.readdirSync(outside), []); fs.unlinkSync(directory);
-  t.mock.method(fs, 'mkdirSync', () => { throw Object.assign(new Error('create denied'), { code: 'EACCES' }); });
+  t.mock.method(fsp, 'mkdir', async () => { throw Object.assign(new Error('create denied'), { code: 'EACCES' }); });
   try { await assert.rejects(saveAttachment({}, download, '', root), /create denied/); }
   finally { t.mock.restoreAll(); }
   await assert.rejects(saveAttachment({}, async () => { throw new Error('network failed'); }, '', root), /network failed/);
@@ -109,14 +110,16 @@ test('download, hash, partial write and publication failures clean only owned st
   const params = { path: target, overwrite: true };
   await assert.rejects(saveAttachment(params, async () => { throw new Error('download failed'); }), /download failed/);
   await assert.rejects(saveAttachment(params, async () => ({ ...meta, sha256: 'bad' })), /SHA-256/);
-  const write = fs.writeFileSync;
-  t.mock.method(fs, 'writeFileSync', (fd, data, ...args) => {
-    if (typeof fd === 'number') { write(fd, data.subarray(0, 2)); throw new Error('disk full'); }
-    return write(fd, data, ...args);
+  const open = fsp.open;
+  t.mock.method(fsp, 'open', async (...args) => {
+    const fd = await open(...args);
+    const write = fd.writeFile.bind(fd);
+    fd.writeFile = async data => { await write(data.subarray(0, 2)); throw new Error('disk full'); };
+    return fd;
   });
   await assert.rejects(saveAttachment(params, async () => meta), /disk full/);
   t.mock.restoreAll();
-  t.mock.method(fs, 'renameSync', () => { throw new Error('publish denied'); });
+  t.mock.method(fsp, 'rename', async () => { throw new Error('publish denied'); });
   await assert.rejects(saveAttachment(params, async () => meta), /publish denied/);
   t.mock.restoreAll();
   assert.equal(fs.readFileSync(target, 'utf8'), 'sentinel');
@@ -129,7 +132,7 @@ for (const overwrite of [false, true]) {
     const target = path.join(dir, 'saved.md');
     if (overwrite) fs.writeFileSync(target, 'previous');
     let downloads = 0;
-    t.mock.method(fs, 'rmSync', () => { throw new Error(`cleanup denied: ${dir}/private-staging`); });
+    t.mock.method(fsp, 'rm', async () => { throw new Error(`cleanup denied: ${dir}/private-staging`); });
     try {
       const saved = await saveAttachment({ path: target, overwrite }, async () => { downloads++; return meta; });
       assert.equal(saved.path, target);
@@ -156,12 +159,14 @@ test('partial write failure remains the original error when staging cleanup also
   const dir = temp(t); const target = path.join(dir, 'keep.md');
   fs.writeFileSync(target, 'sentinel');
   const original = Object.assign(new Error('original write failure'), { code: 'ENOSPC' });
-  const write = fs.writeFileSync;
-  t.mock.method(fs, 'writeFileSync', (fd, data) => {
-    write(fd, data.subarray(0, 2));
-    throw original;
+  const open = fsp.open;
+  t.mock.method(fsp, 'open', async (...args) => {
+    const fd = await open(...args);
+    const write = fd.writeFile.bind(fd);
+    fd.writeFile = async data => { await write(data.subarray(0, 2)); throw original; };
+    return fd;
   });
-  t.mock.method(fs, 'rmSync', () => { throw new Error('secondary cleanup failure'); });
+  t.mock.method(fsp, 'rm', async () => { throw new Error('secondary cleanup failure'); });
   try {
     await assert.rejects(saveAttachment({ path: target, overwrite: true }, async () => meta), err => {
       assert.equal(err, original);
@@ -178,12 +183,105 @@ test('partial write failure remains the original error when staging cleanup also
 
 test('exclusive publication retries are bounded; permission failures precede downloads', async t => {
   const dir = temp(t); let calls = 0;
-  t.mock.method(fs, 'linkSync', () => { calls++; throw Object.assign(new Error('occupied'), { code: 'EEXIST' }); });
+  t.mock.method(fsp, 'link', async () => { calls++; throw Object.assign(new Error('occupied'), { code: 'EEXIST' }); });
   await assert.rejects(saveAttachment({}, async () => meta, dir), /100 attempts/);
   assert.equal(calls, MAX_NAME_ATTEMPTS); assert.deepEqual(fs.readdirSync(dir), []);
   t.mock.restoreAll();
-  t.mock.method(fs, 'accessSync', () => { throw new Error('permission denied'); });
+  t.mock.method(fsp, 'access', async () => { throw new Error('permission denied'); });
   await assert.rejects(saveAttachment({}, async () => { assert.fail('must not download'); }, dir), /permission denied/);
+});
+
+test('rejects oversized, malformed or inconsistent downloaded bytes before writing', async t => {
+  const dir = temp(t); const target = path.join(dir, 'sentinel.md'); fs.writeFileSync(target, 'sentinel');
+  const invalid = [null, [], 'text', {}, { ...meta, data_base64: 5 },
+    { ...meta, data_base64: 'A'.repeat(4 * Math.ceil(MAX_RECEIVED_ATTACHMENT_BYTES / 3) + 1) },
+    { ...meta, data_base64: '!!!' }, { ...meta, data_base64: 'YQ' },
+    { ...meta, data_base64: 'YQ==\n' }, { ...meta, size: -1 },
+    { ...meta, size: 1.5 }, { ...meta, size: bytes.length + 1 },
+    { ...meta, data_base64: Buffer.alloc(MAX_RECEIVED_ATTACHMENT_BYTES + 1).toString('base64') }];
+  for (const value of invalid) {
+    await assert.rejects(saveAttachment({ path: target, overwrite: true }, async () => value));
+    assert.equal(fs.readFileSync(target, 'utf8'), 'sentinel');
+    assert.deepEqual(fs.readdirSync(dir), ['sentinel.md']);
+  }
+  const result = await saveAttachment({ path: target, overwrite: true }, async () => ({ ...meta, size: bytes.length }));
+  assert.equal(result.size, bytes.length);
+});
+
+test('open, fsync, close, readback, verification and publish failures preserve existing destination', async t => {
+  const dir = temp(t); const target = path.join(dir, 'sentinel.md');
+  fs.writeFileSync(target, 'sentinel');
+  const params = { path: target, overwrite: true };
+  for (const stage of ['open', 'sync', 'close', 'readFile', 'hash', 'rename']) {
+    const original = new Error(`${stage} failed`);
+    if (stage === 'open') t.mock.method(fsp, 'open', async () => { throw original; });
+    else if (stage === 'readFile') t.mock.method(fsp, 'readFile', async () => { throw original; });
+    else if (stage === 'hash') t.mock.method(fsp, 'readFile', async () => Buffer.from('altered'));
+    else if (stage === 'rename') t.mock.method(fsp, 'rename', async () => { throw original; });
+    else {
+      const open = fsp.open;
+      t.mock.method(fsp, 'open', async (...args) => {
+        const fd = await open(...args);
+        if (stage === 'close') {
+          const close = fd.close.bind(fd);
+          fd.close = async () => { await close(); throw original; };
+        } else fd[stage] = async () => { throw original; };
+        return fd;
+      });
+    }
+    try {
+      await assert.rejects(saveAttachment(params, async () => meta), stage === 'hash' ? /Written file failed SHA-256/ : err => err === original);
+      assert.equal(fs.readFileSync(target, 'utf8'), 'sentinel', stage);
+      assert.deepEqual(fs.readdirSync(dir), ['sentinel.md'], stage);
+    } finally { t.mock.restoreAll(); }
+  }
+});
+
+test('hardlink failures never fall back to copying or disturb target', async t => {
+  const dir = temp(t); const target = path.join(dir, 'sentinel.md'); fs.writeFileSync(target, 'sentinel');
+  const error = Object.assign(new Error('links unavailable'), { code: 'EPERM' });
+  t.mock.method(fsp, 'link', async () => { throw error; });
+  await assert.rejects(saveAttachment({ path: path.join(dir, 'new.md') }, async () => meta), err => err === error);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'sentinel');
+  assert.deepEqual(fs.readdirSync(dir), ['sentinel.md']);
+});
+
+test('exactly 10 MiB is accepted and persisted with matching bytes and SHA-256', async t => {
+  const dir = temp(t);
+  const data = Buffer.allocUnsafe(MAX_RECEIVED_ATTACHMENT_BYTES);
+  for (let index = 0; index < data.length; index++) data[index] = index % 251;
+  const expectedHash = sha256(data);
+  const target = path.join(dir, 'limit.bin');
+  const saved = await saveAttachment({ path: target }, async () => ({
+    name: 'limit.bin', from: 'A', to: 'B', data_base64: data.toString('base64'),
+    size: MAX_RECEIVED_ATTACHMENT_BYTES, sha256: expectedHash,
+  }));
+  assert.equal(saved.size, MAX_RECEIVED_ATTACHMENT_BYTES);
+  assert.equal(saved.sha256, expectedHash);
+  assert.equal((await fsp.stat(target)).size, MAX_RECEIVED_ATTACHMENT_BYTES);
+  assert.deepEqual(await fsp.readFile(target), data);
+});
+
+test('close and cleanup errors cannot mask the original write failure', async t => {
+  const dir = temp(t); const target = path.join(dir, 'sentinel.md');
+  fs.writeFileSync(target, 'sentinel');
+  const original = new Error('original write failure');
+  const open = fsp.open;
+  t.mock.method(fsp, 'open', async (...args) => {
+    const fd = await open(...args);
+    const close = fd.close.bind(fd);
+    fd.writeFile = async () => { throw original; };
+    fd.close = async () => { await close(); throw new Error('secondary close failure'); };
+    return fd;
+  });
+  t.mock.method(fsp, 'rm', async () => { throw new Error('secondary cleanup failure'); });
+  try {
+    await assert.rejects(saveAttachment({ path: target, overwrite: true }, async () => meta), err => err === original);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'sentinel');
+  } finally {
+    t.mock.restoreAll();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('OpenCode skill/command installation contract and workflow guardrails (static, not UI)', () => {

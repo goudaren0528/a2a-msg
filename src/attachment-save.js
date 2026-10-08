@@ -1,4 +1,5 @@
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -6,23 +7,25 @@ import { fileURLToPath } from 'node:url';
 // Resolve the installed bridge's package, never the caller's working directory.
 export const PACKAGE_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
-export function defaultDownloadDirectory(packageRoot = PACKAGE_ROOT) {
-  const root = fs.realpathSync(packageRoot);
+export async function defaultDownloadDirectory(packageRoot = PACKAGE_ROOT) {
+  const root = await fs.realpath(packageRoot);
   const directory = path.join(root, 'downloads');
-  const check = () => {
-    const stat = fs.lstatSync(directory);
+  const check = async () => {
+    const stat = await fs.lstat(directory);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Default downloads must be a real directory, not a file or symlink/junction');
-    if (fs.realpathSync(directory) !== directory) throw new Error('Default downloads resolves outside its package directory');
+    if (await fs.realpath(directory) !== directory) throw new Error('Default downloads resolves outside its package directory');
   };
-  try { check(); } catch (err) {
+  try { await check(); } catch (err) {
     if (err.code !== 'ENOENT') throw err;
-    fs.mkdirSync(directory, { recursive: true });
-    check();
+    try { await fs.mkdir(directory); } catch (createErr) { if (createErr.code !== 'EEXIST') throw createErr; }
+    await check();
   }
   return directory;
 }
 
 export const MAX_NAME_ATTEMPTS = 100;
+export const MAX_RECEIVED_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_BASE64_LENGTH = 4 * Math.ceil(MAX_RECEIVED_ATTACHMENT_BYTES / 3);
 const hash = data => crypto.createHash('sha256').update(data).digest('hex');
 const unsafe = /[<>:"/\\|?*\u0000-\u001f\u007f]/g;
 
@@ -60,40 +63,55 @@ export function buildTraceableName(meta, now = new Date(), attempt = 0) {
 /** Stages verified bytes locally, then publishes atomically. Never unlinks a destination. */
 export async function saveAttachment(params, download, downloadDir, packageRoot = PACKAGE_ROOT) {
   const useDefault = params.path === undefined;
-  const filePath = useDefault ? (downloadDir || defaultDownloadDirectory(packageRoot)) : params.path;
+  const filePath = useDefault ? (downloadDir || await defaultDownloadDirectory(packageRoot)) : params.path;
   if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) throw new Error('Path must be absolute');
   const autoName = useDefault || params.auto_name === true;
   const overwrite = !useDefault && params.overwrite === true;
   const target = path.resolve(filePath);
   const directory = autoName ? target : path.dirname(target);
   let stat;
-  try { stat = fs.statSync(directory); } catch { throw new Error(`Parent directory does not exist: ${directory}`); }
+  try { stat = await fs.stat(directory); } catch { throw new Error(`Parent directory does not exist: ${directory}`); }
   if (!stat.isDirectory()) throw new Error(`Not a directory: ${directory}`);
-  fs.accessSync(directory, fs.constants.W_OK | fs.constants.X_OK);
-  if (!autoName && !overwrite && fs.existsSync(target)) throw new Error(`Destination already exists: ${target}`);
+  await fs.access(directory, constants.W_OK | constants.X_OK);
+  if (!autoName && !overwrite) {
+    try { await fs.lstat(target); throw new Error(`Destination already exists: ${target}`); }
+    catch (err) { if (err.code !== 'ENOENT') throw err; }
+  }
 
   // Exclusive local staging also checks effective create permission before downloading.
-  const staging = fs.mkdtempSync(path.join(directory, '.team-mailbox-'));
+  const staging = await fs.mkdtemp(path.join(directory, '.team-mailbox-'));
   const temporary = path.join(staging, 'payload');
   let saved;
   try {
     const meta = await download();
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta) ||
+        typeof meta.data_base64 !== 'string' || meta.data_base64.length > MAX_BASE64_LENGTH)
+      throw new Error('Invalid downloaded attachment metadata or encoding');
+    if (meta.size !== undefined && (!Number.isSafeInteger(meta.size) || meta.size < 0))
+      throw new Error('Invalid downloaded attachment size');
     const data = Buffer.from(meta.data_base64, 'base64');
+    if (data.length > MAX_RECEIVED_ATTACHMENT_BYTES || data.toString('base64') !== meta.data_base64)
+      throw new Error('Invalid downloaded attachment encoding or size');
+    if (meta.size !== undefined && meta.size !== data.length)
+      throw new Error('Downloaded attachment size mismatch');
     const sha256 = hash(data);
     if (sha256 !== meta.sha256) throw new Error('Downloaded attachment failed SHA-256 verification; not written');
-    const fd = fs.openSync(temporary, 'wx', 0o600);
+    const fd = await fs.open(temporary, 'wx', 0o600);
+    let writeError;
     try {
-      fs.writeFileSync(fd, data);
-      fs.fsyncSync(fd);
-    } finally { fs.closeSync(fd); }
-    if (hash(fs.readFileSync(temporary)) !== meta.sha256) throw new Error('Written file failed SHA-256 verification');
+      await fd.writeFile(data);
+      await fd.sync();
+    } catch (err) { writeError = err; }
+    try { await fd.close(); } catch (err) { if (!writeError) writeError = err; }
+    if (writeError) throw writeError;
+    if (hash(await fs.readFile(temporary)) !== meta.sha256) throw new Error('Written file failed SHA-256 verification');
 
     const now = new Date();
     for (let attempt = 0; attempt < (autoName && !overwrite ? MAX_NAME_ATTEMPTS : 1); attempt++) {
       const resolved = autoName ? path.join(directory, buildTraceableName(meta, now, attempt)) : target;
       try {
-        if (overwrite) fs.renameSync(temporary, resolved);
-        else fs.linkSync(temporary, resolved); // Atomic exclusive publication; EEXIST cannot overwrite.
+        if (overwrite) await fs.rename(temporary, resolved);
+        else await fs.link(temporary, resolved); // Atomic exclusive publication; EEXIST cannot overwrite.
       } catch (err) {
         if (err.code === 'EEXIST' && autoName && !overwrite) continue;
         if (err.code === 'EEXIST') throw new Error(`Destination already exists: ${resolved}`);
@@ -107,7 +125,7 @@ export async function saveAttachment(params, download, downloadDir, packageRoot 
   } finally {
     // Only this operation's exclusive staging directory is removed, never a final/user file.
     try {
-      fs.rmSync(staging, { recursive: true, force: true });
+      await fs.rm(staging, { recursive: true, force: true });
     } catch {
       // Cleanup must neither undo published success nor mask the original failure.
       // Do not expose the cleanup exception (it may contain temporary paths).

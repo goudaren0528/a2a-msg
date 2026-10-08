@@ -48,3 +48,44 @@ test('single unread shortcut is wired into skill, command and tool descriptions'
   // The shortcut must not silently continue reading after an attachment failure.
   assert.match(skill, /never silently continue reading after failure/);
 });
+
+test('sender-specific shortcut verifies server-filtered complete page, not a manufactured singleton', () => {
+  const skill = normalized(fs.readFileSync(SKILL, 'utf8'));
+  const command = normalized(fs.readFileSync(COMMAND, 'utf8'));
+  const mcp = fs.readFileSync(MCP, 'utf8');
+
+  assert.match(skill, /sender filter via getmsg `from` before checking this result: uniqueness means the complete server-filtered matching set, not one locally retained row/);
+  assert.match(skill, /Never request limit=1 to manufacture a single-message page; use the normal browsing limit=10/);
+  assert.match(command, /specified sender, pass `from` to getmsg and test uniqueness on the complete server-filtered result; never use limit=1 to force apparent uniqueness \(use the normal limit=10\)/);
+  assert.match(mcp, /For a specified sender pass from to getmsg and check the complete server-filtered matching set, never a locally retained row; use normal limit=10, not limit=1 to force apparent uniqueness/);
+  assert.match(mcp, /if \(params\.from\) searchParams\.set\('from', params\.from\)/);
+  assert.match(skill, /messages\.length=1 and hasMore=false/);
+  assert.match(command, /messages\.length=1 and hasMore=false/);
+  assert.match(mcp, /messages\.length=1 and hasMore=false/);
+});
+
+test('sidebar explicit ID bypasses repeated selection, not metadata or attachment handling', () => {
+  const skill = normalized(fs.readFileSync(SKILL, 'utf8'));
+  const command = normalized(fs.readFileSync(COMMAND, 'utf8'));
+  const mcp = fs.readFileSync(MCP, 'utf8');
+
+  assert.match(skill, /sidebar click that submits the fixed instruction `读取消息ID n`[^.]*is explicit-ID direct-read intent: the clicked ID already selects the message, so do not ask a redundant candidate-selection question/);
+  assert.match(skill, /Still resolve that exact ID and attachment\.id from getmsg metadata before receiving the attachment and reading the body/);
+  assert.match(command, /sidebar click submits only `读取消息ID n` with the real clicked ID; this is explicit-ID direct-read intent, so do not ask a duplicate candidate-selection question/);
+  assert.match(command, /Still locate its attachment\.id via getmsg before receiving it and reading the body/);
+  assert.match(mcp, /sidebar click instruction 读取消息ID n with the actual clicked ID is explicit-ID direct-read intent and needs no redundant selection: resolve exact-ID attachment metadata via getmsg, then save attachments before reading the body/);
+  assert.match(skill, /A missing\/stale ID does not authorize a different message\. Cancellation and attachment-failure choices remain unchanged/);
+  assert.match(command, /Missing IDs, cancellation and attachment failures follow the skill's existing safety paths; never substitute another message/);
+  assert.match(mcp, /Missing IDs must not select another message; cancellation and attachment failure paths still apply/);
+});
+
+test('all-mode one-row history still requires selection except for direct ID', () => {
+  const skill = normalized(fs.readFileSync(SKILL, 'utf8'));
+  const command = normalized(fs.readFileSync(COMMAND, 'utf8'));
+  const mcp = fs.readFileSync(MCP, 'utf8');
+
+  assert.match(skill, /single historical result in all mode still needs selection unless the request directly specifies the ID to read/);
+  assert.match(command, /In all\/history mode, even one result needs selection unless the request directly specifies its ID/);
+  assert.match(mcp, /In all\/history mode even one result needs selection unless an explicit ID is specified for direct reading/);
+  for (const text of [skill, command, mcp]) assert.match(text, /not runtime enforcement/);
+});

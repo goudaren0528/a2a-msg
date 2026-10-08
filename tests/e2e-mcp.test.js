@@ -25,7 +25,7 @@ test('receive_attachment single-property schema survives all-required adaptation
   const f = await fixture(t); const root = temp(t);
   // A real copied bridge resolves its own package root, without touching production downloads.
   fs.mkdirSync(path.join(root, 'src'));
-  for (const name of ['mcp.js', 'attachment-save.js', 'config.js', 'url.js']) {
+  for (const name of ['mcp.js', 'mcp-limits.js', 'attachment-save.js', 'config.js', 'url.js']) {
     fs.copyFileSync(path.join('src', name), path.join(root, 'src', name));
   }
   fs.copyFileSync('package.json', path.join(root, 'package.json'));
@@ -113,15 +113,15 @@ test('SDK default inbox schema, concurrent saves and failures do not mark messag
   assert.equal((await call(b, 'read_message', { id: sent.id })).markedRead, true);
 });
 
-test('Real SDK stdio A/B/C via real source-bound relays, ten tools and prefix', async t => {
+test('Real SDK stdio A/B/C via real source-bound relays, eleven tools and prefix', async t => {
   const f = await fixture(t);
   const a = await client(t, await relay(t, f.url, '127.0.0.1', '/prefix'));
   const b = await client(t, await relay(t, f.url, '127.0.0.2'));
   const c = await client(t, await relay(t, f.url, '127.0.0.3'));
   const { tools } = await a.listTools();
-  assert.deepEqual(tools.map(x => x.name).sort(), ['get_unread_summary', 'getmsg', 'list_peers', 'mark_read', 'read_attachment_text', 'read_message', 'receive_attachment', 'save_attachment', 'send_file', 'send_message']);
-  assert.equal(tools.length, 10, 'nine previous tools plus receive_attachment');
-  for (const name of ['send_message', 'getmsg', 'read_message', 'send_file', 'save_attachment', 'receive_attachment', 'read_attachment_text']) {
+  assert.deepEqual(tools.map(x => x.name).sort(), ['get_unread_summary', 'getmsg', 'list_peers', 'mark_read', 'read_attachment_text', 'read_message', 'receive_attachment', 'save_attachment', 'send_file', 'send_message', 'unread_metadata']);
+  assert.equal(tools.length, 11, 'ten previous tools plus unread_metadata');
+  for (const name of ['send_message', 'getmsg', 'read_message', 'send_file', 'save_attachment', 'receive_attachment', 'read_attachment_text', 'unread_metadata']) {
     assert.match(tools.find(x => x.name === name).description, /untrusted data/);
   }
   assert.deepEqual((await call(a, 'list_peers')).map(x => x.name), ['A', 'B', 'C']);
@@ -357,4 +357,143 @@ test('Bridge refuses redirects and applies request timeout through real SDK', as
   mode = 'timeout'; const start = Date.now();
   assert.equal((await sdk.callTool({ name: 'list_peers', arguments: {} })).isError, true);
   assert.ok(Date.now() - start >= 9000); assert.ok(Date.now() - start < 20000);
+});
+
+test('SDK stream response enforces 16 MiB actual bytes, cancels body, and shortens HTTP errors', async t => {
+  let mode = 'overflow';
+  const server = http.createServer((req, res) => {
+    if (mode === 'error') {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'SECRET'.repeat(5000) }));
+      return;
+    }
+    if (mode === 'invalid') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('PRIVATE'.repeat(5000));
+      return;
+    }
+    // Chunked response has no trustworthy length and is larger than the response budget.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write(Buffer.alloc(16 * 1024 * 1024, 65));
+    res.write(Buffer.alloc(1, 65));
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup(t, () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const sdk = await client(t, `http://127.0.0.1:${server.address().port}`);
+  const overflow = await sdk.callTool({ name: 'list_peers', arguments: {} });
+  assert.equal(overflow.isError, true);
+  assert.match(overflow.content[0].text, /limit/);
+  assert.ok(overflow.content[0].text.length < 256);
+  mode = 'error';
+  const error = await sdk.callTool({ name: 'list_peers', arguments: {} });
+  assert.equal(error.isError, true);
+  assert.ok(error.content[0].text.length <= 2055);
+  mode = 'invalid';
+  const invalid = await sdk.callTool({ name: 'list_peers', arguments: {} });
+  assert.ok(!invalid.isError);
+  assert.ok(invalid.content[0].text.length <= 2060);
+});
+
+test('SDK accepts valid 10 MiB base64 attachment under response byte budget', async t => {
+  const dir = temp(t);
+  const bytes = Buffer.alloc(10 * 1024 * 1024, 0x52);
+  const payload = JSON.stringify({ name: 'maximum.bin', data_base64: bytes.toString('base64'), sha256: sha256(bytes) });
+  assert.ok(Buffer.byteLength(payload) < 16 * 1024 * 1024);
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(payload);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup(t, () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const sdk = await client(t, `http://127.0.0.1:${server.address().port}`);
+  const target = path.join(dir, 'maximum.bin');
+  const saved = await call(sdk, 'save_attachment', { attachment_id: 1, path: target });
+  assert.equal(saved.sha256, sha256(bytes));
+  assert.equal(fs.statSync(target).size, bytes.length);
+});
+
+test('SDK send_file accepts exact upload ceiling and rejects one byte above before POST', async t => {
+  const dir = temp(t);
+  let uploads = 0;
+  const server = http.createServer((req, res) => {
+    uploads++;
+    let received = 0;
+    req.on('data', chunk => { received += chunk.length; });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ received }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup(t, () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const sdk = await client(t, `http://127.0.0.1:${server.address().port}`);
+  const file = path.join(dir, 'edge.bin');
+  fs.writeFileSync(file, Buffer.alloc(10 * 1024 * 1024, 0x41));
+  const success = await call(sdk, 'send_file', { to: 'B', path: file });
+  assert.ok(success.received > 13 * 1024 * 1024);
+  assert.equal(uploads, 1);
+  fs.appendFileSync(file, Buffer.from([0x42]));
+  const rejected = await sdk.callTool({ name: 'send_file', arguments: { to: 'B', path: file } });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0].text, /limit/);
+  assert.equal(uploads, 1);
+});
+
+test('SDK transfer gate refuses 19th operation before I/O while lightweight calls proceed', async t => {
+  const dir = temp(t);
+  const file = path.join(dir, 'small.bin');
+  fs.writeFileSync(file, 'a');
+  const held = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/peers') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('[]');
+      return;
+    }
+    req.resume();
+    req.on('end', () => held.push(res));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup(t, () => {
+    for (const res of held) if (!res.writableEnded) res.end('{}');
+    return new Promise(resolve => { server.closeAllConnections(); server.close(resolve); });
+  });
+  const sdk = await client(t, `http://127.0.0.1:${server.address().port}`);
+  const calls = Array.from({ length: 18 }, () => sdk.callTool({ name: 'send_file', arguments: { to: 'B', path: file } }));
+  try {
+    // Both active operations reach HTTP; all 18 calls have already been sent over stdio.
+    const started = Date.now();
+    while (held.length < 2 && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(held.length, 2);
+    const peers = await call(sdk, 'list_peers');
+    assert.deepEqual(peers, []);
+    const busy = await sdk.callTool({ name: 'send_file', arguments: { to: 'B', path: file } });
+    assert.equal(busy.isError, true);
+    assert.match(busy.content[0].text, /busy/i);
+    assert.equal(held.length, 2, 'overflow does not touch file or network');
+  } finally {
+    // Drain the queue in sequence; each finish admits exactly the next waiter.
+    for (let i = 0; i < 18; i++) {
+      const started = Date.now();
+      while (held.length <= i && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 10));
+      if (held[i] && !held[i].writableEnded) held[i].end('{}');
+    }
+    await Promise.all(calls);
+  }
+  assert.equal(held.length, 18);
+});
+
+test('SDK body timeout continues after headers arrive', async t => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.write('{'); // headers have arrived, but body never finishes.
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  cleanup(t, () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const sdk = await client(t, `http://127.0.0.1:${server.address().port}`);
+  const start = Date.now();
+  const result = await sdk.callTool({ name: 'list_peers', arguments: {} });
+  assert.equal(result.isError, true);
+  assert.ok(Date.now() - start >= 9000 && Date.now() - start < 20000);
 });

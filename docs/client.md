@@ -16,6 +16,8 @@
 
 无用户名/凭据配置；服务依据真实 socket 来源识别成员。任何自报身份头都无效。同一成员多个 IP 共享收件箱和已读状态；共享 IP 的不同人无法区分。
 
+**一个成员同一时间只运行一个 Agent 宿主进程**：两个 Agent 进程共用一个收件箱会互相吞消息——任意一方读完正文，未读队列对另一方即消失，且无法追溯。同一台机器确需多个 Agent 时，按约定为每个 Agent 使用不同的 `project` 标签，并用 `getmsg` 的 `project` 过滤只消费自己的消息（`unread_metadata` 不支持 `project` 过滤）；这只是软约定，不是身份隔离。需要真正隔离时应向管理员申请独立成员映射。
+
 使用 `(Get-Command node).Source` 查实际路径，并对该路径运行 `--version`。含空格路径在 PowerShell 手工启动时用 `&`；宿主 command 字段只填路径，不额外嵌套 shell 引号。标准输出是 MCP 协议通道，不要包装 stdout 欢迎语或日志。
 
 ## 通用字段示意
@@ -175,7 +177,7 @@ npm run doctor
 
 ## 接入确认
 
-1. doctor 识别成员正确；宿主能发现十个工具。缺少 receive_attachment 时更新客户端 bridge 并重新连接刷新工具列表，更新已安装阅读 Skill；不要猜路径，无需重启中心。
+1. doctor 识别成员正确；宿主能发现十一个工具。缺少 receive_attachment 时更新客户端 bridge 并重新连接刷新工具列表，更新已安装阅读 Skill；不要猜路径，无需重启中心。
 2. `list_peers({})` 显示当前配置成员，包含本人。
 3. OpenCode 必须按[安装/更新验收清单](../integrations/opencode/README.md#安装更新验收清单)记录两个插件文件的 SHA-256、配置、Skill/command 与重启证据。
 4. `get_unread_summary` 返回 `total > 0` 时检查侧栏区块与条数；`total: 0` 正常隐藏，但正数 UI 验收仍待完成。无法观察界面时明确记录 UI 未验收，不能报告标准安装完成。
