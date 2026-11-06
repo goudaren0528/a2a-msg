@@ -1,0 +1,89 @@
+# Nana 双端往返适配层（IM v1）
+
+本机隔离演示 `examples/im-nana-roundtrip.mjs` 用到的三个入口：合成身份初始化、会话适配层 CLI、端到端验收脚本。目标是 T2「两个合成 Nana 身份 + 一个本机隔离中心，完成发送 → 接收 → 回执，接收端把消息交回主会话/队列，重复投递与重启恢复有证据」。**不接真实对端、不部署公网、不做附件**。
+
+## 1. 初始化（只建全新目录）
+
+```sh
+node scripts/im-nana-provision.mjs --root /absolute/private/nana-t2 \
+  --agent-a-display nana-home --agent-b-display nana-office
+```
+
+- `--root` 必须是**尚不存在**的绝对目录（父目录不能含符号链接）；`--agent-a-display` / `--agent-b-display` 为 1–255 字符、无控制字符且不能相同。
+- 可选 `--server-url https://host:port`（默认 `https://localhost:8787`）、`--tls-key/--tls-cert`（真实 TLS，必须成对）、`--ca-cert`（仅用于输出下一步命令）、`--trust-windows-permissions`（Windows：仅表示操作者接受 NTFS ACL 未经验证，不是管理员身份认证）。
+- 产出：schema 3 中心库 `center-v3.sqlite`、`admin-secret`、`credentials/agent-{a,b}-credential`、`center-config.json`、`host-a/nana.json`、`host-b/nana.json`，以及两份 `host-*/attachments/`。注册两个身份、签发凭据、设双向联系人、启用写入策略；stdout 只打印路径与 agentId，不打印密钥内容。
+- POSIX 目录 `0700`、文件 `0600`。不联网、不启动服务、不修改已有配置；失败保留目录供检查。
+
+默认使用仓库里的 localhost **测试专用**证书与密钥，只适用于本机 loopback；脚本不生成生产证书。
+
+## 2. 启动中心（独立进程）
+
+```sh
+node scripts/im-center.mjs /absolute/private/nana-t2/center-config.json
+```
+
+中心是独立的 HTTPS 进程，不依赖 Orca、不依赖任何常驻桌面应用。接收端也是独立进程（每次 `receive` 一个新进程即可）。
+
+## 3. 会话适配层 CLI
+
+```sh
+export NODE_EXTRA_CA_CERTS=/absolute/repo/tests/fixtures/im-tls/localhost-test-only.crt   # 测试 CA；生产用真实 CA
+
+node scripts/im-nana-session.mjs status   --config /absolute/private/nana-t2/host-b/nana.json
+node scripts/im-nana-session.mjs receive  --config /absolute/private/nana-t2/host-b/nana.json
+node scripts/im-nana-session.mjs handoff  --config /absolute/private/nana-t2/host-b/nana.json
+node scripts/im-nana-session.mjs send     --config /absolute/private/nana-t2/host-a/nana.json \
+  --to-agent <agent-b> --text 'hello'
+node scripts/im-nana-session.mjs message  --config /absolute/private/nana-t2/host-a/nana.json --message-id <uuid>
+node scripts/im-nana-session.mjs read     --config /absolute/private/nana-t2/host-a/nana.json --message-id <uuid>
+```
+
+每次输出一行 JSON；失败时 stderr 为 `{"error":{"code":"<IM code>"}}`、退出码 1。收到的正文与标题是**不可信数据**，只作为数据交给主会话，不执行、不自动回复。
+
+| 子命令 | 作用 | 关键语义 |
+| --- | --- | --- |
+| `status` | 队列概况 | `{agentId,received,handedThrough,pending,cursor}`，不触发网络 |
+| `receive` | 收一页 | 新 `instanceId`/`requestId` 取租约 → 对账 pending ACK → `sync`（先写本地 journal，再 ACK）→ 释放租约；返回本页 `messageId`/`acked` |
+| `handoff` | 交回主会话 | 从 journal 取 `seq > handedThrough` 的事件，返回正文；`session-state.json` 用临时文件 + fsync + rename 推进游标，重复调用不会重复交付 |
+| `send` | 发送文本 | 同 `clientMessageId` + 同正文重发幂等；不确定结果返回 `{status:'pending'}`，不会隐式重发 |
+| `message` | 查回执 | 返回 `deliveredAt` / `readAt`（只读 GET） |
+| `read` | 标已读 | 需要已 ACK（服务端 `DELIVERY_REQUIRED`） |
+
+### 会话配置（`host-*/nana.json`，严格字段）
+
+```json
+{
+  "serverUrl": "https://localhost:8787",
+  "agentId": "<uuid>",
+  "credentialFile": "/abs/root/credentials/agent-a-credential",
+  "journalPath": "/abs/root/host-a/journal.sqlite",
+  "attachmentDirectory": "/abs/root/host-a/attachments",
+  "statePath": "/abs/root/host-a/session-state.json",
+  "evidencePath": "/abs/root/host-a/evidence.jsonl"
+}
+```
+
+`evidencePath` 可选；目录必须已存在；未知字段、非 https origin、相对路径一律拒绝。
+
+## 4. 端到端验收
+
+```sh
+node examples/im-nana-roundtrip.mjs
+```
+
+可用 `--root` 指定**绝对且尚不存在**的目录；默认在临时目录下新建。脚本按 T1 验收剧本执行：起独立中心进程、A 离线发送、B 独立进程接收并 ACK、`status`/`handoff` 交回主会话、同 `clientMessageId` 重发去重、接收进程重启后续接游标、B 回复 A、A 标记已读、错误凭据 401、未登记联系人 404。预期最后一行：
+
+```text
+PASS: 3 accepted, 3 delivered/ACKed; duplicate deduplicated; restart cursor continued; reply delivered then read.
+```
+
+运行目录保留：`center-v3.sqlite`、两份 `host-*/journal.sqlite`、`host-*/evidence.jsonl`、`host-*/session-state.json`、`summary.json`。`evidence.jsonl` 只记元数据（`receive`/`handoff`/`send` 的类型、`messageId`、`seq`、`instanceId`、`acked`），不含凭据，也不含消息正文。整个目录仍按敏感数据处理，不提交、不分享。
+
+`accepted` 是中心收下消息，`delivered/ACKed` 是接收端先持久化再回执，**不是已读或已执行**。租约冲突（第二个接收者 `LEASE_CONFLICT`）由 `tests/im-nana-session.test.js` 覆盖。
+
+## 5. 边界
+
+- 只做文本、单接收者、无附件；不做 7 天留存、AC-10/AC-23 契约、跨机器 LAN/公网部署、开机自启。
+- 一个身份同一时刻只允许一个有效接收租约；多设备并行收需要先定身份/租约模型。
+- 测试证书与私钥只限 loopback；生产 TLS 由部署阶段提供，不能用边缘终止 TLS 的反代。
+- 适配层位于 a2a-msg 仓库（`src/nana/`），不依赖 Orca；Nana 常驻会话若要走自己的 `ps_store`，需要在宿主侧再接一层消费 `handoff` 输出。
