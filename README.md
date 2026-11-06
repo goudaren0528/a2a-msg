@@ -46,6 +46,19 @@ node examples/im-local-demo.mjs
 
 命令默认创建并保留新的临时目录（含 `summary.json`、中心数据库、接收 journal 和附件），请视整个目录为敏感数据；输出摘要不打印凭据。可用 `--root` 指定**绝对且尚不存在**的路径，已有路径不会覆盖。命令会关闭自身启动的客户端与 HTTPS listener，不留下常驻服务。仓库内公开的测试证书和私钥**仅限 loopback 演示，绝不能用于生产**；不代表跨机器 LAN、公网或完整 v1 已验收。
 
+## Nana 双端往返适配层（本机隔离）
+
+为 T2「两个合成 Nana 身份 + 一个本机隔离中心」提供最小闭环：初始化两个身份、独立中心进程、会话适配层 CLI（接收 → 本地 journal 落盘 → ACK → 交回主会话/队列）与可复跑的验收脚本。详见[适配层说明](docs/im-nana-adapter.md)。
+
+```sh
+node scripts/im-nana-provision.mjs --root /absolute/private/nana-t2
+node scripts/im-center.mjs /absolute/private/nana-t2/center-config.json
+node scripts/im-nana-session.mjs receive --config /absolute/private/nana-t2/host-b/nana.json
+node examples/im-nana-roundtrip.mjs
+```
+
+只在本机 loopback 与仓库测试证书下验证文本、单接收者、无附件；重复投递与重启恢复有 `evidence.jsonl` 证据。不接真实对端、不部署公网、不代表生产可用。
+
 ## 远程 OpenCode 任务桥接（本机验证）
 
 桥接已实现：授权 Agent 可通过 a2a-msg 将任务交给目标机器的 OpenCode，并通过 IM 回传结果。实现在 `src/bridge/`，常驻入口 `src/bridge/run.mjs` 由桥接配置文件驱动；见[任务桥接 PRD](docs/prd/a2a-opencode-task-bridge-v1.md)。
@@ -78,6 +91,7 @@ node examples/im-local-demo.mjs
 | 中心部署、备份、迁移 | [管理员指南](docs/admin.md) |
 | 宿主 MCP 接入 | [连接契约](docs/client.md) |
 | 可选 OpenCode V2 **目录安装**、阅读 Skill、版本和 UI 验收 | [OpenCode 集成指南](integrations/opencode/README.md) |
+| 本机演示与 Nana 双端往返 | [本机演示说明](docs/im-local-demo.md)、[Nana 适配层](docs/im-nana-adapter.md) |
 | 十二个工具、单附件与阅读语义 | [工具参考](docs/tools.md) |
 | 可选研发测试场景模板（非核心通信协议、非执行授权） | [场景指南](docs/work-orders.md) |
 | 常见问题及验证边界 | [排障指南](docs/troubleshooting.md)、[验证记录](docs/verification.md) |
