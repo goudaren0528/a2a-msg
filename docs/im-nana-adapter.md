@@ -87,3 +87,4 @@ PASS: 3 accepted, 3 delivered/ACKed; duplicate deduplicated; restart cursor cont
 - 一个身份同一时刻只允许一个有效接收租约；多设备并行收需要先定身份/租约模型。
 - 测试证书与私钥只限 loopback；生产 TLS 由部署阶段提供，不能用边缘终止 TLS 的反代。
 - 适配层位于 a2a-msg 仓库（`src/nana/`），不依赖 Orca；Nana 常驻会话若要走自己的 `ps_store`，需要在宿主侧再接一层消费 `handoff` 输出。
+- 回复没有经过 Nana 的 `ps_session` 拟稿/批准：`ps_session` 在 nanazi 仓，本演示由适配层直接发送；需要审批链时在宿主侧补。
