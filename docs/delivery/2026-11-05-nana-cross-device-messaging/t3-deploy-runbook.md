@@ -312,6 +312,7 @@ node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/lya
 
 - 两份 summary 的其余步骤与同名 `.json`/`.err` 一致，未发现其他冲突；原 summary **不覆盖、不改写**（保留原始归档），只加并列说明文件 `logs/roundtrip-20261107-180436/summary.STALE-NOTE.md`、`logs/rename-20261107-181322/summary.STALE-NOTE.md`（含 sha256）。
 - §7.0 的前置事实（`22/tcp` 只允许 `209.240.29.135`、两个源文件存在与权限）用 `server/07-company-bootstrap-preflight.txt` 只读核实（2026-11-07 22:09，未改 ufw、未拷文件、未停服）。
+- 证据目录位置：`evidence/` 本地留档、不入库。原始归档在 `11-07-t3-pi` worktree 的同一路径（带 `local-tree/`，30 MB）；T1087 又在 `11-07-t1087-pi` worktree 放了一份不含 `local-tree` 的副本（412 KB，内容一致），位置以你手上那份为准；`local-tree` 按 §2 可重建。
 - 2026-11-07 21:39 用当前脚本把这两步**只读重跑**了一遍（不写中心）：`bin/evidence-recheck.sh` → `logs/recheck-20261107-213931/`，结果与上面 `.err` 一致（`21-receive-no-ca` → `STORAGE_UNAVAILABLE`；`09-probe-send-revoked` → `INVALID_CREDENTIAL`；另加只读 `GET /api/v1/me` → 401）。重跑前后中心零变化：`messages n=8`、`distinct client_message_id=8`、`audit.message_sent=8`、`acquire_receiver=11`、`last_accepted_at=1794046404478`（仍是 18:13 那条改名回报），见 `logs/recheck-20261107-213931/99-center-readonly.json`；本机 `status` 为 `lya-h cursor=3` / `lya-o cursor=5`，与 T1082 验收报告里的只读快照一致。
 - **为什么没有整脚本重跑**：`roundtrip.sh`、`rename-verify.sh` 会向中心写消息/游标，`offline-recovery.sh` 会 `systemctl stop/start` 中心；T1087 授权是「不碰中心运行态」，所以只做了非写步骤的重跑。等确认可以写中心后，命令如下（会把产物落到新的 `logs/roundtrip-<ts>/`、`logs/rename-<ts>/`，并把新 summary 作为 §8 的首选指针）：
 
