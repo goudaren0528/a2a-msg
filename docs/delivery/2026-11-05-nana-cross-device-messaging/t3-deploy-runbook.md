@@ -3,7 +3,7 @@ type: runbook
 slug: 2026-11-05-nana-cross-device-messaging-T3
 status: active
 updated: 2026-11-07
-summary: "T3 本机侧交付：小兔云香港 VPS 上部署 a2a-msg IM v1 中心（direct-tls 443 + systemd + ufw），注册 nana-home / nana-office 两个 Nana 身份，本机经真实中心完成派发→回报往返、离线恢复与失败回退，证据在 evidence/t3/。"
+summary: "T3 本机侧交付：小兔云香港 VPS 上部署 a2a-msg IM v1 中心（direct-tls 443 + systemd + ufw），注册 lya-h / lya-o 两个 Nana 身份，本机经真实中心完成派发→回报往返、离线恢复与失败回退，证据在 evidence/t3/。"
 ---
 
 # T3 两台真实设备接入 · 本机侧部署与验证手册
@@ -13,8 +13,8 @@ summary: "T3 本机侧交付：小兔云香港 VPS 上部署 a2a-msg IM v1 中�
 | 项 | 结果 |
 | --- | --- |
 | 中心 | 小兔云香港 VPS `114.134.185.39`，a2a-msg **IM v1** 中心，`direct-tls` 监听 `10.0.54.170:443`（1:1 NAT 对外即 `114.134.185.39:443`），systemd 常驻且开机自启 |
-| 身份 | 两个 Nana 身份已注册：`nana-home`（本机）= `358a6492-2822-459b-bd30-67678234b4c4`，`nana-office`（公司机占位）= `b35373d6-d694-4430-82a4-8dd24554bfb1`；双方互为联系人 |
-| 本机侧往返 | 本机 `nana-home` 经真实中心把任务派发给 `nana-office`，`nana-office` 落盘/ACK/交接后回一条回报，`nana-home` 收到并标已读；`deliveredAt` / `readAt` 均有值 |
+| 身份 | 两个 Nana 身份已注册：`lya-h`（本机）= `358a6492-2822-459b-bd30-67678234b4c4`，`lya-o`（公司机占位）= `b35373d6-d694-4430-82a4-8dd24554bfb1`；双方互为联系人 |
+| 本机侧往返 | 本机 `lya-h` 经真实中心把任务派发给 `lya-o`，`lya-o` 落盘/ACK/交接后回一条回报，`lya-h` 收到并标已读；`deliveredAt` / `readAt` 均有值 |
 | 离线恢复 | 设备侧离线期间消息在中心积压，恢复后按 `seq` 补齐、游标续接、无重复；中心停服期间发送失败（`STORAGE_UNAVAILABLE`），恢复后同 `clientMessageId` 重试不产生重复行 |
 | 失败回退 | 假凭据 → `INVALID_CREDENTIAL`；未登记联系人 → `RESOURCE_NOT_FOUND`；凭据被撤销 → `INVALID_CREDENTIAL`；客户端不信任该 CA → `STORAGE_UNAVAILABLE`；中心停服 → `STORAGE_UNAVAILABLE`（不伪造成功） |
 | 持久化 | 中心 `systemctl reboot` 后服务自动起来、历史消息与 `stream_epoch`、游标全部保留 |
@@ -47,7 +47,7 @@ git -C <仓库> rev-parse origin/master   # 期望 66f1c53f0545b5825868b8722c451
 | 实例 | `/srv/a2a-msg/instance`（`a2a:a2a`, `0700`）|
 | 证书 | `/etc/a2a-msg/tls`（`root:a2a`, `0750`） |
 
-> **Node 版本与任务说明不一致**：派发说明写「装 Node.js 22」，但仓库 `package.json` 的 `engines` 是 `>=24 <25`，中心用内置 `node:sqlite`（Node 22 需实验开关）。按仓库要求装了 **Node 24 LTS**，否则 `npm ci` / 中心启动会被 engines 与 sqlite 卡住。已作为机制问题上报。
+> **Node 版本**：仓库 `package.json` 的 `engines` 是 `>=24 <25`，中心依赖内置 `node:sqlite`，所以装的是 **Node 24 LTS（v24.22.2）**；派发说明里写的「Node.js 22」是笔误，本人 2026-11-07 已确认按 24（公司机侧也按 24 写说明）。
 
 ## 4. 目录与权限
 
@@ -60,10 +60,10 @@ git -C <仓库> rev-parse origin/master   # 期望 66f1c53f0545b5825868b8722c451
   center-config.json              a2a:a2a   0600   中心配置（含策略，不含密钥）
   admin-secret                    a2a:a2a   0600   本地管理密钥（64 hex）
   credentials/                    a2a:a2a   0700
-    agent-a-credential            a2a:a2a   0600   nana-home 凭据（只在本机另存 0600 副本）
-    agent-b-credential            a2a:a2a   0600   nana-office 凭据（公司机接入时交付）
+    lya-h-credential              a2a:a2a   0600   lya-h 凭据（只在本机另存 0600 副本）
+    lya-o-credential              a2a:a2a   0600   lya-o 凭据（公司机接入时交付）
     probe-credential              a2a:a2a   0600   T3 权限验证用探针（已撤销，保留留档）
-  host-a/ host-b/                 a2a:a2a   0700   provision 生成的示例 host 配置（未用于真实主机）
+  lya-h/ lya-o/                   a2a:a2a   0700   provision 生成的示例 host 配置（未用于真实主机）
 /etc/a2a-msg                      root:root 0711
 /etc/a2a-msg/tls                  root:a2a  0750
   ca-cert.pem                     root:a2a  0644   客户端信任链（可外传）
@@ -106,11 +106,11 @@ ssh root@114.134.185.39 'chgrp a2a /etc/a2a-msg/tls /etc/a2a-msg/tls/*; chmod 75
 # 5) 实例：中心库 + 两个身份 + 凭据 + 双向联系人 + 启用写入
 ssh root@114.134.185.39 'cd /opt/a2a-msg && sudo -u a2a node scripts/im-nana-provision.mjs \
   --root /srv/a2a-msg/instance \
-  --agent-a-display nana-home --agent-b-display nana-office \
+  --agent-a-display lya-h --agent-b-display lya-o \
   --server-url https://10.0.54.170:443 \
   --tls-key /etc/a2a-msg/tls/server-key.pem --tls-cert /etc/a2a-msg/tls/server-cert.pem \
   --ca-cert /etc/a2a-msg/tls/ca-cert.pem'
-# 输出：nana-home agentId 358a6492-…、nana-office agentId b35373d6-…；stdout 不打印密钥内容
+# 输出：lya-h agentId 358a6492-…、lya-o agentId b35373d6-…；stdout 不打印密钥内容
 ```
 
 `center-config.json` 里的 `policy.transport.serverUrl` 必须是**能 bind 的地址**（这里是私网 `10.0.54.170:443`）；客户端配置里用的是公网 `https://114.134.185.39`（注意：**不能带 `:443`**，客户端 `normalizeOrigin` 要求 `serverUrl === URL.origin`，写 `:443` 会被判 `INVALID_REQUEST`）。
@@ -168,32 +168,55 @@ ufw --force enable
 - SSH 白名单是**本人当时的出口 IP**。IP 变了会连不上：用服务商控制台（VNC/救援）执行 `ufw allow 22/tcp` 解除，或 `ufw delete allow from <旧IP> to any port 22 proto tcp` 后加新 IP。
 - 实测补充：除 443/22 之外的端口，公网 `nc -z` 仍显示「连接成功」（上游有设备应答 SYN），但 `curl` 得到空响应（exit 52），没有服务在交换数据；这是上游行为，不是本机放行。
 
+### 5.3 身份显示名改名（2026-11-07 18:13，本人要求）
+
+provision 时两个身份的显示名是 `nana-home` / `nana-office`；本人随后要求改成 `lya-h`（本机）/ `lya-o`（公司机），理由是 liaison 对外人格叫 Lya、身份跟 agent 走。**agentId、凭据、ACL、消息都不变**，只改显示名与文件名；改名后已复核一次完整派发→回报（§8）。
+
+```sh
+# a) 中心注册表：只改 display_name（agentId 与凭据不动）
+#    以 a2a 用户跑，SQL：update im_agents set display_name='lya-h' where agent_id='358a6492-…';
+#                                 update im_agents set display_name='lya-o' where agent_id='b35373d6-…';
+# b) 服务器上的凭据与示例配置改名
+cd /srv/a2a-msg/instance/credentials && mv agent-a-credential lya-h-credential && mv agent-b-credential lya-o-credential
+cd /srv/a2a-msg/instance && mv host-a lya-h && mv host-b lya-o
+sed -i 's|/host-a/|/lya-h/|g; s|/host-b/|/lya-o/|g; s|agent-a-credential|lya-h-credential|g; s|agent-b-credential|lya-o-credential|g' lya-h/nana.json lya-o/nana.json
+chmod 600 lya-h/nana.json lya-o/nana.json credentials/lya-h-credential credentials/lya-o-credential
+
+# c) 本机：目录、凭据、配置一起改名（不留两套）
+cd ~/.a2a-msg && mv nana-home lya-h && mv nana-office lya-o
+mv credentials/nana-home-credential credentials/lya-h-credential
+mv credentials/nana-office-credential credentials/lya-o-credential
+sed -i '' 's|/nana-home/|/lya-h/|g; s|/nana-office/|/lya-o/|g; s|nana-home-credential|lya-h-credential|g; s|nana-office-credential|lya-o-credential|g' lya-h/nana.json lya-o/nana.json
+```
+
+改名的历史痕迹：`evidence/t3/logs/roundtrip-*`、`offline-*`、`acl/`、`server/02-…` 里的旧名字是改名**前**的原始记录（照实留档，没有回改）；改名本身与改名后的复核见 `server/05-agent-rename.json`、`server/06-state-after-rename.json`、`logs/rename-20261107-181322/`。以后重建中心时直接用 `--agent-a-display lya-h --agent-b-display lya-o`，不需要再跑这节。
+
 ## 6. 本机（MacBook Air M4）侧
 
 本机配置都放在仓库外的 `~/.a2a-msg/`（`0700`，文件 `0600`）：
 
 ```text
-~/.a2a-msg/tls/ca-cert.pem                       从服务器 /etc/a2a-msg/tls/ca-cert.pem 复制
-~/.a2a-msg/credentials/nana-home-credential      nana-home 凭据（0600）
-~/.a2a-msg/credentials/nana-office-credential    nana-office 凭据（本轮本机代跑用，0600）
-~/.a2a-msg/credentials/probe-credential          T3 权限验证探针（已撤销）
-~/.a2a-msg/nana-home/nana.json                   会话配置
-~/.a2a-msg/nana-home/{journal.sqlite,attachments/,session-state.json,evidence.jsonl}
-~/.a2a-msg/nana-office/…                         公司机身份的本地代跑副本（用于本轮往返验证）
-~/.a2a-msg/probe/…                               探针副本
+~/.a2a-msg/tls/ca-cert.pem                    从服务器 /etc/a2a-msg/tls/ca-cert.pem 复制
+~/.a2a-msg/credentials/lya-h-credential       lya-h 凭据（0600）
+~/.a2a-msg/credentials/lya-o-credential       lya-o 凭据（本轮本机代跑用，0600）
+~/.a2a-msg/credentials/probe-credential       T3 权限验证探针（已撤销）
+~/.a2a-msg/lya-h/nana.json                    会话配置
+~/.a2a-msg/lya-h/{journal.sqlite,attachments/,session-state.json,evidence.jsonl}
+~/.a2a-msg/lya-o/…                            公司机身份的本地代跑副本（用于本轮往返验证）
+~/.a2a-msg/probe/…                            探针副本
 ```
 
-`~/.a2a-msg/nana-home/nana.json`：
+`~/.a2a-msg/lya-h/nana.json`：
 
 ```json
 {
   "serverUrl": "https://114.134.185.39",
   "agentId": "358a6492-2822-459b-bd30-67678234b4c4",
-  "credentialFile": "<HOME>/.a2a-msg/credentials/nana-home-credential",
-  "journalPath": "<HOME>/.a2a-msg/nana-home/journal.sqlite",
-  "attachmentDirectory": "<HOME>/.a2a-msg/nana-home/attachments",
-  "statePath": "<HOME>/.a2a-msg/nana-home/session-state.json",
-  "evidencePath": "<HOME>/.a2a-msg/nana-home/evidence.jsonl"
+  "credentialFile": "<HOME>/.a2a-msg/credentials/lya-h-credential",
+  "journalPath": "<HOME>/.a2a-msg/lya-h/journal.sqlite",
+  "attachmentDirectory": "<HOME>/.a2a-msg/lya-h/attachments",
+  "statePath": "<HOME>/.a2a-msg/lya-h/session-state.json",
+  "evidencePath": "<HOME>/.a2a-msg/lya-h/evidence.jsonl"
 }
 ```
 
@@ -201,29 +224,29 @@ ufw --force enable
 
 ```sh
 export NODE_EXTRA_CA_CERTS=$HOME/.a2a-msg/tls/ca-cert.pem
-node <master树>/scripts/im-nana-session.mjs status  --config $HOME/.a2a-msg/nana-home/nana.json
-node <master树>/scripts/im-nana-session.mjs receive --config $HOME/.a2a-msg/nana-home/nana.json
-node <master树>/scripts/im-nana-session.mjs handoff --config $HOME/.a2a-msg/nana-home/nana.json
-node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/nana-home/nana.json \
-  --to-agent <nana-office agentId> --title '任务派发' --text '…' --correlation t3-corr-1
+node <master树>/scripts/im-nana-session.mjs status  --config $HOME/.a2a-msg/lya-h/nana.json
+node <master树>/scripts/im-nana-session.mjs receive --config $HOME/.a2a-msg/lya-h/nana.json
+node <master树>/scripts/im-nana-session.mjs handoff --config $HOME/.a2a-msg/lya-h/nana.json
+node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/lya-h/nana.json \
+  --to-agent <lya-o agentId> --title '任务派发' --text '…' --correlation t3-corr-1
 ```
 
 ## 7. 公司机接入（等本人操作，本包不代连）
 
 1. 拿信任链：`scp root@114.134.185.39:/etc/a2a-msg/tls/ca-cert.pem <公司机>/.a2a-msg/tls/ca-cert.pem`。
-2. 拿身份凭据：`scp root@114.134.185.39:/srv/a2a-msg/instance/credentials/agent-b-credential <公司机>/.a2a-msg/credentials/nana-office-credential`（`chmod 600`）。
+2. 拿身份凭据：`scp root@114.134.185.39:/srv/a2a-msg/instance/credentials/lya-o-credential <公司机>/.a2a-msg/credentials/lya-o-credential`（`chmod 600`）。
 3. 准备代码：在公司机 `git archive origin/master` 解包 + `npm ci`（Node 24），或用同一棵树的拷贝。
 4. 写 `nana.json`：`serverUrl` 用 `https://114.134.185.39`（不带端口）、`agentId` 用 `b35373d6-d694-4430-82a4-8dd24554bfb1`，其余路径指向公司机本地目录。
-5. 设置 `NODE_EXTRA_CA_CERTS`，跑 `status` / `receive`：应能拿到中心里发给 `nana-office` 的 `seq 1–4` 共 4 条历史消息（公司机是新的 journal，会从头收；本轮已用清空 journal 的方式验证，见 §8「新设备接同类身份」），之后游标从 `5` 继续。
+5. 设置 `NODE_EXTRA_CA_CERTS`，跑 `status` / `receive`：应能拿到中心里发给 `lya-o` 的 `seq 1–5` 共 5 条历史消息（公司机是新的 journal，会从头收；本轮已用清空 journal 的方式验证，见 §8「新设备接同类身份」），之后游标从 `6` 继续。
 6. 双向验证：公司机 `send --to-agent 358a6492-…`，本机 `receive` 收到即算「两台真实设备」闭环。
-7. **建议**：公司机接好后撤销 `b35373d6-…` 现凭据并重签一份只给公司机（本轮该凭据在本机留过副本），撤销用 `docs/im-admin-cli.md` 的 `revoke-credential`；撤销后本机 `~/.a2a-msg/nana-office/` 与凭据副本可删除。
+7. **建议**：公司机接好后撤销 `b35373d6-…` 现凭据并重签一份只给公司机（本轮该凭据在本机留过副本），撤销用 `docs/im-admin-cli.md` 的 `revoke-credential`；撤销后本机 `~/.a2a-msg/lya-o/` 与凭据副本可删除。
 
 ## 8. 验收对照（AC → 证据）
 
 | 验收点 | 结论 | 证据（`evidence/t3/` 下） |
 | --- | --- | --- |
 | 两台设备各自注册 Nana 身份 | 两个身份已注册、状态 active、凭据哈希入库 | `server/02-identity-and-acl.json`（`agents` / `credentials`） |
-| 经真实中心完成一次任务派发与回报 | 本机 ↔ nana-office 经 `114.134.185.39:443` TLS 完成派发（`77c2b60e…`）→ 接收/ACK/交接 → 回报（`a0f30964…`）→ 已读 | `logs/roundtrip-20261107-180436/summary.txt` 与同名目录下的 `04/06/07/11/12/13/14/15-*.json` |
+| 经真实中心完成一次任务派发与回报 | 本机 ↔ lya-o 经 `114.134.185.39:443` TLS 完成派发（`77c2b60e…`）→ 接收/ACK/交接 → 回报（`a0f30964…`）→ 已读 | `logs/roundtrip-20261107-180436/summary.txt` 与同名目录下的 `04/06/07/11/12/13/14/15-*.json` |
 | 身份 | 凭据 Bearer、库内只存 SHA-256 前缀、假凭据被拒 | `logs/roundtrip-*/20-send-bad-credential.*`、`server/02-identity-and-acl.json` |
 | 权限 | 未登记联系人 404、撤销后 401、其余身份不受影响 | `logs/acl/01-probe-send.log`、`logs/acl/02-revoke.log` |
 | 离线恢复 | 设备离线期间积压、恢复后补齐 2 条、游标 1→3、无重复 | `logs/offline-20261107-180542/02,05,06,07,08-*.json`、`server/02-identity-and-acl.json`（`deliveries` / `receiveState`） |
@@ -232,6 +255,7 @@ node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/nan
 | 新设备接同类身份（公司机预演） | 清空 journal 后以同一身份重新收取，拿到 `seq 1–4` 全部历史、`cursor=4` | `logs/fresh-device/01-receive-fresh.json`、`02-status-fresh.json` |
 | TLS | 自签 CA、SAN 含公网 IP，客户端不信任时失败 | `server/04-post-reboot-verify.txt`（`openssl x509` 段）、`logs/roundtrip-*/21-receive-no-ca.*` |
 | 部署树自测 | `tests/im-nana-*.test.js` 8/8 通过 | `logs/local-suite-im-nana.log` |
+| 身份改名后复核（lya-h / lya-o） | 中心显示名已改；新派发 T3-5（`03869e32…`）→ lya-o 收 seq 5 → 回报（`7a9bd93a…`）→ lya-h 收 seq 3；探针仍 401 | `server/05-agent-rename.json`（改名前→后）、`server/06-state-after-rename.json`、`logs/rename-20261107-181322/summary.txt` |
 
 复跑（需 `~/.a2a-msg` 与本机 CA 就位）：
 
@@ -277,7 +301,7 @@ ufw delete allow 443/tcp
 ## 11. 已知限制与风险
 
 1. **证书是自签测试 CA**，不是公网可信证书；新增设备都要手工分发 `ca-cert.pem`。要换正式证书得先有域名，并先在客户端信任链上验收。
-2. **本机副本里有 nana-office 凭据**（本轮用它代跑公司机侧）。公司机正式接入后建议撤销重签，见 §7.7。
+2. **本机副本里有 lya-o 凭据**（本轮用它代跑公司机侧）。公司机正式接入后建议撤销重签，见 §7.7。
 3. **单接收者租约**：同一身份同一时间只能一个接收进程（`LEASE_CONFLICT`）；多设备并行收 / 多主体身份模型仍是 T1 §9.3 的未决问题。
 4. **SSH 白名单绑定当前出口 IP**，IP 变化需要从控制台解封（§5.2）。
 5. **无自动备份、无留存清理、无监控告警**；2C/1.7 GB 的机器只跑这一个中心，SQLite 单写者，10 MiB 附件会短暂占写锁（本轮未传附件）。
