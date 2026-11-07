@@ -235,7 +235,7 @@ node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/lya
 
 ### 7.0 前置：`22/tcp` 只允许 `209.240.29.135`（先选一条路）
 
-服务器 ufw 的 SSH 规则是 `allow from 209.240.29.135 to any port 22 proto tcp`（§3、§5.2）。**公司机的出口 IP 不是这个地址时，在公司机上直接 `scp root@114.134.185.39:…` 会被 ufw 丢弃（表现为超时，不是认证失败）**。所以先选一条：
+服务器 ufw 的 SSH 规则是 `allow from 209.240.29.135 to any port 22 proto tcp`（§3、§5.2；2026-11-07 22:09 只读核实见 `evidence/t3/server/07-company-bootstrap-preflight.txt`，`ufw status numbered` 第 2 条原文一致）。**公司机的出口 IP 不是这个地址时，在公司机上直接 `scp root@114.134.185.39:…` 会被 ufw 丢弃（表现为超时，不是认证失败）**。所以先选一条：
 
 - **路线 A（默认，推荐）：两段式传递**——在**本机**（出口 IP 已在白名单）从服务器取下两个文件，再把它们传到公司机（AirDrop / 局域网 `scp` / U 盘都行）。不需要改防火墙。
 - **路线 B：先给公司机出口 IP 开一条临时 SSH 白名单**——公司机上查自己的出口 IP（`curl -s https://api.ipify.org`），然后在**能连上服务器的那台机器**（本机或服务商控制台 VNC/救援）执行：
@@ -311,6 +311,7 @@ node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/lya
 | `logs/rename-20261107-181322/summary.txt` 第 09 步（旧名 `09-probe-send`） | `{"error":{"code":"INVALID_REQUEST"}}` | `09-probe-send-revoked.err`（18:13:45 补跑，当前脚本：探针凭据打 `send`）→ `{"error":{"code":"INVALID_CREDENTIAL"}}`，exit 1 | 撤销后是 **401 `INVALID_CREDENTIAL`**，不是 400 `INVALID_REQUEST` |
 
 - 两份 summary 的其余步骤与同名 `.json`/`.err` 一致，未发现其他冲突；原 summary **不覆盖、不改写**（保留原始归档），只加并列说明文件 `logs/roundtrip-20261107-180436/summary.STALE-NOTE.md`、`logs/rename-20261107-181322/summary.STALE-NOTE.md`（含 sha256）。
+- §7.0 的前置事实（`22/tcp` 只允许 `209.240.29.135`、两个源文件存在与权限）用 `server/07-company-bootstrap-preflight.txt` 只读核实（2026-11-07 22:09，未改 ufw、未拷文件、未停服）。
 - 2026-11-07 21:39 用当前脚本把这两步**只读重跑**了一遍（不写中心）：`bin/evidence-recheck.sh` → `logs/recheck-20261107-213931/`，结果与上面 `.err` 一致（`21-receive-no-ca` → `STORAGE_UNAVAILABLE`；`09-probe-send-revoked` → `INVALID_CREDENTIAL`；另加只读 `GET /api/v1/me` → 401）。重跑前后中心零变化：`messages n=8`、`distinct client_message_id=8`、`audit.message_sent=8`、`acquire_receiver=11`、`last_accepted_at=1794046404478`（仍是 18:13 那条改名回报），见 `logs/recheck-20261107-213931/99-center-readonly.json`；本机 `status` 为 `lya-h cursor=3` / `lya-o cursor=5`，与 T1082 验收报告里的只读快照一致。
 - **为什么没有整脚本重跑**：`roundtrip.sh`、`rename-verify.sh` 会向中心写消息/游标，`offline-recovery.sh` 会 `systemctl stop/start` 中心；T1087 授权是「不碰中心运行态」，所以只做了非写步骤的重跑。等确认可以写中心后，命令如下（会把产物落到新的 `logs/roundtrip-<ts>/`、`logs/rename-<ts>/`，并把新 summary 作为 §8 的首选指针）：
 
