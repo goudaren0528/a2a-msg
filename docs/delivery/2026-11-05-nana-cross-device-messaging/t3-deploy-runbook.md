@@ -245,14 +245,14 @@ node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/lya
 
 | 验收点 | 结论 | 证据（`evidence/t3/` 下） |
 | --- | --- | --- |
-| 两台设备各自注册 Nana 身份 | 两个身份已注册、状态 active、凭据哈希入库 | `server/02-identity-and-acl.json`（`agents` / `credentials`） |
+| 两台设备各自注册 Nana 身份 | 两个身份（`lya-h` / `lya-o`）已注册、状态 active、凭据哈希入库 | `server/02-identity-and-acl.json`（`agents` / `credentials`） |
 | 经真实中心完成一次任务派发与回报 | 本机 ↔ lya-o 经 `114.134.185.39:443` TLS 完成派发（`77c2b60e…`）→ 接收/ACK/交接 → 回报（`a0f30964…`）→ 已读 | `logs/roundtrip-20261107-180436/summary.txt` 与同名目录下的 `04/06/07/11/12/13/14/15-*.json` |
 | 身份 | 凭据 Bearer、库内只存 SHA-256 前缀、假凭据被拒 | `logs/roundtrip-*/20-send-bad-credential.*`、`server/02-identity-and-acl.json` |
 | 权限 | 未登记联系人 404、撤销后 401、其余身份不受影响 | `logs/acl/01-probe-send.log`、`logs/acl/02-revoke.log` |
 | 离线恢复 | 设备离线期间积压、恢复后补齐 2 条、游标 1→3、无重复 | `logs/offline-20261107-180542/02,05,06,07,08-*.json`、`server/02-identity-and-acl.json`（`deliveries` / `receiveState`） |
 | 失败回退 | 中心停服 → `STORAGE_UNAVAILABLE`，恢复后同 `clientMessageId` 重试只有 1 行 | `logs/offline-*/03-send-while-center-down.*`、`04-send-after-center-recovery.json`、`server/02-identity-and-acl.json`（4 条消息各 1 行） |
 | 持久化 / 常驻 | reboot 后 `active`+`enabled`，历史与游标保留，新消息 `seq 4` 继续 | `server/03-state-after-reboot.json`、`logs/post-reboot/*`、`server/04-post-reboot-verify.txt` |
-| 新设备接同类身份（公司机预演） | 清空 journal 后以同一身份重新收取，拿到 `seq 1–4` 全部历史、`cursor=4` | `logs/fresh-device/01-receive-fresh.json`、`02-status-fresh.json` |
+| 新设备接同类身份（公司机预演） | 清空 journal 后以同一身份重新收取，拿到 `seq 1–4` 全部历史、`cursor=4`（T3-5 之后新设备会拿到 1–5）| `logs/fresh-device/01-receive-fresh.json`、`02-status-fresh.json` |
 | TLS | 自签 CA、SAN 含公网 IP，客户端不信任时失败 | `server/04-post-reboot-verify.txt`（`openssl x509` 段）、`logs/roundtrip-*/21-receive-no-ca.*` |
 | 部署树自测 | `tests/im-nana-*.test.js` 8/8 通过 | `logs/local-suite-im-nana.log` |
 | 身份改名后复核（lya-h / lya-o） | 中心显示名已改；新派发 T3-5（`03869e32…`）→ lya-o 收 seq 5 → 回报（`7a9bd93a…`）→ lya-h 收 seq 3；探针仍 401 | `server/05-agent-rename.json`（改名前→后）、`server/06-state-after-rename.json`、`logs/rename-20261107-181322/summary.txt` |
@@ -262,6 +262,7 @@ node <master树>/scripts/im-nana-session.mjs send    --config $HOME/.a2a-msg/lya
 ```sh
 docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/t3/bin/roundtrip.sh
 docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/t3/bin/offline-recovery.sh
+docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/t3/bin/rename-verify.sh
 ```
 
 `offline-recovery.sh` 会真的 `systemctl stop/start` 中心（约 5 秒不可用），跑前确认可以中断。
