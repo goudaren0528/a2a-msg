@@ -56,7 +56,7 @@ summary: "执行方案 P1：schema v4 + 邀请码自助注册 + 未认证 /api/v
 
 ## 交接
 
-**提交号**：`631968feacf0f8860024e4d413e7e5108f30d728`（实现、测试与文档；后续钉住/进度提交用 `git log -1 --format=%H -- docs/delivery/2026-11-05-nana-cross-device-messaging/packages/P1-enrollment.md` 唯一解析）；**合入状态**：`branch-only`；**分支名**：`goudaren0528/11-08-t100039-claude`；**核实依据/目标 ref**：`git rev-parse HEAD` 得实现提交 `631968f…`，`git branch --show-current` 为本分支，`git log --oneline origin/master..HEAD` 仅含本包提交（实现 + 钉住/进度），`git merge-base --is-ancestor HEAD origin/master` 退出码 1；**后续工作/责任归属**：交跟进 Agent 派验收 Agent（Codex）；本会话在收到审查/测试报告前无主动后续；合并、推送、VPS 迁移由跟进 Agent/本人决定。
+**提交号**：`631968feacf0f8860024e4d413e7e5108f30d728`（实现、测试与文档）；分支 HEAD/进度提交 `ac61aeff93ec0a1469208755b342ace8a9ca2f64`（`git log -1 --format=%H -- docs/delivery/2026-11-05-nana-cross-device-messaging/packages/P1-enrollment.md` 唯一解析）；**合入状态**：`branch-only`；**分支名**：`goudaren0528/11-08-t100039-claude`；**核实依据/目标 ref**：`git rev-parse HEAD` = `ac61aef…`，`git branch --show-current` = 本分支，`git log --oneline origin/master..HEAD` 仅含本包三个提交，`git merge-base --is-ancestor HEAD origin/master` 退出码 `1`（未入 `origin/master`），`git status --short` 无输出；**后续工作/责任归属**：交跟进 Agent 派验收 Agent（Codex）；本会话在收到审查/测试报告前无主动后续；合并、推送、VPS 迁移由跟进 Agent/本人决定。
 
 ### 做了什么
 
