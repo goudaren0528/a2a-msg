@@ -46,7 +46,9 @@ summary: "执行方案 P1：schema v4 + 邀请码自助注册 + 未认证 /api/v
 
 ## 全量结果
 
-（见提交后的进度更新）
+- 本分支：`TMPDIR=/private/tmp NANAZI_NO_SEND=1 npm test` → `2774 tests / 2570 pass / 142 fail / 62 skipped`，退出码 1。日志：`/private/tmp/p1-full-suite.log`。
+- 基线对照：`git archive 66f1c53` 解到 `/private/tmp/a2a-baseline-66f1c53`（复用同一 `node_modules`），同命令 → `2765 tests / 2559 pass / 144 fail / 62 skipped`。其中 2 个失败是基线副本不是 git 仓库导致（`im-v2-schema` 的 source pin、`attachment-save` 的 git 调用），其余失败文件与数量与本分支完全一致。
+- 结论：本包新增 9 个用例全部通过，未引入新的失败。142 个失败集中在未改动文件（`im-v2-retention-preview` 52、`im-v2-maintenance-read-target` 43、`im-v2-backup-registry-v5` 11、`unread*` 等），典型原因是 macOS 没有 `127.0.0.2/3` 别名（`EADDRNOTAVAIL`）与既有性能/时序用例抖动；未删测试、未放宽断言。
 
 ## 修复记录
 
@@ -74,7 +76,8 @@ summary: "执行方案 P1：schema v4 + 邀请码自助注册 + 未认证 /api/v
 3. **`docs/im-recovery-retention-v2-design.md`** 仍描述「把 legacy 常量改成 4 会破坏 v3 工作流」，现已按 3/4 双接受处理；该设计文档也不在 P1 归属内。
 4. **响应丢失即消耗邀请**：兑换成功但 HTTP 响应丢失时邀请已核销、凭据不可恢复；文档已写明需重新发邀请。未做「兑换幂等」因为 PRD 未要求且会扩大范围。
 5. **`scripts/im-bootstrap.mjs` / `im-nana-provision.mjs`** 仍只迁到 v3；P1 未改（不在文件归属），新中心需显式跑 `im-migrate-v4.mjs` 才有注册能力。
-6. **未覆盖**：真实两设备/VPS 部署（P6）、好友申请状态机（P2）、MCP 挂载（P3）、npx 打包（P4）、附件（P5）。
+6. **备份注册表仍只认 v3（跨包，需授权）**：`src/im/backup-registry.js:391/426/442` 硬编码 `schemaVersion === 3`，不在 P1 文件归属内，本次未改。因此 v4 中心的 `createBackupPublisher` 发布会被注册表拒绝（v3 库仍正常）。T3 升级剧本第 1 步是停服后手工复制 DB，不经过该注册表；若 P6 要走注册表备份，请先授权把该文件与其测试（`tests/im-backup-registry.test.js`、`tests/im-registry-lock.test.js`）纳入变更。P1 已把 `migration-runner.js` / `backup-publisher.js` 放宽到 3/4。
+7. **未覆盖**：真实两设备/VPS 部署（P6）、好友申请状态机（P2）、MCP 挂载（P3）、npx 打包（P4）、附件（P5）。
 
 ### 机制问题（nanazi）
 

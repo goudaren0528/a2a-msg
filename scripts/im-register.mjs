@@ -38,6 +38,7 @@ function centerUrl(raw) {
 }
 
 function stateDirectory(raw) {
+  if (raw !== undefined && !isAbsolute(raw)) throw fail('INVALID_ARGUMENTS');
   const directory = raw === undefined ? join(homedir(), '.a2a-msg') : resolve(raw);
   if (!isAbsolute(directory)) throw fail('INVALID_ARGUMENTS');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
