@@ -30,3 +30,32 @@ Schemas are exported as `imMcpToolSchemas` (Zod strict objects) and used both in
 ## Installer responsibilities and limits
 
 Supply a **trusted session-bound** async `getCredential` and a fresh journal factory `scope => createImJournal({db,...scope})` with protected persistent `DatabaseSync` (`PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL`), plus an existing protected absolute attachment directory provisioned for this center/agent. Never expose `transport` to tool inputs; it is a privileged test/CA integration seam. Default requests use verified HTTPS and reject redirects. Tokens are used only for Authorization, never in tools, bodies, errors or logs. The installer must bind the host session to the credential and configured agent; the adapter checks authenticated `/me` for reads and client operations. No automatic response, model execution, retention, cursor reset policy, background worker, SSE, orphan-file scan, production mounting, deployment, or host integration is implemented. A corrupted local file or revoked authorization fails closed; pending ACKs require explicit reconciliation. The attachment tool never exports raw attachment bytes; explicit durable sync is the receiving/ACK route. Tests cover a localhost isolated TLS core, not real internet/LAN deployment or a connected MCP host.
+
+## stdio entry (`scripts/im-mcp.mjs`)
+
+The stdio entry mounts this adapter for a host that spawns it on demand. It is the only mounted entry; `src/mcp.js` (legacy LAN bridge) and `scripts/im-nana-session.mjs` (handoff CLI) are unchanged and independent.
+
+```sh
+node scripts/im-mcp.mjs --config /absolute/private/nana-t2/host-a/nana.json
+```
+
+- `--config` is required, absolute, an existing regular file and not a symlink. `--help` prints usage. Unknown flags or a broken config exit 1.
+- The config is the **same strict `nana.json`** as `scripts/im-nana-session.mjs` (`src/nana/config.js`): unknown fields, relative paths and non-`https` origins are rejected. `statePath`/`evidencePath` are validated but not used by the MCP entry; `journalPath` and `attachmentDirectory` must be existing absolute paths (the journal file itself is created on first start).
+- The credential is read from `credentialFile` **on every request**, never from tool input, the config body, the command line, logs or errors. The file must be a regular non-symlink file that is owner-only (`0600` or stricter on POSIX; Windows relies on NTFS ACLs). Missing, unreadable or group/world-visible files fail closed at startup with `{"error":{"code":"AUTH_REQUIRED"}}` on stderr and exit 1; a credential revoked later returns the fixed `INVALID_CREDENTIAL` tool error.
+- TLS is verified end to end (chain and hostname, no redirects). Trust additional CAs through the host process environment, e.g. `NODE_EXTRA_CA_CERTS=<ca.pem>`; no CA path is accepted from tool input.
+- **No polling and no daemon**: the entry opens no timers, watchers, sockets or SSE streams at startup. Every outbound request happens inside a tool call, so `listTools` and idle time make zero network requests. Closing stdin or sending `SIGINT`/`SIGTERM` closes the SQLite journal and pending requests.
+- The entry installs its own verified HTTPS transport that preserves request bodies and headers. The factory's built-in `defaultTransport` is a read-only lookup helper that deliberately drops bodies/headers, so it is not sufficient for POST tools (`ensure_conversation`, `send`, `acquire_lease`, `sync`, `ack_pending`, `read`); the stdio entry does not use it.
+- stdout is the MCP protocol channel only. Diagnostics go to stderr as a fixed `{"error":{"code":"<IM code>"}}` object.
+
+Example host entry (structure depends on the host; this is not a guaranteed format):
+
+```json
+{
+  "transport": "stdio",
+  "command": "/absolute/path/to/node",
+  "args": ["/absolute/path/to/repo/scripts/im-mcp.mjs", "--config", "/absolute/private/nana-t2/host-a/nana.json"],
+  "env": { "NODE_EXTRA_CA_CERTS": "/absolute/path/to/ca.pem" }
+}
+```
+
+The entry exposes the same 16 `im_v1_*` tools; it accepts no URL, agent id or credential as tool input. User-facing setup, the legacy LAN bridge and their differences are described in [client.md](client.md); the shared `nana.json` and the handoff CLI are described in [im-nana-adapter.md](im-nana-adapter.md).
