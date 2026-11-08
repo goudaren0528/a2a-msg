@@ -1,10 +1,10 @@
 # 同事通用 stdio 接入
 
-> **两条入口不要混用。** 本页描述旧 LAN bridge（`src/mcp.js` + `MSG_SERVER_URL` + 来源 IP 身份 + `list_peers` 等 12 个工具）。IM v1（`a2a-msg.im.v1`，Bearer 凭据 + 16 个 `im_v1_*` 工具）改由 `scripts/im-mcp.mjs --config <nana.json>` 拉起，不读 `MSG_SERVER_URL`、不按来源 IP 认人，配置与凭据规则见 [IM MCP 适配器](im-mcp-adapter.md#stdio-entry-scriptsimcpmjs)与 [Nana 适配层](im-nana-adapter.md)。两条入口互不影响，可以按需只用其中一条。
+> **入口不要混用。** 本页描述旧 LAN bridge（`src/mcp.js` + `MSG_SERVER_URL` + 来源 IP 身份 + `list_peers` 等 12 个工具）。IM v1（`a2a-msg.im.v1`，Bearer 凭据 + 16 个 `im_v1_*` 工具）有两条等价入口：源码目录的 `scripts/im-mcp.mjs --config <nana.json>`，以及不 clone 源码的 `npx github:goudaren0528/a2a-msg#<commit> mcp --config <nana.json>`（见 [npx 接入](install-npx.md)）。两者是同一实现、同一份严格配置与凭据规则，都不读 `MSG_SERVER_URL`、不按来源 IP 认人；配置与凭据规则见 [IM MCP 适配器](im-mcp-adapter.md#stdio-entry-scriptsimcpmjs)与 [Nana 适配层](im-nana-adapter.md)。三条入口互不影响，可以按需只用其中一条。
 
 ## 准备与契约
 
-管理员已将你机器的固定来源 IP 配置为成员，并提供中心 URL。你只需完整源码、Node.js **24**，在源码目录运行 `npm ci`；不需要数据库、access.json 或本地中心服务。
+管理员已将你机器的固定来源 IP 配置为成员，并提供中心 URL。你只需完整源码、Node.js **24**，在源码目录运行 `npm ci`；不需要数据库、access.json 或本地中心服务。使用上面的 IM v1 npx 入口时不需要本节，也不需要 clone 或 `npm ci`，按 [npx 接入](install-npx.md) 准备即可。
 
 | 字段 | 约定 |
 | --- | --- |
