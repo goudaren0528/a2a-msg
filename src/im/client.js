@@ -32,7 +32,7 @@ function jsonResult(response) {
   try { data = JSON.parse(response.body.toString('utf8')); } catch { fail('STORAGE_UNAVAILABLE'); }
   if (response.status >= 300 && response.status < 400) fail('STORAGE_UNAVAILABLE');
   if (response.status >= 400) {
-    const allowed = new Set(['INVALID_REQUEST','UNSUPPORTED_VERSION','INVALID_ATTACHMENT','AUTH_REQUIRED','INVALID_CREDENTIAL','TLS_REQUIRED','OPERATION_FORBIDDEN','RESOURCE_NOT_FOUND','IDEMPOTENCY_CONFLICT','LEASE_CONFLICT','STALE_FENCE','LEASE_EXPIRED','DELIVERY_REQUIRED','SYNC_BLOCKED','CURSOR_RESET_REQUIRED','IDEMPOTENCY_WINDOW_EXPIRED','PAYLOAD_TOO_LARGE','RATE_LIMITED','IM_DISABLED','NEW_WRITES_DISABLED','POLICY_NOT_CONFIGURED','STORAGE_UNAVAILABLE','CLOCK_UNSAFE']);
+    const allowed = new Set(['INVALID_REQUEST','UNSUPPORTED_VERSION','INVALID_ATTACHMENT','AUTH_REQUIRED','INVALID_CREDENTIAL','TLS_REQUIRED','OPERATION_FORBIDDEN','RESOURCE_NOT_FOUND','IDEMPOTENCY_CONFLICT','CONTACT_REQUEST_CONFLICT','LEASE_CONFLICT','STALE_FENCE','LEASE_EXPIRED','DELIVERY_REQUIRED','SYNC_BLOCKED','CURSOR_RESET_REQUIRED','IDEMPOTENCY_WINDOW_EXPIRED','PAYLOAD_TOO_LARGE','RATE_LIMITED','IM_DISABLED','NEW_WRITES_DISABLED','POLICY_NOT_CONFIGURED','STORAGE_UNAVAILABLE','CLOCK_UNSAFE']);
     const code = data?.error?.code;
     if (typeof code === 'string' && allowed.has(code)) fail(code);
     fail('STORAGE_UNAVAILABLE');
@@ -272,13 +272,39 @@ export function createImClient({ serverUrl, agentId, getCredential, journal, att
     return q.size ? `?${q}` : '';
   };
   const contacts = async (input = {}) => { await identity(); return call('GET', `/contacts${pageArgs(input)}`); };
+  const contactRequest = async ({ peerAgentId } = {}) => { await identity();
+    return call('POST', '/contact-requests', { peerAgentId: id(peerAgentId) }); };
+  const contactRequests = async (input = {}) => {
+    await identity();
+    if (!obj(input) || Object.keys(input).some(key => !['direction', 'after', 'limit'].includes(key))) fail('INVALID_REQUEST');
+    if (input.direction !== undefined && !['incoming', 'outgoing', 'all'].includes(input.direction)) fail('INVALID_REQUEST');
+    const q = new URLSearchParams();
+    if (input.direction !== undefined) q.set('direction', input.direction);
+    if (input.after !== undefined) {
+      if (typeof input.after !== 'string' || input.after.length > 4096) fail('INVALID_REQUEST');
+      q.set('after', input.after);
+    }
+    if (input.limit !== undefined) {
+      if (!integer(input.limit, 1) || input.limit > 100) fail('INVALID_REQUEST');
+      q.set('limit', String(input.limit));
+    }
+    return call('GET', `/contact-requests${q.size ? `?${q}` : ''}`);
+  };
+  const respondContactRequest = async ({ requestId, action } = {}) => {
+    await identity();
+    if (!['accept', 'reject'].includes(action)) fail('INVALID_REQUEST');
+    return call('POST', `/contact-requests/${pathId(id(requestId))}/${action}`, {});
+  };
+  const revokeContactRequest = async ({ requestId } = {}) => { await identity();
+    return call('POST', `/contact-requests/${pathId(id(requestId))}/revoke`, {}); };
   const conversations = async (input = {}) => { await identity(); return call('GET', `/conversations${pageArgs(input)}`); };
   const ensureConversation = async ({ peerAgentId }) => { await identity(); return call('POST', '/conversations', { peerAgentId: id(peerAgentId) }); };
   const history = async ({ conversationId, ...input }) => { await identity(); return call('GET', `/conversations/${pathId(id(conversationId))}/messages${pageArgs(input)}`); };
   const read = async messageId => { await identity(); return call('POST', `/messages/${pathId(id(messageId))}/read`, {}); };
   function close() { closed = true; leaseVerified = false; for (const req of active) req.destroy(); active.clear(); }
   const methods = { send, recoverSend, acquire, renewLease, release, receiveOnce, ackPending,
-    contacts, conversations, ensureConversation, history, read };
+    contacts, contactRequest, contactRequests, respondContactRequest, revokeContactRequest,
+    conversations, ensureConversation, history, read };
   return Object.freeze({ ...Object.fromEntries(Object.entries(methods).map(([name, fn]) => [name,
     async (...args) => { try {
       if (closed) fail('STORAGE_UNAVAILABLE');
