@@ -59,6 +59,17 @@ node examples/im-nana-roundtrip.mjs
 
 只在本机 loopback 与仓库测试证书下验证文本、单接收者、无附件；重复投递与重启恢复有 `evidence.jsonl` 证据。不接真实对端、不部署公网、不代表生产可用。
 
+## npx 轻量接入（IM v1，不 clone 源码）
+
+新设备可以用 `npx` 从**固定 Git commit** 直接拉起 IM v1 的 MCP stdio 入口或注册身份，不需要 clone 源码、不需要手工 `npm ci`。前提是 Node.js 24.x；包仍是 `private`，**不发布到 npm**。完整参数、宿主配置与 tarball 用法见 [npx 接入说明](docs/install-npx.md)。
+
+```sh
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --help
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> register --help
+```
+
+`<COMMIT>` 必须替换成已批准的完整 40 位提交号，不用分支名。Node 版本不是 24.x 时入口直接以固定码 `NODE_VERSION_UNSUPPORTED` 报错退出。npx 只新增分发层；旧入口 `node src/mcp.js`（LAN bridge）与 `node scripts/im-mcp.mjs --config <nana.json>`（IM v1 stdio）保持不变。该能力是源码状态，不代表中心升级或真实两设备验收已完成。
+
 ## 远程 OpenCode 任务桥接（本机验证）
 
 桥接已实现：授权 Agent 可通过 a2a-msg 将任务交给目标机器的 OpenCode，并通过 IM 回传结果。实现在 `src/bridge/`，常驻入口 `src/bridge/run.mjs` 由桥接配置文件驱动；见[任务桥接 PRD](docs/prd/a2a-opencode-task-bridge-v1.md)。

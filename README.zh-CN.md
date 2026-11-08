@@ -18,6 +18,17 @@ node examples/im-local-demo.mjs
 
 命令默认创建并保留新的临时目录（含 `summary.json`、中心数据库、接收 journal 和附件），请视整个目录为敏感数据；输出摘要不打印凭据。可用 `--root` 指定**绝对且尚不存在**的路径，已有路径不会覆盖。命令会关闭自身启动的客户端与 HTTPS listener，不留下常驻服务。仓库内公开的测试证书和私钥**仅限 loopback 演示，绝不能用于生产**；不代表跨机器 LAN、公网或完整 v1 已验收。
 
+## npx 轻量接入（IM v1，不 clone 源码）
+
+新设备可用 `npx` 从固定 Git commit 直接拉起 IM v1 的 MCP stdio 入口或注册身份，不需要 clone 源码或手工 `npm ci`。前提是 Node.js 24.x；包仍为 `private`，不发布到 npm。完整说明见[主 README 的 npx 接入段](README.md#npx-轻量接入im-v1不-clone-源码)与 [npx 接入说明](docs/install-npx.md)。
+
+```sh
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --help
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> register --help
+```
+
+`<COMMIT>` 必须是已批准的完整 40 位提交号；Node 版本不是 24.x 时以 `NODE_VERSION_UNSUPPORTED` 报错退出。旧入口 `node src/mcp.js` 与 `node scripts/im-mcp.mjs --config <nana.json>` 不变。
+
 ## 远程 OpenCode 任务桥接（本机验证）
 
 桥接已实现：授权 Agent 可通过 a2a-msg 向目标机器的 OpenCode 派发任务，再通过 IM 回传结果。实现位于 `src/bridge/`，常驻入口 `src/bridge/run.mjs` 由桥接配置文件驱动；参见[任务桥接 PRD](docs/prd/a2a-opencode-task-bridge-v1.md)。
