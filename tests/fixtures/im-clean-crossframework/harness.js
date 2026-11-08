@@ -148,7 +148,7 @@ export async function mcpProcess(fixture, config, directory, children) {
   state.client = client;
   await bounded(client.connect(transport), 'MCP initialize');
   const listed = await bounded(client.listTools(), 'MCP tools/list');
-  assert.equal(listed.tools.length, 16);
+  assert.equal(listed.tools.length, 20);
   state.call = async (name, args = {}) => {
     const response = await bounded(client.callTool({ name, arguments: args }), `MCP ${name}`);
     const data = JSON.parse(response.content[0].text);

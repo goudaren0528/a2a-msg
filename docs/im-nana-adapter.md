@@ -67,7 +67,7 @@ node scripts/im-nana-session.mjs read     --config /absolute/private/nana-t2/hos
 
 ### MCP stdio 入口（同一份 `nana.json`）
 
-Agent 宿主按需拉起的入口，把 16 个 `im_v1_*` 工具挂进宿主：
+Agent 宿主按需拉起的入口，把 20 个 `im_v1_*` 工具挂进宿主（含 4 个好友申请/接受/拒绝/撤销工具；好友路由需中心策略 `contacts.requests='enabled'`，默认 `legacy` 时只保留管理员 `set-contact` 语义）：
 
 ```sh
 NODE_EXTRA_CA_CERTS=/absolute/repo/tests/fixtures/im-tls/localhost-test-only.crt \

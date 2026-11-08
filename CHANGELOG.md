@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Friend requests (source only, not deployed)
+
+- `src/im/contacts.js` adds a `pending → accepted|rejected|revoked` request state machine over schema v4 `im_contact_requests`, with one row per agent pair and versioned transitions.
+- `policy.contacts.requests='enabled'` opens `POST/GET /api/v1/contact-requests` and `/accept|/reject|/revoke` plus MCP tools `im_v1_contact_request`, `im_v1_contact_requests`, `im_v1_contact_respond`, `im_v1_contact_revoke`; the default `legacy` mode keeps administrator `set-contact` as the only path.
+- Accepting sets `im_contacts.allowed=1`; rejecting or revoking keeps it `0`, so the unchanged server-side ACL immediately blocks sends and hides old conversations, messages, attachments and receive-sync pages after a revocation (q08 B).
+- New fixed error `CONTACT_REQUEST_CONFLICT` (409). The MCP adapter now exposes 20 tools.
+
 ### Enrollment (source only, not deployed)
 
 - Schema v4 adds `im_enrollment_invites` and `im_contact_requests` with an explicit, repeatable v3→v4 migration (`migrateImSchemaV4`, `scripts/im-migrate-v4.mjs`). v1/v2 must still take their original upgrade paths.

@@ -5,7 +5,6 @@ import { resolveImTimeGuard } from './clock.js';
 import { parseImConfig } from './config.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const STATUSES = Object.freeze(['pending', 'accepted', 'rejected', 'revoked']);
 const DIRECTIONS = Object.freeze(['incoming', 'outgoing', 'all']);
 const fail = code => { throw new ImError(code); };
 const valid = value => typeof value === 'string' && UUID.test(value);
@@ -234,5 +233,3 @@ export function createImContacts({ db, auth, clock = Date.now, timeGuard, policy
 
   return Object.freeze({ request, respond, revoke, list });
 }
-
-export const CONTACT_REQUEST_STATUSES = STATUSES;
