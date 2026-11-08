@@ -55,6 +55,9 @@ test('real principals and ACL, canonical conversation, strict input, history and
     f.admin.setContact({ agentA: a.agentId, agentB: b.agentId, allowed: false, reason: 'test' }, f.ctx);
     assert.throws(() => f.service.getMessage(a.principal, { messageId: sent.messageId }), error('RESOURCE_NOT_FOUND'));
     assert.equal(f.service.listConversations(a.principal).items.length, 0);
+    // AC-6: the server enforces the contact even for an already existing conversation.
+    assert.throws(() => f.service.send(a.principal, f.request(conv.conversationId, b.agentId)), error('RESOURCE_NOT_FOUND'));
+    assert.throws(() => f.service.listHistory(a.principal, { conversationId: conv.conversationId }), error('RESOURCE_NOT_FOUND'));
   } finally { f.close(); }
 });
 

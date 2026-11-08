@@ -5,12 +5,13 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { migrateImSchema } from '../src/im/schema.js';
+import { migrateImSchema, migrateImSchemaV4 } from '../src/im/schema.js';
 import { createImClockGuard } from '../src/im/clock-guard.js';
 import { createImAdmin } from '../src/im/admin.js';
 import { createImAuth } from '../src/im/auth.js';
 import { createImAcl } from '../src/im/acl.js';
 import { createImMessages } from '../src/im/messages.js';
+import { createImContacts } from '../src/im/contacts.js';
 import { createImDelivery } from '../src/im/delivery.js';
 import { createImMigration } from '../src/im/migration.js';
 import { PROTOCOL } from '../src/im/contracts.js';
@@ -104,4 +105,65 @@ test('shared clock guard joins migration, admin, auth, ACL, messages, delivery a
     ({ auth } = open());
     assert.throws(() => auth.authenticate(expiring.credential), error('CLOCK_UNSAFE'));
   } finally { db?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('friend request state machine wires through core and revocation hides history and sync', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'im-core-contacts-'));
+  const db = new DatabaseSync(join(dir, 'contacts.sqlite'));
+  db.exec('PRAGMA foreign_keys=ON');
+  let now = 1000; const clock = () => now;
+  const context = {};
+  try {
+    migrateImSchemaV4(db);
+    const timeGuard = createImClockGuard({ db, clock });
+    const admin = createImAdmin({ db, clock, timeGuard, authorizeAdmin: c => c === context });
+    const auth = createImAuth({ db, clock, timeGuard });
+    const acl = createImAcl({ db, clock, timeGuard, auth });
+    const policy = { enabled: true, writeMode: 'enabled',
+      transport: { mode: 'local-test', serverUrl: 'http://localhost:8787' },
+      retention: { policy: { messageRetentionMs: 100000, attachmentRetentionMs: 90000,
+        idempotencyRetentionMs: 110000, safeRetryWindowMs: 10000 } },
+      lease: { ttlMs: 5000, renewalMs: 1000 }, contacts: { requests: 'enabled' } };
+    const contacts = createImContacts({ db, clock, timeGuard, auth, policy });
+    const messages = createImMessages({ db, clock, timeGuard, auth, acl, policy });
+    const delivery = createImDelivery({ db, clock, timeGuard, auth, acl, policy });
+    const [a, b] = ['A', 'B'].map(displayName => {
+      const agentId = admin.registerAgent({ displayName }, context).agentId;
+      const credential = admin.issueCredential({ agentId, expiresAt: null }, context);
+      return { agentId, principal: auth.authenticate(credential.credential) };
+    });
+    db.exec("UPDATE im_settings SET write_mode='enabled'");
+    assert.throws(() => messages.ensureConversation(a.principal, { peerAgentId: b.agentId }),
+      e => e.code === 'RESOURCE_NOT_FOUND');
+    const request = contacts.request(a.principal, { peerAgentId: b.agentId });
+    assert.equal(contacts.list(b.principal, { direction: 'incoming' }).items[0].status, 'pending');
+    assert.equal(contacts.respond(b.principal, { requestId: request.requestId, action: 'accept' }).status, 'accepted');
+    const conversationId = messages.ensureConversation(a.principal, { peerAgentId: b.agentId }).conversationId;
+    const sent = messages.send(a.principal, { protocol: PROTOCOL, conversationId, recipientAgentId: b.agentId,
+      clientMessageId: randomUUID(), text: 'secret body before revoke' });
+    const fence = { instanceId: randomUUID() };
+    const lease = delivery.acquire(b.principal, { ...fence, requestId: randomUUID() });
+    const args = { instanceId: fence.instanceId, generation: lease.generation };
+    assert.equal(delivery.sync(b.principal, args).items[0].message.messageId, sent.messageId);
+    delivery.ack(b.principal, { ...args, messageIds: [sent.messageId] });
+    assert.equal(messages.markRead(b.principal, { messageId: sent.messageId }).changed, true);
+    assert.equal(contacts.revoke(b.principal, { requestId: request.requestId }).status, 'revoked');
+    assert.deepEqual(messages.listContacts(b.principal).items, []);
+    assert.throws(() => messages.getMessage(b.principal, { messageId: sent.messageId }),
+      e => e.code === 'RESOURCE_NOT_FOUND');
+    assert.throws(() => messages.listHistory(b.principal, { conversationId }),
+      e => e.code === 'RESOURCE_NOT_FOUND');
+    assert.throws(() => messages.send(a.principal, { protocol: PROTOCOL, conversationId,
+      recipientAgentId: b.agentId, clientMessageId: randomUUID(), text: 'after revoke' }),
+    e => e.code === 'RESOURCE_NOT_FOUND');
+    assert.throws(() => delivery.sync(b.principal, { ...args, after: 0 }), e => e.code === 'SYNC_BLOCKED');
+    const contact = db.prepare('SELECT allowed,version FROM im_contacts').get();
+    assert.deepEqual([contact.allowed, contact.version], [0, 2]);
+    now = 2000;
+    const again = contacts.request(b.principal, { peerAgentId: a.agentId });
+    assert.equal(again.status, 'pending');
+    assert.equal(contacts.respond(a.principal, { requestId: again.requestId, action: 'accept' }).status, 'accepted');
+    assert.equal(messages.getMessage(b.principal, { messageId: sent.messageId }).messageId, sent.messageId);
+    assert.equal(delivery.sync(b.principal, { ...args, after: 0 }).items.length, 1);
+  } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
 });
