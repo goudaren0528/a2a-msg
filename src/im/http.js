@@ -28,7 +28,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 // This is a handler, not a server: the caller must set server.maxHeadersCount,
 // headersTimeout, requestTimeout and maxHeaderSize before accepting connections.
-export function createImHandler({ auth, acl, messages, delivery, events, listEventPeers, enrollment, policy, trustedTimers } = {}) {
+export function createImHandler({ auth, acl, messages, contacts, delivery, events, listEventPeers, enrollment, policy, trustedTimers } = {}) {
   const timers = trustedTimers === undefined ? { setTimeout, clearTimeout } : trustedTimers;
   if (typeof timers?.setTimeout !== 'function' || typeof timers?.clearTimeout !== 'function')
     throw new ImError('POLICY_NOT_CONFIGURED');
@@ -173,6 +173,8 @@ export function createImHandler({ auth, acl, messages, delivery, events, listEve
        }
       if (config.writeMode !== 'enabled' && method === 'POST' &&
           (path === '/api/v1/messages' || path === '/api/v1/conversations' ||
+           path === '/api/v1/contact-requests' ||
+           /^\/api\/v1\/contact-requests\/[^/]+\/(?:accept|reject|revoke)$/.test(path) ||
            path === '/api/v1/acks' || path.startsWith('/api/v1/receiver/lease') ||
            /^\/api\/v1\/messages\/[^/]+\/read$/.test(path))) fail('NEW_WRITES_DISABLED');
       let result, status = 200;
@@ -184,6 +186,23 @@ export function createImHandler({ auth, acl, messages, delivery, events, listEve
         query(); result = messages.ensureConversation(principal, object(await body(), ['peerAgentId']));
       } else if (method === 'GET' && /^\/api\/v1\/conversations\/[^/]+\/messages$/.test(path)) {
         noBody(); result = messages.listHistory(principal, page({ conversationId: id(path.split('/')[4]) }));
+      } else if (method === 'POST' && path === '/api/v1/contact-requests') {
+        if (typeof contacts?.request !== 'function') fail('POLICY_NOT_CONFIGURED');
+        query(); result = contacts.request(principal, object(await body(), ['peerAgentId'])); status = 201;
+      } else if (method === 'GET' && path === '/api/v1/contact-requests') {
+        if (typeof contacts?.list !== 'function') fail('POLICY_NOT_CONFIGURED');
+        noBody();
+        const q = query('after', 'limit', 'direction');
+        result = contacts.list(principal, { ...(q.has('after') ? { after: q.get('after') } : {}),
+          ...(q.has('limit') ? { limit: integer(q.get('limit'), 1) } : {}),
+          ...(q.has('direction') ? { direction: q.get('direction') } : {}) });
+      } else if (method === 'POST' && /^\/api\/v1\/contact-requests\/[^/]+\/(?:accept|reject|revoke)$/.test(path)) {
+        const segments = path.split('/'), action = segments[5], requestId = id(segments[4]);
+        if (action === 'revoke' ? typeof contacts?.revoke !== 'function' : typeof contacts?.respond !== 'function')
+          fail('POLICY_NOT_CONFIGURED');
+        query(); object(await body(), []);
+        result = action === 'revoke' ? contacts.revoke(principal, { requestId })
+          : contacts.respond(principal, { requestId, action });
       } else if (method === 'POST' && path === '/api/v1/messages') {
         query(); result = messages.send(principal, await body(true)); status = result.replayed ? 200 : 201;
       } else if (method === 'GET' && /^\/api\/v1\/sends\/[^/]+$/.test(path)) {
