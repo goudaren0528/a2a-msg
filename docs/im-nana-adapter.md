@@ -65,6 +65,21 @@ node scripts/im-nana-session.mjs read     --config /absolute/private/nana-t2/hos
 
 `evidencePath` 可选；目录必须已存在；未知字段、非 https origin、相对路径一律拒绝。
 
+### MCP stdio 入口（同一份 `nana.json`）
+
+Agent 宿主按需拉起的入口，把 16 个 `im_v1_*` 工具挂进宿主：
+
+```sh
+NODE_EXTRA_CA_CERTS=/absolute/repo/tests/fixtures/im-tls/localhost-test-only.crt \
+  node scripts/im-mcp.mjs --config /absolute/private/nana-t2/host-b/nana.json
+```
+
+- 配置就是上面这份严格 `nana.json`；`statePath`/`evidencePath` 会校验但 MCP 入口不读写，`journalPath` 的父目录与 `attachmentDirectory` 必须已存在（journal 文件在首次启动时创建）。
+- 凭据每次请求都从 `credentialFile` 读；POSIX 下必须是 `0600`（或更严）的非符号链接普通文件。缺失、权限过宽、不可读时启动即失败（stderr 固定错误码、退出码 1）；运行中被撤销则工具返回 `INVALID_CREDENTIAL`。凭据不进工具参数、日志与错误。
+- 无轮询、无常驻：进程完全由宿主管理，只在工具调用内发请求；`listTools` 与空闲不联网。
+- 两条入口可以共用同一份配置，但同一身份同一时刻只允许一个接收者：同时用 MCP 入口和 `receive` 子命令会按既有租约模型得到 `LEASE_CONFLICT`。按宿主需要只跑一条。
+- 细节与宿主配置示例见 [im-mcp-adapter.md](im-mcp-adapter.md#stdio-entry-scriptsimcpmjs)。
+
 ## 4. 端到端验收
 
 ```sh
@@ -87,4 +102,5 @@ PASS: 3 accepted, 3 delivered/ACKed; duplicate deduplicated; restart cursor cont
 - 一个身份同一时刻只允许一个有效接收租约；多设备并行收需要先定身份/租约模型。
 - 测试证书与私钥只限 loopback；生产 TLS 由部署阶段提供，不能用边缘终止 TLS 的反代。
 - 适配层位于 a2a-msg 仓库（`src/nana/`），不依赖 Orca；Nana 常驻会话若要走自己的 `ps_store`，需要在宿主侧再接一层消费 `handoff` 输出。
+- MCP stdio 入口只挂工具，不做接收轮询，也不代替 `receive`/`handoff`：宿主需要主动收消息时仍要调用 `im_v1_sync`/`im_v1_ack_pending` 或使用会话 CLI。
 - 回复没有经过 Nana 的 `ps_session` 拟稿/批准：`ps_session` 在 nanazi 仓，本演示由适配层直接发送；需要审批链时在宿主侧补。
