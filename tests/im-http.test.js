@@ -10,6 +10,7 @@ import { createImAdmin } from '../src/im/admin.js';
 import { createImAuth } from '../src/im/auth.js';
 import { createImAcl } from '../src/im/acl.js';
 import { createImMessages } from '../src/im/messages.js';
+import { createImContacts } from '../src/im/contacts.js';
 import { createImDelivery } from '../src/im/delivery.js';
 import { createImHandler } from '../src/im/http.js';
 import { createImEnrollment } from '../src/im/enrollment.js';
@@ -46,8 +47,10 @@ async function fixture(options = {}) {
   const messages = createImMessages({ db: store, auth, acl, clock, policy });
   const delivery = createImDelivery({ db: store, auth, acl, clock, policy });
   const enrollment = options.enrollment ? createImEnrollment({ db: store, clock }) : undefined;
-  const effectivePolicy = options.policy ?? (options.enrollment ? { ...policy, enrollment: { enabled: true } } : policy);
-  const adapter = createImHandler({ auth, acl, messages, delivery, enrollment, policy: effectivePolicy,
+  const effectivePolicy = options.policy ?? { ...policy, ...(options.enrollment ? { enrollment: { enabled: true } } : {}),
+    ...(options.contacts ? { contacts: { requests: 'enabled' } } : {}) };
+  const contacts = options.contacts ? createImContacts({ db: store, auth, clock, policy: effectivePolicy }) : undefined;
+  const adapter = createImHandler({ auth, acl, messages, contacts, delivery, enrollment, policy: effectivePolicy,
     ...(options.trustedTimers ? { trustedTimers: options.trustedTimers } : {}) });
   // Test-only localhost certificate/private key. Never load outside this isolated fixture.
   const tls = options.tls ? { key: readFileSync(new URL('./fixtures/im-tls/localhost-test-only.key', import.meta.url)),
@@ -435,4 +438,91 @@ test('trusted timeout aborts incomplete POST and cleanup cancels only after resp
     assert.equal(cancelled.size, 2, 'aborted request releases timer exactly once');
     assert.equal(f.server.listening, true);
   } finally { await f.close(); }
+});
+
+test('AC-4/AC-5: friend HTTP loop, reject and revoke hide old history', async () => {
+  const f = await fixture({ contacts: true }); try {
+    const [a, , c] = f.agents;
+    const created = await f.request('/api/v1/contact-requests', { method: 'POST', body: { peerAgentId: c.agentId } });
+    assert.equal(created.status, 201);
+    assert.equal(created.json.status, 'pending');
+    assert.equal(created.json.direction, 'outgoing');
+    assert.equal(created.json.peerAgentId, c.agentId);
+    assert.equal((await f.request('/api/v1/contacts')).json.items.some(item => item.peerAgentId === c.agentId), false);
+    const incoming = await f.request('/api/v1/contact-requests?direction=incoming', { agent: 2 });
+    assert.equal(incoming.json.items[0].requestId, created.json.requestId);
+    assert.equal(incoming.json.items[0].status, 'pending');
+    assert.equal((await f.request('/api/v1/contact-requests', { method: 'POST', agent: 1,
+      body: { peerAgentId: c.agentId } })).status, 201);
+    assert.equal((await f.request(`/api/v1/contact-requests/${created.json.requestId}/accept`,
+      { method: 'POST', agent: 1, body: {} })).json.error.code, 'RESOURCE_NOT_FOUND');
+    const accepted = await f.request(`/api/v1/contact-requests/${created.json.requestId}/accept`,
+      { method: 'POST', agent: 2, body: {} });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.json.status, 'accepted');
+    assert.equal((await f.request('/api/v1/contacts')).json.items.some(x => x.peerAgentId === c.agentId), true);
+    assert.equal((await f.request('/api/v1/contacts', { agent: 2 })).json.items.some(x => x.peerAgentId === a.agentId), true);
+    const conversation = (await f.request('/api/v1/conversations', { method: 'POST',
+      body: { peerAgentId: c.agentId } })).json;
+    const message = { protocol: PROTOCOL, conversationId: conversation.conversationId, recipientAgentId: c.agentId,
+      clientMessageId: randomUUID(), text: 'friends' };
+    assert.equal((await f.request('/api/v1/messages', { method: 'POST', body: message })).status, 201);
+    const revoked = await f.request(`/api/v1/contact-requests/${created.json.requestId}/revoke`,
+      { method: 'POST', agent: 2, body: {} });
+    assert.equal(revoked.status, 200);
+    assert.equal(revoked.json.status, 'revoked');
+    assert.equal((await f.request('/api/v1/contacts')).json.items.some(item => item.peerAgentId === c.agentId), false);
+    assert.equal((await f.request(`/api/v1/conversations/${conversation.conversationId}/messages`,
+      { agent: 2 })).status, 404);
+    assert.equal((await f.request('/api/v1/messages', { method: 'POST',
+      body: { ...message, clientMessageId: randomUUID() } })).status, 404);
+    const again = await f.request('/api/v1/contact-requests', { method: 'POST', body: { peerAgentId: c.agentId } });
+    assert.equal(again.json.requestId, created.json.requestId);
+    assert.equal(again.json.status, 'pending');
+    const rejected = await f.request(`/api/v1/contact-requests/${created.json.requestId}/reject`,
+      { method: 'POST', agent: 2, body: {} });
+    assert.equal(rejected.json.status, 'rejected');
+    assert.equal((await f.request(`/api/v1/contact-requests/${created.json.requestId}/accept`,
+      { method: 'POST', agent: 2, body: {} })).json.error.code, 'CONTACT_REQUEST_CONFLICT');
+  } finally { await f.close(); }
+});
+
+test('contact request routes are strict, write-gated and absent in legacy mode', async () => {
+  const f = await fixture({ contacts: true }); try {
+    const [, , c] = f.agents;
+    assert.equal((await f.request('/api/v1/contact-requests', { method: 'POST', body: {} })).status, 400);
+    assert.equal((await f.request('/api/v1/contact-requests', { method: 'POST',
+      body: { peerAgentId: c.agentId, extra: 1 } })).status, 400);
+    assert.equal((await f.request('/api/v1/contact-requests', { method: 'POST',
+      body: { peerAgentId: 'not-a-uuid' } })).status, 400);
+    assert.equal((await f.request('/api/v1/contact-requests?direction=sideways')).status, 400);
+    assert.equal((await f.request('/api/v1/contact-requests?unknown=1')).status, 400);
+    assert.equal((await f.request('/api/v1/contact-requests?limit=101')).status, 400);
+    assert.equal((await f.request(`/api/v1/contact-requests/${randomUUID()}/bogus`,
+      { method: 'POST' })).status, 404);
+    const created = await f.request('/api/v1/contact-requests', { method: 'POST', body: { peerAgentId: c.agentId } });
+    assert.equal((await f.request(`/api/v1/contact-requests/${created.json.requestId}/accept`,
+      { method: 'POST', body: { extra: 1 } })).status, 400);
+    assert.equal((await f.request(`/api/v1/contact-requests/${created.json.requestId}/reject`,
+      { method: 'POST', agent: 1, body: {} })).status, 404);
+    assert.equal((await f.request(`/api/v1/contact-requests/${created.json.requestId}/reject`,
+      { method: 'POST', agent: 2, body: {} })).json.status, 'rejected');
+    assert.equal((await f.request('/api/v1/contact-requests?limit=1&limit=2')).status, 400);
+    assert.equal((await f.request(`/api/v1/contact-requests/${randomUUID()}/revoke`,
+      { method: 'POST', body: {} })).status, 404);
+    assert.equal((await f.request('/api/v1/contact-requests', { method: 'POST', agent: 1,
+      body: { peerAgentId: c.agentId } })).status, 201);
+  } finally { await f.close(); }
+  const paused = await fixture({ contacts: true, policy: { ...policy, writeMode: 'paused',
+    contacts: { requests: 'enabled' } } }); try {
+    assert.equal((await paused.request('/api/v1/contact-requests', { method: 'POST',
+      body: { peerAgentId: paused.agents[2].agentId } })).json.error.code, 'NEW_WRITES_DISABLED');
+    assert.equal((await paused.request('/api/v1/contact-requests')).status, 200);
+  } finally { await paused.close(); }
+  const legacy = await fixture(); try {
+    assert.equal((await legacy.request('/api/v1/contact-requests', { method: 'POST',
+      body: { peerAgentId: legacy.agents[2].agentId } })).json.error.code, 'POLICY_NOT_CONFIGURED');
+    assert.equal((await legacy.request('/api/v1/contact-requests')).json.error.code, 'POLICY_NOT_CONFIGURED');
+    assert.equal((await legacy.request('/api/v1/contacts')).json.items.length, 1);
+  } finally { await legacy.close(); }
 });

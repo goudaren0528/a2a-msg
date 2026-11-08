@@ -10,6 +10,10 @@ const empty = z.object({}).strict();
 const schemas = Object.freeze({
   im_v1_me: empty,
   im_v1_contacts: z.object(page).strict(),
+  im_v1_contact_request: z.object({ peerAgentId: uuid }).strict(),
+  im_v1_contact_requests: z.object({ direction: z.enum(['incoming', 'outgoing', 'all']).optional(), ...page }).strict(),
+  im_v1_contact_respond: z.object({ requestId: uuid, action: z.enum(['accept', 'reject']) }).strict(),
+  im_v1_contact_revoke: z.object({ requestId: uuid }).strict(),
   im_v1_conversations: z.object(page).strict(),
   im_v1_ensure_conversation: z.object({ peerAgentId: uuid }).strict(),
   im_v1_send: messageRequestSchema,
@@ -28,7 +32,7 @@ const schemas = Object.freeze({
 export const imMcpToolSchemas = schemas;
 const failure = code => { throw new ImError(code); };
 const safe = error => error instanceof ImError ? error : new ImError('STORAGE_UNAVAILABLE');
-const remoteCodes = new Set(['INVALID_REQUEST','UNSUPPORTED_VERSION','INVALID_ATTACHMENT','AUTH_REQUIRED','INVALID_CREDENTIAL','TLS_REQUIRED','OPERATION_FORBIDDEN','RESOURCE_NOT_FOUND','IDEMPOTENCY_CONFLICT','LEASE_CONFLICT','STALE_FENCE','LEASE_EXPIRED','DELIVERY_REQUIRED','SYNC_BLOCKED','CURSOR_RESET_REQUIRED','IDEMPOTENCY_WINDOW_EXPIRED','PAYLOAD_TOO_LARGE','RATE_LIMITED','IM_DISABLED','NEW_WRITES_DISABLED','POLICY_NOT_CONFIGURED','STORAGE_UNAVAILABLE','CLOCK_UNSAFE']);
+const remoteCodes = new Set(['INVALID_REQUEST','UNSUPPORTED_VERSION','INVALID_ATTACHMENT','AUTH_REQUIRED','INVALID_CREDENTIAL','TLS_REQUIRED','OPERATION_FORBIDDEN','RESOURCE_NOT_FOUND','IDEMPOTENCY_CONFLICT','CONTACT_REQUEST_CONFLICT','LEASE_CONFLICT','STALE_FENCE','LEASE_EXPIRED','DELIVERY_REQUIRED','SYNC_BLOCKED','CURSOR_RESET_REQUIRED','IDEMPOTENCY_WINDOW_EXPIRED','PAYLOAD_TOO_LARGE','RATE_LIMITED','IM_DISABLED','NEW_WRITES_DISABLED','POLICY_NOT_CONFIGURED','STORAGE_UNAVAILABLE','CLOCK_UNSAFE']);
 
 // Read-only lookup for operations not exposed by the durable client. Never accept a URL or credential as tool input.
 function defaultTransport(origin, active) {
@@ -122,6 +126,10 @@ export function createImMcpAdapter(options = {}) {
     switch (name) {
       case 'im_v1_me': return identity();
       case 'im_v1_contacts': return client.contacts(x);
+      case 'im_v1_contact_request': return client.contactRequest(x);
+      case 'im_v1_contact_requests': return client.contactRequests(x);
+      case 'im_v1_contact_respond': return client.respondContactRequest(x);
+      case 'im_v1_contact_revoke': return client.revokeContactRequest(x);
       case 'im_v1_conversations': return client.conversations(x);
       case 'im_v1_ensure_conversation': return client.ensureConversation(x);
       case 'im_v1_send': return client.send(x);

@@ -8,11 +8,12 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createImMcpAdapter, imMcpToolSchemas } from '../src/im/mcp-adapter.js';
 import { createImJournal } from '../src/im/journal.js';
-import { migrateImSchema } from '../src/im/schema.js';
+import { migrateImSchemaV4 } from '../src/im/schema.js';
 import { createImAdmin } from '../src/im/admin.js';
 import { createImAuth } from '../src/im/auth.js';
 import { createImAcl } from '../src/im/acl.js';
 import { createImMessages } from '../src/im/messages.js';
+import { createImContacts } from '../src/im/contacts.js';
 import { createImDelivery } from '../src/im/delivery.js';
 import { createImHandler } from '../src/im/http.js';
 import { PROTOCOL } from '../src/im/contracts.js';
@@ -22,7 +23,7 @@ test('MCP adapter: real core, scoped identity, strict tools, durable attachment 
   const cert = readFileSync(new URL('./fixtures/im-tls/localhost-test-only.crt', import.meta.url));
   const key = readFileSync(new URL('./fixtures/im-tls/localhost-test-only.key', import.meta.url));
   const ca = new https.Agent({ ca: cert, rejectUnauthorized: true });
-  const central = new DatabaseSync(':memory:'); central.exec('PRAGMA foreign_keys=ON'); migrateImSchema(central);
+  const central = new DatabaseSync(':memory:'); central.exec('PRAGMA foreign_keys=ON'); migrateImSchemaV4(central);
   const context = {}, clock = () => 10000;
   const admin = createImAdmin({ db: central, clock, authorizeAdmin: x => x === context });
   const auth = createImAuth({ db: central, clock }), acl = createImAcl({ db: central, auth, clock });
@@ -34,10 +35,11 @@ test('MCP adapter: real core, scoped identity, strict tools, durable attachment 
   central.exec("UPDATE im_settings SET write_mode='enabled'");
   const policy = { enabled: true, writeMode: 'enabled', transport: { mode: 'direct-tls', serverUrl: 'https://localhost:8787' },
     retention: { policy: { messageRetentionMs: 100000, attachmentRetentionMs: 90000, idempotencyRetentionMs: 110000,
-      safeRetryWindowMs: 1000 } }, lease: { ttlMs: 90000, renewalMs: 30000 } };
+      safeRetryWindowMs: 1000 } }, lease: { ttlMs: 90000, renewalMs: 30000 }, contacts: { requests: 'enabled' } };
+  const contacts = createImContacts({ db: central, auth, clock, policy });
   const messages = createImMessages({ db: central, auth, acl, clock, policy });
   const delivery = createImDelivery({ db: central, auth, acl, clock, policy });
-  const handler = createImHandler({ auth, acl, messages, delivery, policy });
+  const handler = createImHandler({ auth, acl, messages, contacts, delivery, policy });
   const server = https.createServer({ key, cert }, (req, res) => { handler.handle(req, res).catch(() => res.destroy()); });
   server.maxHeadersCount = 64;
   await new Promise(resolve => server.listen(0, 'localhost', resolve));
@@ -73,10 +75,10 @@ test('MCP adapter: real core, scoped identity, strict tools, durable attachment 
   const data = response => JSON.parse(response.content[0].text);
   try {
     const sender = adapter(0), receiver = adapter(1), wrong = adapter(2, agents[0].credential);
-    assert.equal(Object.keys(imMcpToolSchemas).length, 16);
+    assert.equal(Object.keys(imMcpToolSchemas).length, 20);
     const registered = [];
     sender.register({ tool: (name, description, shape, fn) => registered.push({ name, description, shape, fn }) });
-    assert.equal(registered.length, 16);
+    assert.equal(registered.length, 20);
     assert.equal(data(await wrong.call('im_v1_me')).error.code, 'OPERATION_FORBIDDEN');
     assert.equal(data(await sender.call('send_message', {})).error.code, 'INVALID_REQUEST');
     assert.equal(data(await sender.call('im_v1_me', { credential: 'secret' })).error.code, 'INVALID_REQUEST');
@@ -112,6 +114,31 @@ test('MCP adapter: real core, scoped identity, strict tools, durable attachment 
     assert.equal(dbs[1].prepare('SELECT acked FROM im_client_received WHERE message_id=?').get(sent.messageId).acked, 1);
     assert.equal(calls.some(x => x.body?.includes(agents[0].credential) || x.body?.includes(agents[1].credential)), false);
     assert.equal(calls.filter(x => x.method === 'POST' && x.path === '/api/v1/messages').length, 1);
+    // AC-4/AC-6 through MCP: friend tools exist, non-friends cannot converse, and
+    // server-side ACL rejects sends after revocation even with an existing conversation.
+    const outsider = adapter(2);
+    assert.equal(data(await outsider.call('im_v1_contact_request', { peerAgentId: agents[2].agentId })).error.code, 'INVALID_REQUEST');
+    assert.equal(data(await outsider.call('im_v1_contact_request', { peerAgentId: agents[1].agentId, extra: 1 })).error.code, 'INVALID_REQUEST');
+    assert.equal(data(await outsider.call('im_v1_ensure_conversation', { peerAgentId: agents[1].agentId })).error.code, 'RESOURCE_NOT_FOUND');
+    const friendRequest = data(await outsider.call('im_v1_contact_request', { peerAgentId: agents[1].agentId }));
+    assert.equal(friendRequest.status, 'pending', JSON.stringify(friendRequest));
+    const pending = data(await receiver.call('im_v1_contact_requests', { direction: 'incoming' }));
+    assert.equal(pending.items.some(item => item.requestId === friendRequest.requestId), true);
+    assert.equal(data(await outsider.call('im_v1_contact_respond', { requestId: friendRequest.requestId, action: 'reject' })).error.code, 'RESOURCE_NOT_FOUND');
+    assert.equal(data(await receiver.call('im_v1_contact_respond', { requestId: friendRequest.requestId, action: 'bogus' })).error.code, 'INVALID_REQUEST');
+    assert.equal(data(await receiver.call('im_v1_contact_respond', { requestId: friendRequest.requestId, action: 'accept' })).status, 'accepted');
+    const friendConversation = data(await outsider.call('im_v1_ensure_conversation', { peerAgentId: agents[1].agentId }));
+    assert.ok(friendConversation.conversationId);
+    const friendSent = data(await outsider.call('im_v1_send', { protocol: PROTOCOL,
+      conversationId: friendConversation.conversationId, recipientAgentId: agents[1].agentId,
+      clientMessageId: randomUUID(), text: 'friend text' }));
+    assert.ok(friendSent.messageId, JSON.stringify(friendSent));
+    assert.equal(data(await receiver.call('im_v1_contact_revoke', { requestId: friendRequest.requestId })).status, 'revoked');
+    assert.equal(data(await outsider.call('im_v1_send', { protocol: PROTOCOL,
+      conversationId: friendConversation.conversationId, recipientAgentId: agents[1].agentId,
+      clientMessageId: randomUUID(), text: 'after revoke' })).error.code, 'RESOURCE_NOT_FOUND');
+    assert.equal(data(await receiver.call('im_v1_contact_respond', { requestId: friendRequest.requestId, action: 'accept' })).error.code, 'CONTACT_REQUEST_CONFLICT');
+    assert.equal(data(await receiver.call('im_v1_contact_requests', { direction: 'sideways' })).error.code, 'INVALID_REQUEST');
     const secret = 'secret-token-should-never-leak';
     const failing = createImMcpAdapter({ serverUrl: center, agentId: agents[0].agentId,
       getCredential: async () => { throw Error(secret); }, journal: scope => createImJournal({ db: dbs[0], ...scope }),

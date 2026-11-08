@@ -344,6 +344,48 @@ test('revocation and stale fence block ACK of pending durable records', async ()
   } finally { f.close(); }
 });
 
+test('friend request client methods keep identity, exact paths, strict input and fixed codes', async () => {
+  const calls = [];
+  const f = fixture(req => {
+    calls.push(req);
+    if (req.path === '/api/v1/me') return ok({ agentId: A });
+    if (req.path === '/api/v1/contact-requests' && req.method === 'POST') {
+      assert.deepEqual(JSON.parse(req.body), { peerAgentId: B });
+      return { status: 201, body: Buffer.from(JSON.stringify({ requestId: C, status: 'pending' })) };
+    }
+    if (req.path.startsWith('/api/v1/contact-requests?')) return ok({ items: [], nextCursor: null });
+    if (req.path === `/api/v1/contact-requests/${C}/accept`) return ok({ requestId: C, status: 'accepted' });
+    if (req.path === `/api/v1/contact-requests/${C}/reject`) {
+      return { status: 409, body: Buffer.from('{"error":{"code":"CONTACT_REQUEST_CONFLICT"}}') };
+    }
+    if (req.path === `/api/v1/contact-requests/${C}/revoke`) return ok({ requestId: C, status: 'revoked' });
+    throw Error('unexpected request');
+  });
+  try {
+    assert.equal((await f.client.contactRequest({ peerAgentId: B })).status, 'pending');
+    assert.equal((await f.client.contactRequests({ direction: 'incoming', after: 'cursor', limit: 5 })).items.length, 0);
+    assert.equal((await f.client.respondContactRequest({ requestId: C, action: 'accept' })).status, 'accepted');
+    assert.equal((await f.client.revokeContactRequest({ requestId: C })).status, 'revoked');
+    await assert.rejects(f.client.respondContactRequest({ requestId: C, action: 'reject' }), err('CONTACT_REQUEST_CONFLICT'));
+    const paths = calls.map(x => `${x.method} ${x.path}`);
+    assert.deepEqual(paths, [
+      'GET /api/v1/me', 'POST /api/v1/contact-requests',
+      'GET /api/v1/me', 'GET /api/v1/contact-requests?direction=incoming&after=cursor&limit=5',
+      'GET /api/v1/me', `POST /api/v1/contact-requests/${C}/accept`,
+      'GET /api/v1/me', `POST /api/v1/contact-requests/${C}/revoke`,
+      'GET /api/v1/me', `POST /api/v1/contact-requests/${C}/reject`,
+    ]);
+    const before = calls.length;
+    await assert.rejects(f.client.contactRequest({ peerAgentId: 'not-a-uuid' }), err('INVALID_REQUEST'));
+    await assert.rejects(f.client.contactRequests({ direction: 'sideways' }), err('INVALID_REQUEST'));
+    await assert.rejects(f.client.contactRequests({ extra: 1 }), err('INVALID_REQUEST'));
+    await assert.rejects(f.client.contactRequests({ limit: 101 }), err('INVALID_REQUEST'));
+    await assert.rejects(f.client.respondContactRequest({ requestId: C, action: 'revoke' }), err('INVALID_REQUEST'));
+    assert.equal(calls.slice(before).every(x => x.path === '/api/v1/me'), true);
+    assert.equal(calls.some(x => typeof x.body === 'string' && x.body.includes('test-token')), false);
+  } finally { f.close(); }
+});
+
 test('real HTTPS handler + CA verified client send, attachment receipt, ACK and reopen', async () => {
   const root = mkdtempSync(join(tmpdir(), 'im-client-tls-'));
   const directory = join(root, 'attachments'); mkdirSync(directory);

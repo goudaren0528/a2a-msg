@@ -107,7 +107,7 @@ test('MCP stdio entry: real SDK StdioClientTransport lists and calls IM tools wi
   const { tools } = await a.sdk.listTools();
   const names = tools.map(tool => tool.name);
   assert.deepEqual(names.toSorted(), Object.keys(imMcpToolSchemas).toSorted());
-  assert.equal(names.length, 16);
+  assert.equal(names.length, 20);
   assert.ok(names.every(name => name.startsWith('im_v1_')));
   for (const tool of tools) {
     assert.notEqual(tool.inputSchema.additionalProperties, true, tool.name);

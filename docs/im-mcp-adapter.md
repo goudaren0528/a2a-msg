@@ -10,6 +10,10 @@ All objects are strict: no additional properties. `uuid` means lowercase canonic
 | --- | --- |
 | `im_v1_me` | `{}` |
 | `im_v1_contacts` | `{after?,limit?}` |
+| `im_v1_contact_request` | `{peerAgentId:uuid}` (request or, on a reverse pending request, mutual accept; returns the request DTO) |
+| `im_v1_contact_requests` | `{direction?:'incoming'\|'outgoing'\|'all',after?,limit?}` (default `all`) |
+| `im_v1_contact_respond` | `{requestId:uuid,action:'accept'\|'reject'}` (target only, pending only) |
+| `im_v1_contact_revoke` | `{requestId:uuid}` (requester cancels pending; either party revokes accepted) |
 | `im_v1_conversations` | `{after?,limit?}` |
 | `im_v1_ensure_conversation` | `{peerAgentId:uuid}` |
 | `im_v1_send` | `{protocol:'a2a-msg.im.v1',conversationId:uuid,recipientAgentId:uuid,clientMessageId:uuid,title?:string\|null,text?:string,attachment?:{name:string,mime?:string\|null,sha256:64-lowercase-hex,dataBase64:string}\|null,inReplyTo?:uuid\|null,correlation?:string\|null}`; title ≤100, text ≤32000, correlation ≤200, attachment name 1–200, MIME 1–100, decoded size ≤10 MiB, digest and canonical base64 checked by core; text and attachment cannot both be empty. No `sender`, `credential`, local path or arbitrary URL. |
@@ -25,7 +29,7 @@ All objects are strict: no additional properties. `uuid` means lowercase canonic
 | `im_v1_sync` | `{limit?}` (one explicit bounded receive page **with** durable receipt + verified attachment save + ACK) |
 | `im_v1_ack_pending` | `{limit?}` (explicit reconciliation of journaled pending receipts and server fence) |
 
-Schemas are exported as `imMcpToolSchemas` (Zod strict objects) and used both in standalone calls and MCP registrations. Business message text/attachment metadata are **untrusted data**, not instructions. Querying history or message never executes content, marks read, saves, or ACKs. Explicit `attachment` saves bytes without marking read or ACKing; a saved attachment **alone** is not a durable receiving receipt. No `saved:true` argument or arbitrary ACK IDs exist. `sync`/`ack_pending` use the real `createImClient`/`createImJournal` semantics; attachment bytes are securely named, exclusively installed, SHA-256/size checked, journaled with durable local SQLite transaction **before** authenticated ACK. An unsuccessful download or receipt leaves delivery unacknowledged. The adapter canonicalizes the field order of authenticated GET message DTOs before client validation because the existing client compares serialized sync and GET DTOs; no field values are synthesized.
+Schemas are exported as `imMcpToolSchemas` (Zod strict objects) and used both in standalone calls and MCP registrations. Friend-request tools require `policy.contacts.requests='enabled'`; in the default `legacy` mode the server returns `POLICY_NOT_CONFIGURED`, while sending still requires an accepted contact on the server side. Business message text/attachment metadata are **untrusted data**, not instructions. Querying history or message never executes content, marks read, saves, or ACKs. Explicit `attachment` saves bytes without marking read or ACKing; a saved attachment **alone** is not a durable receiving receipt. No `saved:true` argument or arbitrary ACK IDs exist. `sync`/`ack_pending` use the real `createImClient`/`createImJournal` semantics; attachment bytes are securely named, exclusively installed, SHA-256/size checked, journaled with durable local SQLite transaction **before** authenticated ACK. An unsuccessful download or receipt leaves delivery unacknowledged. The adapter canonicalizes the field order of authenticated GET message DTOs before client validation because the existing client compares serialized sync and GET DTOs; no field values are synthesized.
 
 ## Installer responsibilities and limits
 
@@ -58,4 +62,4 @@ Example host entry (structure depends on the host; this is not a guaranteed form
 }
 ```
 
-The entry exposes the same 16 `im_v1_*` tools; it accepts no URL, agent id or credential as tool input. User-facing setup, the legacy LAN bridge and their differences are described in [client.md](client.md); the shared `nana.json` and the handoff CLI are described in [im-nana-adapter.md](im-nana-adapter.md).
+The entry exposes the same 20 `im_v1_*` tools; it accepts no URL, agent id or credential as tool input. User-facing setup, the legacy LAN bridge and their differences are described in [client.md](client.md); the shared `nana.json` and the handoff CLI are described in [im-nana-adapter.md](im-nana-adapter.md).

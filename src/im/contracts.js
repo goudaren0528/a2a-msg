@@ -14,6 +14,7 @@ const errors = Object.freeze({
   OPERATION_FORBIDDEN: [403, false, 'Operation forbidden'],
   RESOURCE_NOT_FOUND: [404, false, 'Resource not found'],
   IDEMPOTENCY_CONFLICT: [409, false, 'Idempotency conflict'],
+  CONTACT_REQUEST_CONFLICT: [409, false, 'Contact request state conflict'],
   LEASE_CONFLICT: [409, true, 'Receive lease conflict'],
   STALE_FENCE: [409, false, 'Stale receive fence'],
   LEASE_EXPIRED: [409, true, 'Receive lease expired'],
