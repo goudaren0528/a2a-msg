@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Attachments and download directory (source only, not deployed)
+
+- The stdio entry (`scripts/im-mcp.mjs`) now registers a 21st tool, `im_v1_send_file`: it reads one absolute local regular file (1 byte–10 MiB, no symlinks; `dev/ino/size/mtime` checked across the read), computes SHA-256 locally and maps onto the existing `im_v1_send` contract. Results never echo file bytes or the staged base64 request; reused `clientMessageId` with different bytes is `IDEMPOTENCY_CONFLICT`.
+- `nana.json` `attachmentDirectory` is optional for the MCP entry and defaults to `~/Downloads/a2a-msg/<center-host>[_<port>]` (created on demand, never inside an npx/tmp cache). `--download-dir <absolute existing dir>` overrides it; explicitly configured directories are never created and fail closed when missing or unwritable. The session CLI still requires an existing directory.
+- Received files keep the existing exclusive-install plus SHA-256/size verification and journal-before-ACK path: a missing/unwritable directory or corrupt bytes leaves the message unacknowledged and unread, and retries re-deliver the same message exactly once.
+- `bin/a2a-msg.mjs` does not exist on this baseline (P4); the `--download-dir` flag lives on `scripts/im-mcp.mjs` for now.
+
 ### Friend requests (source only, not deployed)
 
 - `src/im/contacts.js` adds a `pending → accepted|rejected|revoked` request state machine over schema v4 `im_contact_requests`, with one row per agent pair and versioned transitions.

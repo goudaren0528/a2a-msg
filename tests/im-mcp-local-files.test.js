@@ -149,6 +149,12 @@ test('im_v1_send_file reads a local file and the receiver saves verified bytes',
   assert.equal(item.attachmentReceipt.path.startsWith(join(b.attachments, '')), true);
   assert.equal(readdirSync(b.attachments).length, 1, 'no staging artifacts remain');
 
+  // The explicit save tool resolves to the same verified file and never ACKs.
+  const saved = ok(await b.call('im_v1_attachment', { messageId: sent.messageId,
+    attachmentId: item.message.attachment.attachmentId }));
+  assert.deepEqual(saved.receipt, item.attachmentReceipt);
+  assert.deepEqual(readFileSync(saved.receipt.path), bytes);
+
   // Same key and same bytes is an idempotent retry: same message, no second delivery.
   const again = ok(await a.call('im_v1_send_file', { conversationId: conversation.conversationId,
     recipientAgentId: center.b.agentId, clientMessageId, path: file, title: 'report', text: 'see attachment' }));
