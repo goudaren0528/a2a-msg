@@ -28,7 +28,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 // This is a handler, not a server: the caller must set server.maxHeadersCount,
 // headersTimeout, requestTimeout and maxHeaderSize before accepting connections.
-export function createImHandler({ auth, acl, messages, delivery, events, listEventPeers, policy, trustedTimers } = {}) {
+export function createImHandler({ auth, acl, messages, delivery, events, listEventPeers, enrollment, policy, trustedTimers } = {}) {
   const timers = trustedTimers === undefined ? { setTimeout, clearTimeout } : trustedTimers;
   if (typeof timers?.setTimeout !== 'function' || typeof timers?.clearTimeout !== 'function')
     throw new ImError('POLICY_NOT_CONFIGURED');
@@ -105,13 +105,10 @@ export function createImHandler({ auth, acl, messages, delivery, events, listEve
           config.transport?.mode === 'local-test' ?
             !(loopback(req.socket?.localAddress) && loopback(req.socket?.remoteAddress)) : true) fail('TLS_REQUIRED');
       rate(req.socket?.remoteAddress);
-      const credential = headers.get('authorization');
-      if (!credential) fail('AUTH_REQUIRED');
-      if (!/^Bearer [A-Za-z0-9._-]{1,128}$/.test(credential)) fail('INVALID_CREDENTIAL');
-      const principal = auth.authenticate(credential.slice(7));
       if (req.url.split('?', 1)[0].includes('%') || req.url.startsWith('//')) fail('INVALID_REQUEST');
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname.includes('%') || url.pathname.includes('//') || url.pathname.endsWith('/') && url.pathname !== '/api/v1/') fail('INVALID_REQUEST');
+      const path = url.pathname, method = req.method;
       const query = (...keys) => {
         for (const [key] of url.searchParams) if (!keys.includes(key) || url.searchParams.getAll(key).length !== 1) fail('INVALID_REQUEST');
         return url.searchParams;
@@ -142,7 +139,19 @@ export function createImHandler({ auth, acl, messages, delivery, events, listEve
       const noBody = () => {
         if (headers.has('transfer-encoding') || headers.has('content-length') && integer(headers.get('content-length')) !== 0) fail('INVALID_REQUEST');
       };
-       const path = url.pathname, method = req.method;
+      // Self-service enrollment must run before the Bearer boundary; it is the
+      // only unauthenticated /api/v1 route and is disabled unless policy enables it.
+      if (method === 'POST' && path === '/api/v1/enroll') {
+        if (!config.enrollment?.enabled) fail('ENROLLMENT_DISABLED');
+        if (typeof enrollment?.redeem !== 'function') fail('POLICY_NOT_CONFIGURED');
+        query();
+        send(201, enrollment.redeem(await body()));
+        return true;
+      }
+      const credential = headers.get('authorization');
+      if (!credential) fail('AUTH_REQUIRED');
+      if (!/^Bearer [A-Za-z0-9._-]{1,128}$/.test(credential)) fail('INVALID_CREDENTIAL');
+      const principal = auth.authenticate(credential.slice(7));
        if (method === 'GET' && path === '/api/v1/events' && events) {
          query(); noBody();
          // Only the canonical bearer plus normal HTTP framing/negotiation headers.

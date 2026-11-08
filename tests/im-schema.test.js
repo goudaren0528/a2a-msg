@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { IM_SCHEMA_VERSION, migrateImSchema, migrateImSchemaV3, assertImSchema, getInstanceIdentity, initInstanceIdentity } from '../src/im/schema.js';
+import { IM_SCHEMA_VERSION, migrateImSchema, migrateImSchemaV3, migrateImSchemaV4, assertImSchema, getInstanceIdentity, initInstanceIdentity } from '../src/im/schema.js';
 import { createHash } from 'node:crypto';
 import { V2_DDL, V2_CHECKSUM } from './fixtures/im-schema/v2.js';
 import { V1_DDL, V1_CHECKSUM } from './fixtures/im-schema/v1.js';
@@ -20,7 +20,7 @@ function agent(db, agentId) {
 
 test('first migration, repeat migration, manifest and isolated defaults', (t) => {
   const db = database(t);
-  assert.equal(IM_SCHEMA_VERSION, 3);
+  assert.equal(IM_SCHEMA_VERSION, 4);
   assert.equal(migrateImSchema(db), true);
   const before = db.prepare('SELECT * FROM im_schema').get();
   assert.match(before.migration_checksum, /^[0-9a-f]{64}$/);
@@ -63,6 +63,53 @@ test('fresh v3 has only the additive run index and explicitly preserves existing
   migrateImSchema(old);
   assert.equal(migrateImSchema(old), true);
   assert.equal(old.prepare('SELECT version FROM im_schema').get().version, 2);
+});
+
+test('fresh v4 and explicit v3 to v4 are additive, repeatable and preserve all rows', t => {
+  const db = database(t);
+  assert.equal(migrateImSchemaV4(db), true);
+  assert.equal(assertImSchema(db), true);
+  assert.equal(db.prepare('SELECT version FROM im_schema').get().version, 4);
+  for (const name of ['im_enrollment_invites', 'im_contact_requests'])
+    assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name=?").get(name).n, 1);
+  assert.equal(db.prepare("SELECT sql FROM sqlite_master WHERE name='im_enrollment_invites_expiry'").get().sql,
+    'CREATE INDEX im_enrollment_invites_expiry ON im_enrollment_invites(expires_at,used_at)');
+  assert.equal(migrateImSchemaV4(db), true);
+
+  const old = database(t);
+  migrateImSchemaV3(old);
+  old.exec("INSERT INTO im_agents VALUES ('a','A','active',1,NULL),('b','B','active',1,NULL)");
+  old.exec("INSERT INTO im_contacts VALUES ('a','b',1,1,2)");
+  const before = snapshot(old);
+  assert.equal(migrateImSchemaV4(old), true);
+  const after = snapshot(old);
+  for (const [name, rows] of Object.entries(before)) assert.deepEqual(after[name], rows, name);
+  assert.deepEqual(after.im_enrollment_invites, []);
+  assert.deepEqual(after.im_contact_requests, []);
+  assert.equal(migrateImSchemaV4(old), true);
+  assert.deepEqual(snapshot(old), after);
+
+  const v2 = database(t);
+  migrateImSchema(v2);
+  assert.throws(() => migrateImSchemaV4(v2), { code: 'IM_SCHEMA_MISMATCH' });
+  assert.equal(v2.prepare('SELECT version FROM im_schema').get().version, 2);
+});
+
+test('v3 to v4 failure rolls back both tables and the marker together', t => {
+  const db = database(t);
+  migrateImSchemaV3(db);
+  const proxy = new Proxy(db, { get(target, prop) {
+    if (prop === 'exec') return sql => {
+      if (sql.startsWith('CREATE TABLE im_contact_requests')) throw new Error('injected v4 fault');
+      return target.exec(sql);
+    };
+    const value = target[prop]; return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  assert.throws(() => migrateImSchemaV4(proxy), /injected v4 fault/);
+  assert.equal(db.isTransaction, false);
+  assert.equal(db.prepare('SELECT version FROM im_schema').get().version, 3);
+  assert.equal(db.prepare("SELECT count(*) n FROM sqlite_master WHERE name IN ('im_enrollment_invites','im_contact_requests')").get().n, 0);
+  assert.equal(assertImSchema(db), true);
 });
 
 test('explicit v2 to v3 keeps all IM rows and identity without touching business tables', t => {

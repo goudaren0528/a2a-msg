@@ -31,6 +31,8 @@ CLI issuance requires its parent directory to exist and be protected first, then
 | `revoke-credential` | `{credentialId,reason}` | `createImAdmin.revokeCredential` |
 | `set-status` | `{agentId,status,reason}` | `createImAdmin.setAgentStatus` |
 | `set-contact` | `{agentA,agentB,allowed,reason}` | `createImAdmin.setContact` |
+| `create-enrollment-invite` | `{ttlMs}` | `createImAdmin.createEnrollmentInvite` |
+| `revoke-enrollment-invite` | `{inviteId,reason}` | `createImAdmin.revokeEnrollmentInvite` |
 | `takeover-receiver` | `{agentId,reason}` | `createImAdmin.takeoverReceiver` |
 | `write-mode` | `{mode,reason,policy?}` | `createImMigration.setImWriteMode` |
 

@@ -1,5 +1,7 @@
 # IM legacy binding and write-mode control (isolated implementation)
 
+> Schema v4 note: enrollment adds `im_enrollment_invites` and `im_contact_requests` at the schema layer. Use the explicit `migrateImSchemaV4` entry point (or `node scripts/im-migrate-v4.mjs <center-config.json>`) after a verified backup; it supports fresh→v4 and v3→v4 only, is repeatable, and refuses v1/v2. The legacy migration runner accepts marker versions 3 or 4. See [enrollment contract](im-enrollment-contract.md).
+
 This module is **not** a production migration runner, authentication provider, service activation switch, or deployment procedure. It never copies legacy messages, attachments, tokens, read state, sender access, or `reply_to`, and never creates an IM conversation. A binding is `legacy_ip` metadata only: an IM credential does **not** confer access to old messages or attachments. Legacy and IM endpoints must remain separate and enforce their respective authorization independently.
 
 Before any real rollout, separately approve a recoverable backup and restore rehearsal, verify the supported schema and policy, establish a trusted administrator authentication boundary, and review every mapping. The lower-level migration tests include isolated in-memory SQLite; the separate trusted local runner also exercises file-backed v2 identity and protected Unix backup registry (see `im-migration-runner.md`). Neither constitutes a live migration rehearsal. No retention durations, production endpoints, or legacy API cutoff are chosen here.

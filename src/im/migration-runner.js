@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { createImMigration } from './migration.js';
-import { getInstanceIdentity, IM_SCHEMA_VERSION } from './schema.js';
+import { getInstanceIdentity } from './schema.js';
 import { resolveImTimeGuard } from './clock.js';
 
 const VERSION = 'im-migration-runner-v2';
+// Legacy binding plans are schema-version agnostic within the frozen v3/v4
+// legacy line; the identity comparison still requires an exact marker match.
+const LEGACY_SCHEMA_VERSIONS = Object.freeze([3, 4]);
 const PLAN_VERSION = 'legacy-bindings-v2';
 const sha = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
@@ -52,7 +55,7 @@ export function createImMigrationRunner(options = {}) {
     const identity = getInstanceIdentity(db); // strict full schema/FK scan, never under a live write lock
     const marker = db.prepare('SELECT version,migration_checksum FROM im_schema').get();
     const cookie = db.prepare('PRAGMA schema_version').get()?.schema_version;
-    if (marker?.version !== IM_SCHEMA_VERSION || !hash(marker.migration_checksum) || !Number.isSafeInteger(cookie))
+    if (!LEGACY_SCHEMA_VERSIONS.includes(marker?.version) || !hash(marker.migration_checksum) || !Number.isSafeInteger(cookie))
       throw fail('MIGRATION_STALE');
     return { instanceId: identity.instanceId, instanceCreatedAt: identity.createdAt,
       registrationGeneration: 1, schemaVersion: marker.version, schemaChecksum: marker.migration_checksum, cookie };
@@ -94,7 +97,7 @@ export function createImMigrationRunner(options = {}) {
     const plan = request.package;
     if (plan.toolVersion !== VERSION || plan.planVersion !== PLAN_VERSION || plan.actorId !== actorId ||
         !uuid(plan.instanceId) || !Number.isSafeInteger(plan.instanceCreatedAt) || plan.instanceCreatedAt < 0 ||
-        plan.registrationGeneration !== 1 || plan.schemaVersion !== IM_SCHEMA_VERSION || !hash(plan.schemaChecksum) ||
+        plan.registrationGeneration !== 1 || !LEGACY_SCHEMA_VERSIONS.includes(plan.schemaVersion) || !hash(plan.schemaChecksum) ||
         !uuid(plan.backupId) || !hash(plan.fileHash) || !hash(plan.manifestHash) ||
         !uuid(plan.previewId) || !hash(plan.sourceFingerprint) ||
         !Array.isArray(plan.proposedBindings) || !plan.proposedBindings.length || plan.proposedBindings.length > 1000 ||

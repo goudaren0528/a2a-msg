@@ -25,8 +25,8 @@ test('F1: public exports exact; immutable legacy schema and runner plus reviewed
   assert.equal(schema.IM_V2_SCHEMA_VERSION, 4);
   assert.deepEqual(schema.SUPPORTED_IM_V2_SCHEMA_VERSIONS, [4]);
   assert.ok(Object.isFrozen(schema.SUPPORTED_IM_V2_SCHEMA_VERSIONS));
-  assert.equal(legacySchema.IM_SCHEMA_VERSION, 3);
-  assert.deepEqual(legacySchema.SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3]);
+  assert.equal(legacySchema.IM_SCHEMA_VERSION, 4);
+  assert.deepEqual(legacySchema.SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3, 4]);
   for (const path of ['src/im/schema.js', 'src/im/migration-runner.js']) {
     const committed = execFileSync('git', ['show', `61052a3:${path}`], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
     assert.equal(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n'), committed.replace(/\r\n/g, '\n'), path);
