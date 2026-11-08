@@ -44,7 +44,15 @@ export function createImCenter({ db, policy, clock = Date.now, onCommitted, trus
   const delivery = createImDelivery({ db, auth, acl, clock, timeGuard: guard, policy });
   // Friend-request routes are only usable when policy.contacts.requests='enabled';
   // the module keeps the existing contact allow-list in sync for ACL enforcement.
-  const contacts = createImContacts({ db, auth, clock, timeGuard: guard, policy });
+  // An enabled policy on a pre-v4 database fails closed instead of silently
+  // falling back to legacy contact semantics.
+  let contactRequestsEnabled = false;
+  try { contactRequestsEnabled = parseImConfig(policy).contacts?.requests === 'enabled'; } catch { /* invalid policy fails elsewhere */ }
+  let contacts;
+  if (contactRequestsEnabled) {
+    if (db.prepare('SELECT version FROM im_schema').get()?.version !== 4) throw new ImError('POLICY_NOT_CONFIGURED');
+    contacts = createImContacts({ db, auth, clock, timeGuard: guard, policy });
+  }
   // Enrollment is only constructed when the validated policy enables it; an
   // enabled policy on a pre-v4 database fails closed at startup.
   let enrollment;
