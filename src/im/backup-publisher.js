@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { withClosedBackupSnapshot } from './backup-snapshot.js';
-import { getInstanceIdentity, IM_SCHEMA_VERSION } from './schema.js';
+import { getInstanceIdentity } from './schema.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const text = value => typeof value === 'string' && value.length > 0 && value.length <= 255 && !/[\x00-\x1f\x7f]/.test(value);
@@ -62,7 +62,7 @@ export function createBackupPublisher({ db, registry, writer, artifactDirectory,
     try { manifest = JSON.parse(readFileSync(result.manifestPath, 'utf8')); }
     catch { throw fail('BACKUP_VERIFY_FAILED'); }
     if (manifest.sourceId !== identity.instanceId || manifest.approvalId !== approvalId ||
-        manifest.fileHash !== hash(destinationPath) || manifest.schemaVersion !== IM_SCHEMA_VERSION ||
+        manifest.fileHash !== hash(destinationPath) || ![3, 4].includes(manifest.schemaVersion) ||
         manifest.backupId !== result.manifest?.backupId || manifest.fileHash !== result.manifest?.fileHash)
       throw fail('BACKUP_VERIFY_FAILED');
     // The source identity may have changed while the asynchronous native backup ran.

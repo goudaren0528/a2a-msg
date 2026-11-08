@@ -6,6 +6,8 @@ import { createImMessages } from './messages.js';
 import { createImDelivery } from './delivery.js';
 import { createImHandler } from './http.js';
 import { createImEvents } from './events.js';
+import { createImEnrollment } from './enrollment.js';
+import { parseImConfig } from './config.js';
 import { ImError } from './contracts.js';
 
 // The caller owns the already-open, already-migrated database and the HTTP listener.
@@ -39,7 +41,13 @@ export function createImCenter({ db, policy, clock = Date.now, onCommitted, trus
     onCommitted?.(event);
   } });
   const delivery = createImDelivery({ db, auth, acl, clock, timeGuard: guard, policy });
-  const handler = createImHandler({ auth, acl, messages, delivery, events, listEventPeers, policy, trustedTimers });
+  // Enrollment is only constructed when the validated policy enables it; an
+  // enabled policy on a pre-v4 database fails closed at startup.
+  let enrollment;
+  try {
+    if (parseImConfig(policy).enrollment?.enabled) enrollment = createImEnrollment({ db, clock, timeGuard: guard });
+  } catch { enrollment = undefined; }
+  const handler = createImHandler({ auth, acl, messages, delivery, events, listEventPeers, enrollment, policy, trustedTimers });
   return Object.freeze({ handler, close: () => { events.close(); handler.close(); }, guard,
     modules: Object.freeze({ auth, acl, messages, delivery, events }) });
 }

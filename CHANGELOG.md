@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Enrollment (source only, not deployed)
+
+- Schema v4 adds `im_enrollment_invites` and `im_contact_requests` with an explicit, repeatable v3→v4 migration (`migrateImSchemaV4`, `scripts/im-migrate-v4.mjs`). v1/v2 must still take their original upgrade paths.
+- One-time invite redemption: `createImAdmin.createEnrollmentInvite` / `revokeEnrollmentInvite`, `createImEnrollment.redeem`, and `POST /api/v1/enroll` (disabled by default via `policy.enrollment.enabled=false`). Only invite-code hashes are stored; plaintext credentials are returned once and never audited.
+- Device-side `scripts/im-register.mjs` writes a `0600` credential and `identity.json` under `~/.a2a-msg` (or `--state-dir`) and prints no credential.
+- Legacy binding migration and backup publication accept schema marker 3 or 4.
+
 ### Current source (not a release announcement)
 
 - The repository contains a Node 24 private npm package for a source-IP-bound LAN messaging server and a generic MCP stdio bridge; OpenCode integration is optional.

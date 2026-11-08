@@ -5,13 +5,14 @@ import https from 'node:https';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
-import { migrateImSchema } from '../src/im/schema.js';
+import { migrateImSchemaV4 } from '../src/im/schema.js';
 import { createImAdmin } from '../src/im/admin.js';
 import { createImAuth } from '../src/im/auth.js';
 import { createImAcl } from '../src/im/acl.js';
 import { createImMessages } from '../src/im/messages.js';
 import { createImDelivery } from '../src/im/delivery.js';
 import { createImHandler } from '../src/im/http.js';
+import { createImEnrollment } from '../src/im/enrollment.js';
 import { PROTOCOL } from '../src/im/contracts.js';
 
 const policy = { enabled: true, writeMode: 'enabled', transport: { mode: 'local-test', serverUrl: 'http://127.0.0.1:8787' },
@@ -19,7 +20,7 @@ const policy = { enabled: true, writeMode: 'enabled', transport: { mode: 'local-
     idempotencyRetentionMs: 110000, safeRetryWindowMs: 1000 } }, lease: { ttlMs: 90000, renewalMs: 30000 } };
 
 async function fixture(options = {}) {
-  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON'); migrateImSchema(db);
+  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON'); migrateImSchemaV4(db);
   const blobReads = [];
   const store = options.traceBlob ? new Proxy(db, { get(target, key) {
     if (key === 'prepare') return sql => {
@@ -44,7 +45,9 @@ async function fixture(options = {}) {
   db.exec("UPDATE im_settings SET write_mode='enabled'");
   const messages = createImMessages({ db: store, auth, acl, clock, policy });
   const delivery = createImDelivery({ db: store, auth, acl, clock, policy });
-  const adapter = createImHandler({ auth, acl, messages, delivery, policy: options.policy ?? policy,
+  const enrollment = options.enrollment ? createImEnrollment({ db: store, clock }) : undefined;
+  const effectivePolicy = options.policy ?? (options.enrollment ? { ...policy, enrollment: { enabled: true } } : policy);
+  const adapter = createImHandler({ auth, acl, messages, delivery, enrollment, policy: effectivePolicy,
     ...(options.trustedTimers ? { trustedTimers: options.trustedTimers } : {}) });
   // Test-only localhost certificate/private key. Never load outside this isolated fixture.
   const tls = options.tls ? { key: readFileSync(new URL('./fixtures/im-tls/localhost-test-only.key', import.meta.url)),
@@ -103,6 +106,32 @@ test('isolated HTTP identity, send/replay, binary ACL, lease sync ACK read and l
     assert.equal((await f.request('/api/v1/receiver/lease/renew', { agent: 1, method: 'POST', body: fence })).status, 200);
     assert.equal((await f.request('/api/v1/receiver/lease/release', { agent: 1, method: 'POST', body: fence })).status, 200);
   } finally { await f.close(); }
+});
+
+test('unauthenticated enrollment precedes the Bearer boundary and keeps fixed codes', async () => {
+  const f = await fixture({ enrollment: true }); try {
+    const invite = f.admin.createEnrollmentInvite({ ttlMs: 60000 }, f.context);
+    const enrolled = await f.request('/api/v1/enroll', { method: 'POST', headers: { Authorization: '' },
+      body: { inviteCode: invite.code, displayName: 'device-enroll' } });
+    assert.equal(enrolled.status, 201);
+    assert.match(enrolled.json.agentId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
+    assert.match(enrolled.json.credential, /^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/);
+    assert.equal((await f.request('/api/v1/me', { headers: { Authorization: `Bearer ${enrolled.json.credential}` } })).json.agentId,
+      enrolled.json.agentId);
+    const replay = await f.request('/api/v1/enroll', { method: 'POST', headers: { Authorization: '' },
+      body: { inviteCode: invite.code, displayName: 'again' } });
+    assert.equal(replay.status, 409); assert.equal(replay.json.error.code, 'INVITE_ALREADY_USED');
+    const unknown = await f.request('/api/v1/enroll', { method: 'POST', headers: { Authorization: '' },
+      body: { inviteCode: 'A'.repeat(43), displayName: 'nobody' } });
+    assert.equal(unknown.status, 404); assert.equal(unknown.json.error.code, 'INVITE_NOT_FOUND');
+    assert.equal((await f.request('/api/v1/enroll', { method: 'POST', headers: { Authorization: '' },
+      body: { inviteCode: invite.code, displayName: 'x', extra: 1 } })).status, 400);
+  } finally { await f.close(); }
+  const off = await fixture(); try {
+    const res = await off.request('/api/v1/enroll', { method: 'POST', headers: { Authorization: '' },
+      body: { inviteCode: 'A'.repeat(43), displayName: 'device' } });
+    assert.equal(res.status, 403); assert.equal(res.json.error.code, 'ENROLLMENT_DISABLED');
+  } finally { await off.close(); }
 });
 
 test('disabled, strict input, unknown principal, duplicate query and contact revocation', async () => {

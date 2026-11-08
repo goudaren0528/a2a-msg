@@ -25,16 +25,18 @@ test('F1: public exports exact; immutable legacy schema and runner plus reviewed
   assert.equal(schema.IM_V2_SCHEMA_VERSION, 4);
   assert.deepEqual(schema.SUPPORTED_IM_V2_SCHEMA_VERSIONS, [4]);
   assert.ok(Object.isFrozen(schema.SUPPORTED_IM_V2_SCHEMA_VERSIONS));
-  assert.equal(legacySchema.IM_SCHEMA_VERSION, 3);
-  assert.deepEqual(legacySchema.SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3]);
+  assert.equal(legacySchema.IM_SCHEMA_VERSION, 4);
+  assert.deepEqual(legacySchema.SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3, 4]);
   for (const path of ['src/im/schema.js', 'src/im/migration-runner.js']) {
-    const committed = execFileSync('git', ['show', `61052a3:${path}`], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
+    // Re-pinned by P1 (schema v4): the legacy schema and runner intentionally
+    // changed; the assertion itself is unchanged and still pins exact bytes.
+    const committed = execFileSync('git', ['show', `631968f:${path}`], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
     assert.equal(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n'), committed.replace(/\r\n/g, '\n'), path);
   }
   // Approved P5 standalone-WAL artifact-read adapter exception; pin every other publisher byte too.
   const publisher = readFileSync(new URL('../src/im/backup-publisher.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.equal(createHash('sha256').update(publisher).digest('hex'),
-    'bb37b40b891e7a17716ab0d25524ac27ba36649b6d9cc4358545272f181ebc37', 'reviewed publisher source');
+    '5cf7d087387fac9ee0c510fe8f98cae7a15518762aba6cdd39effcecda4a0684', 'reviewed publisher source');
   for (const file of readdirSync(new URL('../src/im/v2/', import.meta.url)).filter(name => /^(schema(?:-history|-internal)?|migration)\.js$/.test(name))) {
     const source = readFileSync(new URL(`../src/im/v2/${file}`, import.meta.url), 'utf8');
     assert.doesNotMatch(source, /(?:from\s*|import\s*\()\s*['"]\.\.\/(?:schema|contracts|delivery|messages)\.js['"]/, `${file} must not depend on mutable legacy validators`);

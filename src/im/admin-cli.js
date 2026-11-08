@@ -27,6 +27,8 @@ export function createImAdminCli({ db, secretFile, credentialDirectory, clock = 
         }
         case 'set-status': return admin.setAgentStatus(input, context);
         case 'set-contact': return admin.setContact(input, context);
+        case 'create-enrollment-invite': return admin.createEnrollmentInvite(input, context);
+        case 'revoke-enrollment-invite': return admin.revokeEnrollmentInvite(input, context);
         case 'takeover-receiver': return admin.takeoverReceiver(input, context);
         case 'write-mode': return migration.setImWriteMode(input, context);
         default: throw new Error('unknown command');

@@ -7,14 +7,14 @@ import { join } from 'node:path';
 import { createAdminAuthority, createLocalKeystore, WINDOWS_PERMISSION_WARNING } from '../src/im/keystore.js';
 import { createImAdminCli } from '../src/im/admin-cli.js';
 import { createImAuth } from '../src/im/auth.js';
-import { migrateImSchema } from '../src/im/schema.js';
+import { migrateImSchemaV4 } from '../src/im/schema.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'im-local-admin-'));
   const db = new DatabaseSync(join(directory, 'temporary.sqlite'));
   t.after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
   db.exec('PRAGMA foreign_keys=ON');
-  migrateImSchema(db);
+  migrateImSchemaV4(db);
   const secretFile = join(directory, 'admin.key');
   const secret = 'a'.repeat(64);
   writeFileSync(secretFile, `${secret}\n`, { mode: 0o600 });
@@ -50,6 +50,8 @@ test('all subcommands require authority, write mode starts paused and needs comp
     ['revoke-credential', { credentialId: a.agentId, reason: 'test' }],
     ['set-status', { agentId: a.agentId, status: 'disabled', reason: 'test' }],
     ['set-contact', { agentA: a.agentId, agentB: b.agentId, allowed: true, reason: 'test' }],
+    ['create-enrollment-invite', { ttlMs: 60000 }],
+    ['revoke-enrollment-invite', { inviteId: a.agentId, reason: 'test' }],
     ['takeover-receiver', { agentId: a.agentId, reason: 'test' }],
     ['write-mode', { mode: 'paused', reason: 'test' }],
   ];
@@ -64,7 +66,12 @@ test('all subcommands require authority, write mode starts paused and needs comp
   assert.deepEqual(f.cli.execute('write-mode', { mode: 'paused', reason: 'test' }, f.ctx), { mode: 'paused' });
   assert.equal(f.cli.execute('set-contact', examples[4][1], f.ctx).allowed, true);
   assert.equal(f.cli.execute('set-status', examples[3][1], f.ctx).status, 'disabled');
-  assert.equal(f.cli.execute('takeover-receiver', examples[5][1], f.ctx).changed, false);
+  const invite = f.cli.execute('create-enrollment-invite', examples[5][1], f.ctx);
+  assert.match(invite.code, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(f.db.prepare('SELECT count(*) n FROM im_audit WHERE safe_details_json LIKE ?').get(`%${invite.code}%`).n, 0);
+  assert.equal(f.cli.execute('revoke-enrollment-invite', { inviteId: invite.inviteId, reason: 'test' }, f.ctx).inviteId,
+    invite.inviteId);
+  assert.equal(f.cli.execute('takeover-receiver', examples[7][1], f.ctx).changed, false);
 });
 
 test('credential issuance only returns plaintext once; revocation immediately invalidates auth; errors never echo secrets', t => {

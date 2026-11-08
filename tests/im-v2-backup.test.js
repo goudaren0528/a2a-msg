@@ -40,7 +40,7 @@ test('native populated v4 SQLite snapshot includes keys, real ACK, lease and att
   assert.equal(lstatSync(path).uid, process.geteuid());
   const bytes = readFileSync(join(f.registryRoot, 'registry/artifacts', `${id}.manifest.json`));
   assert.ok(canonical('manifest', result.manifest).equals(bytes)); assert.equal(sha(bytes), result.manifestHash);
-  assert.equal(IM_SCHEMA_VERSION, 3); assert.deepEqual(SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3]);
+  assert.equal(IM_SCHEMA_VERSION, 4); assert.deepEqual(SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3, 4]);
   assert.equal(backup.status().nativeInFlight, false);
 });
 

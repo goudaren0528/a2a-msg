@@ -11,6 +11,9 @@ const required = (ok) => { if (!ok) throw new ImError('INVALID_REQUEST'); };
 const safeTime = (value) => Number.isSafeInteger(value) && value >= 0;
 const reasonOK = (value) => typeof value === 'string' && value.length >= 1 && value.length <= 255 && !/[\x00-\x1f\x7f]/.test(value);
 
+const MIN_INVITE_TTL_MS = 60_000;
+const MAX_INVITE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export function createImAdmin({ db, clock = Date.now, timeGuard, random = randomBytes, authorizeAdmin, protectCredential } = {}) {
   assertImSchema(db);
   const guard = resolveImTimeGuard(db, clock, timeGuard);
@@ -149,6 +152,31 @@ export function createImAdmin({ db, clock = Date.now, timeGuard, random = random
       return { agentLow, agentHigh, allowed: input.allowed, version };
     });
   }
+  function createEnrollmentInvite(input, context) {
+    required(own(input, ['ttlMs']) && Number.isSafeInteger(input.ttlMs) &&
+      input.ttlMs >= MIN_INVITE_TTL_MS && input.ttlMs <= MAX_INVITE_TTL_MS);
+    return write(context, (now) => {
+      const expiresAt = now + input.ttlMs;
+      if (!safeTime(expiresAt)) throw new ImError('INVALID_REQUEST');
+      const inviteId = newId();
+      // The plaintext code is returned exactly once and never stored or audited.
+      const code = bytes(32).toString('base64url');
+      db.prepare('INSERT INTO im_enrollment_invites(invite_id,code_hash,created_at,expires_at) VALUES (?,?,?,?)')
+        .run(inviteId, createHash('sha256').update(code).digest('hex'), now, expiresAt);
+      audit('create_enrollment_invite', { inviteId }, { expiresAt }, now);
+      return { inviteId, code, expiresAt };
+    });
+  }
+  function revokeEnrollmentInvite(input, context) {
+    required(own(input, ['inviteId', 'reason']) && validId(input.inviteId) && reasonOK(input.reason));
+    return write(context, (now) => {
+      const result = db.prepare(`UPDATE im_enrollment_invites SET revoked_at=?
+        WHERE invite_id=? AND revoked_at IS NULL AND used_at IS NULL`).run(now, input.inviteId);
+      if (!result.changes) throw new ImError('RESOURCE_NOT_FOUND');
+      audit('revoke_enrollment_invite', { inviteId: input.inviteId }, { reason: input.reason }, now);
+      return { inviteId: input.inviteId, revokedAt: now };
+    });
+  }
   function takeoverReceiver(input, context) {
     required(own(input, ['agentId', 'reason']) && validId(input.agentId) && reasonOK(input.reason));
     return write(context, (now) => {
@@ -166,5 +194,6 @@ export function createImAdmin({ db, clock = Date.now, timeGuard, random = random
       return { agentId: input.agentId, changed, generation };
     });
   }
-  return Object.freeze({ registerAgent, issueCredential, revokeCredential, setAgentStatus, setContact, takeoverReceiver });
+  return Object.freeze({ registerAgent, issueCredential, revokeCredential, setAgentStatus, setContact,
+    createEnrollmentInvite, revokeEnrollmentInvite, takeoverReceiver });
 }
