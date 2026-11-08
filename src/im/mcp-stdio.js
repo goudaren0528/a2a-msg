@@ -97,8 +97,8 @@ function httpsTransport(origin, active) {
 }
 
 // `--download-dir` overrides `nana.json`. The default directory is created on
-// demand; explicitly configured directories must already exist, so a missing or
-// unwritable directory fails closed before any receive path can ACK.
+// demand; explicitly configured directories must already exist (a missing one
+// fails at startup, an unwritable one at save time) so no receive path can ACK.
 function resolveAttachmentDirectory(config, downloadDirectory) {
   if (downloadDirectory !== undefined) {
     if (typeof downloadDirectory !== 'string' || !isAbsolute(downloadDirectory) ||
