@@ -1,11 +1,12 @@
-import { lstatSync, readFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import https from 'node:https';
 import { dirname, isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ImError, MAX_ATTACHMENT_BYTES } from './contracts.js';
 import { createImJournal } from './journal.js';
 import { createImMcpAdapter, imMcpToolSchemas } from './mcp-adapter.js';
-import { normalizeOrigin, parseNanaConfig } from '../nana/config.js';
+import { localFileToolSchemas, sendLocalFile, SEND_FILE_DESCRIPTION } from './mcp-local-files.js';
+import { defaultAttachmentDirectory, normalizeOrigin, parseNanaConfig } from '../nana/config.js';
 
 const MAX_JSON = 16 * 1024 * 1024;
 const REQUEST_DEADLINE_MS = 30000;
@@ -95,15 +96,51 @@ function httpsTransport(origin, active) {
   });
 }
 
+// `--download-dir` overrides `nana.json`. The default directory is created on
+// demand; explicitly configured directories must already exist (a missing one
+// fails at startup, an unwritable one at save time) so no receive path can ACK.
+function resolveAttachmentDirectory(config, downloadDirectory) {
+  if (downloadDirectory !== undefined) {
+    if (typeof downloadDirectory !== 'string' || !isAbsolute(downloadDirectory) ||
+        downloadDirectory.includes('\0')) fail('INVALID_REQUEST');
+    return requireDirectory(downloadDirectory);
+  }
+  const directory = config.attachmentDirectory;
+  if (directory === defaultAttachmentDirectory(config.serverUrl)) {
+    try { mkdirSync(directory, { recursive: true, mode: 0o700 }); } catch { fail('INVALID_REQUEST'); }
+  }
+  return requireDirectory(directory);
+}
+
+const textEnvelope = data => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
+function errorEnvelope(error) {
+  const e = error instanceof ImError ? error : new ImError('STORAGE_UNAVAILABLE');
+  return { content: [{ type: 'text', text: JSON.stringify({
+    error: { code: e.code, message: e.message, retryable: e.retryable } }) }], isError: true };
+}
+
+// The local-file tool delegates to the adapter's envelope API; unwrap it back to
+// data so `sendLocalFile` can compose the exact `im_v1_send` request.
+function unwrap(response) {
+  let value;
+  try { value = JSON.parse(response?.content?.[0]?.text); } catch { fail('STORAGE_UNAVAILABLE'); }
+  if (response.isError) {
+    let error;
+    try { error = new ImError(value?.error?.code); } catch { error = new ImError('STORAGE_UNAVAILABLE'); }
+    throw error;
+  }
+  return value;
+}
+
 /**
  * Mount the IM v1 MCP adapter for a stdio host.
  * Only `register(server)` / `call()` expose tools: there is no polling, watcher or
  * background worker, and every network request is made inside a tool call.
  */
-export function createImMcpStdio({ config: rawConfig } = {}) {
+export function createImMcpStdio({ config: rawConfig, downloadDirectory } = {}) {
   const config = parseNanaConfig(rawConfig);
   const origin = normalizeOrigin(config.serverUrl);
-  requireDirectory(config.attachmentDirectory);
+  const attachmentDirectory = resolveAttachmentDirectory(config, downloadDirectory);
   requireDirectory(dirname(config.journalPath));
   readCredential(config); // fail closed before any tool is exposed
 
@@ -119,7 +156,7 @@ export function createImMcpStdio({ config: rawConfig } = {}) {
       agentId: config.agentId,
       getCredential: async () => readCredential(config),
       journal: scope => createImJournal({ db, ...scope }),
-      attachmentDirectory: config.attachmentDirectory,
+      attachmentDirectory,
       transport: httpsTransport(origin, active),
     });
   } catch (error) {
@@ -137,12 +174,30 @@ export function createImMcpStdio({ config: rawConfig } = {}) {
     try { db.close(); } catch { /* already closed */ }
   }
 
+  // `im_v1_send_file` belongs to the stdio entry, not the shared adapter factory:
+  // it is the only tool that touches a host-local path.
+  async function call(name, input = {}) {
+    if (name !== 'im_v1_send_file') return adapter.call(name, input);
+    try {
+      return textEnvelope(await sendLocalFile({ input,
+        send: async (tool, request) => unwrap(await adapter.call(tool, request)) }));
+    } catch (error) { return errorEnvelope(error); }
+  }
+  function register(server) {
+    adapter.register(server);
+    for (const [name, schema] of Object.entries(localFileToolSchemas)) {
+      server.tool(name, SEND_FILE_DESCRIPTION, schema.shape, params => call(name, params));
+    }
+    return server;
+  }
+
   return Object.freeze({
     serverUrl: origin,
     agentId: config.agentId,
-    tools: Object.freeze(Object.keys(imMcpToolSchemas)),
-    register: server => adapter.register(server),
-    call: (name, input) => adapter.call(name, input),
+    attachmentDirectory,
+    tools: Object.freeze([...Object.keys(imMcpToolSchemas), ...Object.keys(localFileToolSchemas)]),
+    register,
+    call,
     close,
   });
 }

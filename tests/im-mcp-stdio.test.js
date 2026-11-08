@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { imMcpToolSchemas } from '../src/im/mcp-adapter.js';
+import { localFileToolSchemas } from '../src/im/mcp-local-files.js';
 import { readNanaConfigFile } from '../src/im/mcp-stdio.js';
 import { createImAdmin } from '../src/im/admin.js';
 import { createImAuth } from '../src/im/auth.js';
@@ -106,8 +107,9 @@ test('MCP stdio entry: real SDK StdioClientTransport lists and calls IM tools wi
   assert.equal(center.requests.length, 0, 'startup makes no HTTP request');
   const { tools } = await a.sdk.listTools();
   const names = tools.map(tool => tool.name);
-  assert.deepEqual(names.toSorted(), Object.keys(imMcpToolSchemas).toSorted());
-  assert.equal(names.length, 20);
+  // 20 shared adapter tools + the stdio-only local-file tool (P5).
+  assert.deepEqual(names.toSorted(), [...Object.keys(imMcpToolSchemas), ...Object.keys(localFileToolSchemas)].toSorted());
+  assert.equal(names.length, 21);
   assert.ok(names.every(name => name.startsWith('im_v1_')));
   for (const tool of tools) {
     assert.notEqual(tool.inputSchema.additionalProperties, true, tool.name);
