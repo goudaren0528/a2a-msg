@@ -4,7 +4,7 @@
 
 ### npx entry (source only, not published to npm)
 
-- `package.json` gains `bin: {"a2a-msg": "bin/a2a-msg.mjs"}` and ships `bin/` and `scripts/` through `files`; the package stays `private` and nothing is published to npm.
+- `package.json` gains `bin: {"a2a-msg": "bin/a2a-msg.mjs"}` and ships `bin/` and `scripts/` through `files`; the package stays `private` and nothing is published to npm. Local `docs/delivery/*/evidence/` and `shots/` worktree evidence is excluded from the tarball.
 - `bin/a2a-msg.mjs` is a thin dispatcher over the existing entries: `mcp --config/--download-dir` forwards to `scripts/im-mcp.mjs`, and `register --center/--invite/--display-name/--state-dir` forwards to `scripts/im-register.mjs`. stdio, signals and exit codes pass through; `node src/mcp.js` and `node scripts/im-mcp.mjs` are unchanged.
 - Any Node.js major other than 24 fails before argument parsing with fixed `NODE_VERSION_UNSUPPORTED` on stderr and exit code 1, matching `engines: ">=24 <25"`.
 - `docs/install-npx.md` documents full-commit pinned `npx github:goudaren0528/a2a-msg#<sha>` usage, host configuration, local tarball installation, `NODE_EXTRA_CA_CERTS`, and the version error. This is source-level capability: the center has not been upgraded, no real two-device acceptance has run, and no npm release exists.

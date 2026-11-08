@@ -4,7 +4,7 @@
   "private": true,
   "engines": { "node": ">=24 <25" },
   "bin": { "a2a-msg": "bin/a2a-msg.mjs" },
-  "files": ["bin/", "scripts/", "src/", "docs/", "README.md", "access.example.json", ".env.example", "compose.yaml", "Dockerfile", "package-lock.json"],
+  "files": ["bin/", "scripts/", "src/", "docs/", "!docs/delivery/*/evidence/", "!docs/delivery/*/shots/", "README.md", "access.example.json", ".env.example", "compose.yaml", "Dockerfile", "package-lock.json"],
   "type": "module",
   "description": "Lightweight LAN team mailbox with MCP stdio bridge",
   "scripts": {

@@ -77,7 +77,7 @@ npm pack                     # 产出 team-mailbox-<version>.tgz
 npx --yes --package=/absolute/path/team-mailbox-<version>.tgz a2a-msg mcp --help
 ```
 
-本地 tarball 用 `--package=<tarball> a2a-msg` 形式；直接把 `.tgz` 当命令传给 `npx` 会被当成可执行文件并报 `Permission denied`。tarball 里包含 `bin/`、`src/`、`scripts/`，`--help` 路径不加载 `node_modules`，所以解包后即使没有依赖也能自检入口。
+本地 tarball 用 `--package=<tarball> a2a-msg` 形式；直接把 `.tgz` 当命令传给 `npx` 会被当成可执行文件并报 `Permission denied`。tarball 里包含 `bin/`、`src/`、`scripts/`，`--help` 路径不加载 `node_modules`，所以解包后即使没有依赖也能自检入口。本地证据目录 `docs/delivery/*/evidence/` 与 `docs/delivery/*/shots/` 只在工作区存在、不会进包。
 
 ## Node 版本不符时
 

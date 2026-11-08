@@ -108,6 +108,11 @@ test('npm pack --dry-run includes every bin/, src/ and scripts/ file', () => {
     assert.ok(expected.length > 0, `${directory}/ should not be empty`);
     for (const file of expected) assert.ok(paths.has(file), `tarball must include ${file}`);
   }
+  // Local evidence is gitignored but still lives under docs/; it must not ship.
+  for (const path of paths) {
+    assert.ok(!/^docs\/delivery\/[^/]+\/(evidence|shots)\//.test(path), `must not pack ${path}`);
+    assert.ok(!path.endsWith('.log'), `must not pack ${path}`);
+  }
 });
 
 test('a packed tarball runs mcp --help without node_modules', () => {
