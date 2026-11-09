@@ -53,7 +53,7 @@ test('package.json maps the a2a-msg bin and packages bin/, src/ and scripts/', (
 });
 
 test('help commands print usage and exit 0', () => {
-  for (const args of [['--help'], ['-h'], ['mcp', '--help'], ['register', '--help']]) {
+  for (const args of [['--help'], ['-h'], ['mcp', '--help'], ['register', '--help'], ['join', '--help']]) {
     const result = runBin(args);
     assert.equal(result.status, 0, `${args.join(' ')}: ${result.stderr}`);
     assert.match(result.stdout, /Usage:/);
@@ -61,11 +61,15 @@ test('help commands print usage and exit 0', () => {
   }
   assert.match(runBin(['--help']).stdout, /a2a-msg mcp --config/);
   assert.match(runBin(['--help']).stdout, /a2a-msg register --center/);
+  assert.match(runBin(['--help']).stdout, /a2a-msg join </);
   assert.match(runBin(['mcp', '--help']).stdout, /--download-dir/);
   assert.match(runBin(['register', '--help']).stdout, /--state-dir/);
+  assert.match(runBin(['register', '--help']).stdout, /--ca-url/);
+  assert.match(runBin(['join', '--help']).stdout, /#invite=/);
+  assert.match(runBin(['join', '--help']).stdout, /--state-dir/);
 });
 
-test('mcp and register forward to the existing scripts', () => {
+test('mcp, register and join forward to the existing scripts', () => {
   const mcp = runBin(['mcp']);
   assert.equal(mcp.status, 1, 'missing --config must fail');
   assert.match(mcp.stderr, /"code":"INVALID_REQUEST"/);
@@ -74,6 +78,15 @@ test('mcp and register forward to the existing scripts', () => {
   assert.equal(register.status, 1, 'missing required flags must fail');
   assert.match(register.stderr, /"code":"INVALID_ARGUMENTS"/);
   assert.match(register.stderr, /scripts\/im-register\.mjs/);
+
+  const join = runBin(['join']);
+  assert.equal(join.status, 1, 'missing link must fail');
+  assert.match(join.stderr, /"code":"INVALID_ARGUMENTS"/);
+  assert.match(join.stderr, /--join/);
+
+  const unpinned = runBin(['join', 'https://localhost:8787/join#invite=' + 'a'.repeat(43)]);
+  assert.equal(unpinned.status, 1, 'a join link without a CA fingerprint must fail');
+  assert.match(unpinned.stderr, /"code":"INVALID_JOIN_LINK"/);
 });
 
 test('unknown or missing subcommands fail with a fixed code', () => {
@@ -130,7 +143,7 @@ test('a packed tarball runs mcp --help without node_modules', () => {
     assert.ok(existsSync(packedBin), 'tarball must contain bin/a2a-msg.mjs');
     assert.ok(!existsSync(join(packed, 'node_modules')), 'the tarball must not bundle node_modules');
 
-    for (const args of [['--help'], ['mcp', '--help'], ['register', '--help']]) {
+    for (const args of [['--help'], ['mcp', '--help'], ['register', '--help'], ['join', '--help']]) {
       const result = spawnSync(process.execPath, [packedBin, ...args], {
         cwd: extract, encoding: 'utf8', timeout: 60000,
       });

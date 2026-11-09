@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { execFile, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { migrateImSchema, migrateImSchemaV3, migrateImSchemaV4 } from '../src/im/schema.js';
 import { createImAdmin } from '../src/im/admin.js';
-import { createImEnrollment, INVITE_CODE_PATTERN } from '../src/im/enrollment.js';
+import { createImEnrollment, defaultDisplayName, INVITE_CODE_PATTERN } from '../src/im/enrollment.js';
 import { createImAuth } from '../src/im/auth.js';
 import { createImCenter } from '../src/im/server.js';
 
@@ -256,4 +258,198 @@ test('im-migrate-v4.mjs performs the explicit v3 to v4 upgrade and is repeatable
   writeFileSync(v2Config, JSON.stringify({ dbPath: v2Path }));
   await assert.rejects(run(process.execPath, ['scripts/im-migrate-v4.mjs', v2Config],
     { cwd: new URL('..', import.meta.url) }), error => error.stderr.includes('MIGRATION_STALE'));
+});
+
+// ---- device-side join / pinned CA registration (AC-R2, AC-R3) ----
+
+const REGISTER = 'scripts/im-register.mjs';
+const BIN = 'bin/a2a-msg.mjs';
+const TLS_KEY = fileURLToPath(new URL('./fixtures/im-tls/localhost-test-only.key', import.meta.url));
+const TLS_CERT = fileURLToPath(new URL('./fixtures/im-tls/localhost-test-only.crt', import.meta.url));
+const UNRELATED_CA = fileURLToPath(new URL('./fixtures/im-tls/unrelated-ca.crt', import.meta.url));
+const fingerprint = path => `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
+
+async function freePort() {
+  const server = net.createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
+// Real center process (scripts/im-center.mjs) so GET /ca.pem and the enrollment
+// route are exercised end to end. The invite is issued before the process opens
+// the same database. `caCertPath` changes what /ca.pem publishes.
+async function tlsCenter(t, { caCertPath = TLS_CERT } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'im-join-center-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, 'center.sqlite');
+  const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA foreign_keys=ON');
+  migrateImSchemaV4(db);
+  const admin = createImAdmin({ db, authorizeAdmin: candidate => candidate === context });
+  const invite = admin.createEnrollmentInvite({ ttlMs: TTL }, context);
+  db.close();
+  const port = await freePort();
+  const configPath = join(dir, 'center.json');
+  writeFileSync(configPath, JSON.stringify({ dbPath, policy: {
+    enabled: true, writeMode: 'paused',
+    transport: { mode: 'direct-tls', serverUrl: `https://localhost:${port}` },
+    enrollment: { enabled: true },
+  }, tls: { keyPath: TLS_KEY, certPath: TLS_CERT, ...(caCertPath === undefined ? {} : { caCertPath }) } }));
+  const child = spawn(process.execPath, ['scripts/im-center.mjs', configPath],
+    { cwd: new URL('..', import.meta.url), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stdout = '', stderr = '', settled = false;
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  await new Promise((done, reject) => {
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      error ? reject(error) : done();
+    };
+    child.once('exit', code => finish(Error(`center exited ${code}: ${stderr}`)));
+    child.stdout.on('data', () => { if (stdout.includes('IM center listening')) finish(null); });
+    setTimeout(() => finish(Error(`center did not start: ${stderr}`)), 15000).unref();
+  });
+  return {
+    url: `https://localhost:${port}`, invite, dir,
+    // Read-only, after the child is gone: proves a failed attempt never spent the invite.
+    usedAt: () => {
+      const check = new DatabaseSync(dbPath, { readOnly: true });
+      try { return check.prepare('SELECT used_at FROM im_enrollment_invites WHERE invite_id=?')
+        .get(invite.inviteId).used_at; } finally { check.close(); }
+    },
+  };
+}
+
+// Registration never inherits a private CA from the test runner's environment.
+function runRegister(script, args) {
+  const env = { ...process.env };
+  delete env.NODE_EXTRA_CA_CERTS;
+  return run(process.execPath, [script, ...args], { cwd: new URL('..', import.meta.url), env });
+}
+
+test('defaultDisplayName turns any hostname into a valid, bounded display name', async () => {
+  assert.equal(defaultDisplayName('MacBook-Air.local'), 'MacBook-Air.local');
+  assert.equal(defaultDisplayName('MacBook Air 的电脑'), 'MacBook-Air');
+  assert.equal(defaultDisplayName('a\tb\nc'), 'a-b-c');
+  assert.equal(defaultDisplayName('   '), 'device');
+  assert.equal(defaultDisplayName('/ /'), 'device');
+  assert.equal(defaultDisplayName(''), 'device');
+  assert.equal(defaultDisplayName(undefined), 'device');
+  assert.equal(defaultDisplayName('a'.repeat(300)), 'a'.repeat(255));
+  for (const value of ['MacBook Air 的电脑', 'a\tb', '']) {
+    const name = defaultDisplayName(value);
+    assert.ok(name.length >= 1 && name.length <= 255, name);
+    assert.equal(/[\x00-\x1f\x7f]/.test(name), false, name);
+  }
+});
+
+test('register --ca-url pins the fetched CA and only then enrolls', { timeout: 30000 }, async t => {
+  const f = await tlsCenter(t);
+  const state = join(f.dir, 'state');
+  const caFingerprint = fingerprint(TLS_CERT);
+  const { stdout } = await runRegister(REGISTER, ['--center', f.url, '--invite', f.invite.code,
+    '--ca-url', `${f.url}/ca.pem`, '--ca-sha256', caFingerprint, '--state-dir', state]);
+  const output = JSON.parse(stdout);
+  assert.equal(output.centerUrl, f.url);
+  assert.equal(output.displayName, defaultDisplayName(hostname()), 'display-name defaults to the hostname');
+  const identity = JSON.parse(readFileSync(join(state, 'identity.json'), 'utf8'));
+  assert.equal(identity.agentId, output.agentId);
+  assert.equal(identity.centerUrl, f.url);
+  assert.notEqual(f.usedAt(), null, 'the invite was spent exactly once');
+  // The pinned CA is not persisted: the state dir keeps the pre-existing layout.
+  assert.deepEqual(readdirSync(state).sort(), ['credentials', 'identity.json']);
+});
+
+test('register with a wrong --ca-sha256 fails closed before any identity artifact', { timeout: 30000 }, async t => {
+  const f = await tlsCenter(t);
+  const state = join(f.dir, 'state');
+  await assert.rejects(runRegister(REGISTER, ['--center', f.url, '--invite', f.invite.code,
+    '--ca-url', `${f.url}/ca.pem`, '--ca-sha256', `sha256:${'0'.repeat(64)}`, '--state-dir', state]),
+  error => {
+    assert.match(error.stderr, /"code":"CA_FINGERPRINT_MISMATCH"/);
+    assert.equal(error.stderr.includes(f.invite.code), false, 'the invite code is never echoed');
+    return true;
+  });
+  assert.equal(existsSync(join(state, 'identity.json')), false);
+  assert.deepEqual(readdirSync(join(state, 'credentials')), []);
+  assert.equal(f.usedAt(), null, 'the invite is untouched');
+});
+
+test('a pinned CA that did not issue the center certificate fails closed', { timeout: 30000 }, async t => {
+  // /ca.pem publishes an unrelated self-signed CA whose fingerprint matches the
+  // link, so only the TLS chain check can stop enrollment.
+  const f = await tlsCenter(t, { caCertPath: UNRELATED_CA });
+  const state = join(f.dir, 'state');
+  await assert.rejects(runRegister(REGISTER, ['--center', f.url, '--invite', f.invite.code,
+    '--ca-url', `${f.url}/ca.pem`, '--ca-sha256', fingerprint(UNRELATED_CA), '--state-dir', state]),
+  error => {
+    assert.match(error.stderr, /"code":"CA_NOT_TRUSTED"/);
+    return true;
+  });
+  assert.equal(existsSync(join(state, 'identity.json')), false);
+  assert.equal(f.usedAt(), null, 'the invite is untouched');
+});
+
+test('an unreachable --ca-url fails closed and writes nothing', { timeout: 30000 }, async t => {
+  const port = await freePort();
+  const root = mkdtempSync(join(tmpdir(), 'im-join-ca-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const state = join(root, 'state');
+  await assert.rejects(runRegister(REGISTER, ['--center', `https://localhost:${port}`,
+    '--invite', `a${'b'.repeat(42)}`, '--ca-url', `https://localhost:${port}/ca.pem`,
+    '--ca-sha256', `sha256:${'1'.repeat(64)}`, '--state-dir', state]),
+  error => {
+    assert.match(error.stderr, /"code":"CA_FETCH_FAILED"/);
+    return true;
+  });
+  assert.equal(existsSync(join(state, 'identity.json')), false);
+});
+
+test('join <link> registers in one command and keeps the default state layout', { timeout: 30000 }, async t => {
+  const f = await tlsCenter(t);
+  const home = join(f.dir, 'home');
+  mkdirSync(home, { recursive: true });
+  const link = `${f.url}/join#invite=${f.invite.code}&ca=${encodeURIComponent(fingerprint(TLS_CERT))}`;
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  delete env.NODE_EXTRA_CA_CERTS;
+  const { stdout } = await run(process.execPath, [BIN, 'join', link], { cwd: new URL('..', import.meta.url), env });
+  const output = JSON.parse(stdout);
+  assert.equal(output.centerUrl, f.url);
+  assert.equal(output.displayName, defaultDisplayName(hostname()));
+  assert.equal(stdout.includes(f.invite.code), false, 'the invite code is never printed');
+  const state = join(home, '.a2a-msg');
+  assert.deepEqual(readdirSync(state).sort(), ['credentials', 'identity.json'], 'default state layout is unchanged');
+  const identity = JSON.parse(readFileSync(join(state, 'identity.json'), 'utf8'));
+  assert.equal(identity.agentId, output.agentId);
+  assert.equal(identity.centerUrl, f.url);
+  assert.equal(statSync(state).mode & 0o777, 0o700);
+  assert.equal(statSync(join(state, 'identity.json')).mode & 0o777, 0o600);
+});
+
+test('join accepts --display-name and rejects malformed or unpinned links', { timeout: 30000 }, async t => {
+  const f = await tlsCenter(t);
+  const state = join(f.dir, 'named');
+  const link = `${f.url}/join#ca=${encodeURIComponent(fingerprint(TLS_CERT))}&invite=${f.invite.code}`;
+  const env = { ...process.env };
+  delete env.NODE_EXTRA_CA_CERTS;
+  const { stdout } = await run(process.execPath, [BIN, 'join', link, '--display-name', 'office-mac', '--state-dir', state],
+    { cwd: new URL('..', import.meta.url), env });
+  assert.equal(JSON.parse(stdout).displayName, 'office-mac');
+
+  for (const bad of [
+    `${f.url}/join#invite=${f.invite.code}`, // no CA fingerprint: unpinned
+    `${f.url}/join#invite=${f.invite.code}&ca=sha256:nothex`,
+    `${f.url}/wrong#invite=${f.invite.code}&ca=sha256:${'a'.repeat(64)}`,
+    `http://example.invalid/join#invite=${f.invite.code}&ca=sha256:${'a'.repeat(64)}`,
+  ]) {
+    await assert.rejects(run(process.execPath, [BIN, 'join', bad, '--state-dir', join(f.dir, 'bad')],
+      { cwd: new URL('..', import.meta.url) }), error => {
+      assert.equal(/INVALID_JOIN_LINK|TLS_REQUIRED/.test(error.stderr), true, bad);
+      return true;
+    });
+  }
 });

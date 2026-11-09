@@ -1,8 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
-import { readFileSync } from 'node:fs';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
 import { migrateImSchemaV4 } from '../src/im/schema.js';
@@ -525,4 +530,104 @@ test('contact request routes are strict, write-gated and absent in legacy mode',
     assert.equal((await legacy.request('/api/v1/contact-requests')).json.error.code, 'POLICY_NOT_CONFIGURED');
     assert.equal((await legacy.request('/api/v1/contacts')).json.items.length, 1);
   } finally { await legacy.close(); }
+});
+
+// ---- center process: public CA route (AC-R1) ----
+
+const TLS_KEY = fileURLToPath(new URL('./fixtures/im-tls/localhost-test-only.key', import.meta.url));
+const TLS_CERT = fileURLToPath(new URL('./fixtures/im-tls/localhost-test-only.crt', import.meta.url));
+
+async function freePort() {
+  const server = net.createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
+// Spawns scripts/im-center.mjs on an isolated v4 database with the test-only
+// localhost certificate; `tls` is the strict config `tls` object.
+async function spawnCenter(t, tls) {
+  const dir = mkdtempSync(join(tmpdir(), 'im-center-ca-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const dbPath = join(dir, 'center.sqlite');
+  const db = new DatabaseSync(dbPath);
+  db.exec('PRAGMA foreign_keys=ON');
+  migrateImSchemaV4(db);
+  db.close();
+  const port = await freePort();
+  const configPath = join(dir, 'center.json');
+  writeFileSync(configPath, JSON.stringify({ dbPath, policy: {
+    enabled: true, writeMode: 'enabled',
+    transport: { mode: 'direct-tls', serverUrl: `https://localhost:${port}` },
+    retention: { policy: { messageRetentionMs: 100000, attachmentRetentionMs: 90000,
+      idempotencyRetentionMs: 110000, safeRetryWindowMs: 1000 } },
+    lease: { ttlMs: 90000, renewalMs: 30000 },
+    enrollment: { enabled: true },
+  }, tls }));
+  const child = spawn(process.execPath, [resolve('scripts/im-center.mjs'), configPath],
+    { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stdout = '', stderr = '', settled = false;
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const started = new Promise((done, reject) => {
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      error ? reject(error) : done();
+    };
+    child.once('exit', code => finish(Error(`center exited ${code}: ${stderr}`)));
+    child.stdout.on('data', () => { if (stdout.includes('IM center listening')) finish(null); });
+    setTimeout(() => finish(Error(`center did not start: ${stderr}`)), 15000).unref();
+  });
+  return { dir, port, child, started, stdout: () => stdout, stderr: () => stderr };
+}
+
+function publicRequest(port, path, { method = 'GET' } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({ host: 'localhost', port, path, method, rejectUnauthorized: false }, res => {
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('center publishes the configured CA on unauthenticated GET /ca.pem and nothing else', async t => {
+  const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT, caCertPath: TLS_CERT });
+  await f.started;
+  const ca = readFileSync(TLS_CERT);
+  const published = await publicRequest(f.port, '/ca.pem');
+  assert.equal(published.status, 200);
+  assert.equal(published.headers['content-type'], 'application/x-pem-file');
+  assert.equal(published.headers['x-content-type-options'], 'nosniff');
+  assert.deepEqual(published.body, ca, 'the served bytes are the configured CA file verbatim');
+  // The Bearer boundary is untouched: the new route is the only public path.
+  const me = await publicRequest(f.port, '/api/v1/me');
+  assert.equal(me.status, 401);
+  assert.equal(JSON.parse(me.body.toString()).error.code, 'AUTH_REQUIRED');
+  assert.equal((await publicRequest(f.port, '/ca.pem?x=1')).status, 404);
+  assert.equal((await publicRequest(f.port, '/ca.pem', { method: 'POST' })).status, 404);
+  assert.equal((await publicRequest(f.port, '/health')).status, 404);
+  assert.equal((await publicRequest(f.port, '/join')).status, 404);
+});
+
+test('center without tls.caCertPath answers 404 on /ca.pem and never serves a bundle', async t => {
+  const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT });
+  await f.started;
+  const missing = await publicRequest(f.port, '/ca.pem');
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.length, 0);
+  const me = await publicRequest(f.port, '/api/v1/me');
+  assert.equal(me.status, 401, 'the Bearer boundary still guards /api/v1');
+});
+
+test('center refuses to start when tls.caCertPath is not a certificate file', async t => {
+  // The test key file is a valid regular file but not a publishable PEM bundle.
+  const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT, caCertPath: TLS_KEY });
+  await assert.rejects(f.started, error => error.message.includes('IM center failed'));
+  assert.equal(f.stdout().includes('IM center listening'), false);
 });
