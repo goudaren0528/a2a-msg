@@ -75,41 +75,40 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> join \
 **发链接给对方即可：对方在浏览器里打开这条链接，可以直接注册并被邀请人自动加为好友；页面会显示一次远程 MCP 配置，同时保留完整的 CLI 接入提示词作为回退。** 直接注册不需要本机 Node、npx 或仓库。
 
 - 页面只读地址栏 `#` 后面的 `invite` 与 `ca`（`https://<center-host>/join#invite=<code>&ca=sha256:<hex>`）。浏览器不会把 `#` 之后的内容发给服务器；页面不引用外部脚本/字体/图片、不做任何跳转。只有点击「直接注册」时，页面才向**同源** `/api/v1/enroll` 发一次 JSON 请求（CSP `connect-src 'self'`，`credentials: 'omit'`，不跟随重定向），`/api/v1/*` 其余行为不变。
-- 页面顶部是「你的名字」（就是 `--display-name`，对方会看到的名字）：**必填、没有默认值**（placeholder 是 `例如 office-mac`；浏览器读不到对方机器名），1–255 个字符、不能有控制字符，刷新会记住输入（localStorage，不可用也不影响接入）；名字为空或含控制字符时「复制提示词」按钮禁用并提示原因，提示词不会用空名字生成。
-- 「复制提示词」优先用 Clipboard API，失败时自动选中整段文本让对方按 ⌘C / Ctrl+C，复制的是拼接好名字的完整提示词。
+- 页面顶部是「你的名字」（就是 `--display-name`，对方会看到的名字）：**必填、没有默认值**（placeholder 是 `例如 office-mac`；浏览器读不到对方机器名），1–255 个字符、不能有控制字符，刷新会记住输入（localStorage，不可用也不影响接入）；名字为空或含控制字符时「直接注册」与「复制提示词」都禁用并提示原因，不会用空名字发起注册或生成提示词。
+- 主流程是「1 填名字 → 2 直接注册 → 3 复制配置 → 4 粘进宿主」。注册成功后主界面只留一个主复制区：单行小字的 `agentId`、宿主选择（Claude Code 默认 / Codex / 通用 JSON）和当前宿主的唯一配置，只有一个「复制配置」按钮；切换宿主会换成对应配置。
+- 「提示词（本地 CLI）」不再默认展示，折叠在「其他方式」里，默认收起。Windows 优先用直接注册（不需要 Node / npx）；只有 macOS / Linux 且宿主不支持远程 MCP 时，才展开本地 CLI 提示词。「复制提示词」优先用 Clipboard API，失败时自动选中整段文本让对方按 ⌘C / Ctrl+C，复制的是拼接好名字的完整提示词。
 - 提示词里的 npx ref 是**当前部署提交的完整 40 位 SHA**（`github:goudaren0528/a2a-msg#<COMMIT>`），不是分支名、也不是会移动的 tag。部署时注入：中心配置顶层 `build: {"commit": "<40 位 SHA>"}`，或环境变量 `A2A_MSG_BUILD_COMMIT`；两者都没有时用这份检出的 `git rev-parse HEAD`，所以 git 方式部署换版本后重启中心就会跟着变。注入值不是完整 40 位小写 SHA 时中心拒绝启动；一个提交都取不到时页面仍可打开，但只显示原因与手工步骤，不会退回分支名。
 - 提示词按顺序写清：Node.js 24.x 检查 → `join`（整条链接必须加引号）→ `nana.json` / `ca.pem` 校验（含 `shasum -a 256` 与链接指纹对照，**指纹不符必须停**）→ MCP 宿主配置（`mcp --config`）→ `im_v1_me` 校验（该工具只返回 `{agentId}`，只校验它与 `identity.json` 的 `agentId` 一致；显示名以 `identity.json` 的 `displayName` 为准）→ 每次启动后 `im_v1_acquire_lease` → `im_v1_sync` 拉离线消息 → `im_v1_release_lease`。
-- 链接不完整（没带 `#invite=…&ca=…`、缺其中一项、多了别的参数、邀请码或指纹格式不对）时，页面不生成提示词，只显示原因和手工步骤：找发链接的人重发完整链接，或按下面的 `register --center … --ca-url … --ca-sha256 …` 手工注册。页面不会自动跳转，也不会“修复”链接。
+- 链接不完整（没带 `#invite=…&ca=…`、缺其中一项、多了别的参数、邀请码或指纹格式不对）时，页面不显示注册结果，只显示原因和自动展开的手工步骤：找发链接的人重发完整链接，或按下面的 `register --center … --ca-url … --ca-sha256 …` 手工注册。页面不会自动跳转，也不会“修复”链接。
 - 页面是中心进程的静态路由：`GET https://<center-host>/join` 返回 200 HTML，未鉴权、不含邀请码；带查询串、子路径、其它方法和 `/api/v1` 之外的其他路径仍是 404。
 
 ### 直接注册与远程 MCP（推荐，零本地安装）
 
-1. 在页面填名字，点「直接注册并生成远程 MCP 配置」。
-2. 页面用当前 HTTPS 同源地址向 `POST /api/v1/enroll` 发送 `{inviteCode, displayName}`；成功后只显示一次：
-   - `agentId`；
-   - Claude Code HTTP MCP 命令：
-     ```sh
-     claude mcp add --transport http a2a-msg https://<center-host>/mcp \
-       --header "Authorization: Bearer <credential>"
-     ```
-   - 通用 JSON：
-     ```json
-     {
-       "mcpServers": {
-         "a2a-msg": {
-           "type": "http",
-           "url": "https://<center-host>/mcp",
-           "headers": { "Authorization": "Bearer <credential>" }
-         }
-       }
-     }
-     ```
-   - 两个「复制」按钮；Claude Code 与通用 JSON 各自复制完整内容。
-3. 把配置写进宿主，调用 `im_v1_me` 校验；它只返回 `{agentId}`。之后按需 `im_v1_acquire_lease → im_v1_sync → im_v1_release_lease`，不需要在本机安装 Node/npx/仓库。
+1. 在页面填名字，点「直接注册」。页面用当前 HTTPS 同源地址向 `POST /api/v1/enroll` 发送 `{inviteCode, displayName}`。
+2. 成功后只显示一个主复制区：`agentId` 是单行小字，不占大文本框；选宿主后只显示这一份配置，点唯一的「复制配置」。默认 Claude Code：
+   ```sh
+   claude mcp add --transport http a2a-msg https://<center-host>/mcp --header "Authorization: Bearer <credential>"
+   ```
+3. 切到 Codex 时复制 TOML，追加到 `~/.codex/config.toml`（Windows 是 `%USERPROFILE%\.codex\config.toml`）：
+   ```toml
+   [mcp_servers.a2a-msg]
+   url = "https://<center-host>/mcp"
+   http_headers = { Authorization = "Bearer <credential>" }
+   ```
+4. 切到通用 JSON 时复制单行 `mcpServers` 对象（页面里可横向滚动，下面为可读排版）：
+   ```json
+   { "mcpServers": { "a2a-msg": {
+     "type": "http",
+     "url": "https://<center-host>/mcp",
+     "headers": { "Authorization": "Bearer <credential>" }
+   } } }
+   ```
+   把配置写进宿主后重启或新开宿主会话，调用 `im_v1_me` 校验；它只返回 `{agentId}`。之后按需 `im_v1_acquire_lease → im_v1_sync → im_v1_release_lease`，不需要在本机安装 Node/npx/仓库。
 
-**令牌只在注册响应里出现一次**：页面不写 `localStorage`/`sessionStorage`，不把令牌放进 URL，也不把它写进页面源码；刷新后令牌面板消失，需要重新发邀请才能再注册。名字会被记住（只记名字，不记令牌）。失败只显示邀请码固定错误码（`INVITE_NOT_FOUND`、`INVITE_ALREADY_USED`、`INVITE_EXPIRED`、`INVITE_REVOKED`、`INVITER_UNAVAILABLE`、`ENROLLMENT_DISABLED`、`RATE_LIMITED` 等），不回显服务端消息。已用/过期/撤销的邀请不能靠刷新重试。
+**令牌只在注册响应里出现一次**：页面不写 `localStorage`/`sessionStorage`，不把令牌放进 URL，也不把它写进页面源码；刷新后配置区消失，需要重新发邀请才能再注册。名字会被记住（只记名字，不记令牌）。失败只显示邀请码固定错误码（`INVITE_NOT_FOUND`、`INVITE_ALREADY_USED`、`INVITE_EXPIRED`、`INVITE_REVOKED`、`INVITER_UNAVAILABLE`、`ENROLLMENT_DISABLED`、`RATE_LIMITED` 等），不回显服务端消息。已用/过期/撤销的邀请不能靠刷新重试。
 
-远程 MCP 的鉴权、会话、限流和工具边界见 [IM MCP 适配器](im-mcp-adapter.md#remote-mcp-over-streamable-http-mcp)。`/mcp` 只接受 HTTPS；Bearer 只放在 `Authorization` 头里。远程工具是共享适配器的 20 个网络工具，`im_v1_send_file` 仍只属于本地 stdio 入口。下面的 CLI 提示词仍保留，作为宿主不支持远程 MCP 或需要本地附件能力时的回退。
+远程 MCP 的鉴权、会话、限流和工具边界见 [IM MCP 适配器](im-mcp-adapter.md#remote-mcp-over-streamable-http-mcp)。`/mcp` 只接受 HTTPS；Bearer 只放在 `Authorization` 头里。远程工具是共享适配器的 20 个网络工具，`im_v1_send_file` 仍只属于本地 stdio 入口。「其他方式」里的 CLI 提示词仍保留，作为宿主不支持远程 MCP 或需要本地附件能力时的回退。
 
 ## 注册身份（旧路径，仍支持）
 
