@@ -586,15 +586,16 @@ async function spawnCenter(t, tls, { build, env } = {}) {
   return { dir, port, child, started, stdout: () => stdout, stderr: () => stderr };
 }
 
-function publicRequest(port, path, { method = 'GET' } = {}) {
+function publicRequest(port, path, { method = 'GET', headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const req = https.request({ host: 'localhost', port, path, method, rejectUnauthorized: false }, res => {
+    const req = https.request({ host: 'localhost', port, path, method, rejectUnauthorized: false,
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers } }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
     });
     req.on('error', reject);
-    req.end();
+    req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 
@@ -615,6 +616,10 @@ test('center publishes the configured CA on unauthenticated GET /ca.pem and noth
   assert.equal((await publicRequest(f.port, '/ca.pem', { method: 'POST' })).status, 404);
   assert.equal((await publicRequest(f.port, '/health')).status, 404);
   assert.equal((await publicRequest(f.port, '/join?x=1')).status, 404);
+  const mcpNoToken = await publicRequest(f.port, '/mcp', { method: 'POST',
+    body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} } });
+  assert.equal(mcpNoToken.status, 401);
+  assert.equal(JSON.parse(mcpNoToken.body.toString()).error.code, 'AUTH_REQUIRED');
 });
 
 test('center without tls.caCertPath answers 404 on /ca.pem and never serves a bundle', async t => {
@@ -646,7 +651,7 @@ const expectPublicPage = (page, commit) => {
   assert.equal(page.headers['x-content-type-options'], 'nosniff');
   assert.equal(page.headers['referrer-policy'], 'no-referrer');
   const csp = page.headers['content-security-policy'];
-  for (const directive of ["default-src 'none'", "connect-src 'none'", "frame-ancestors 'none'",
+  for (const directive of ["default-src 'none'", "connect-src 'self'", "frame-ancestors 'none'",
     "form-action 'none'", "base-uri 'none'"]) assert.equal(csp.includes(directive), true, directive);
   const body = page.body.toString('utf8');
   assert.match(body, /^<!doctype html>/i);
@@ -662,6 +667,11 @@ test('center serves the unauthenticated /join page pinned to build.commit and no
   await f.started;
   const body = expectPublicPage(await publicRequest(f.port, '/join'), PAGE_COMMIT);
   assert.equal(body.includes('你的名字'), true, 'the name input ships with the page');
+  assert.equal(body.includes('直接注册'), true, 'the one-time direct registration form ships with the page');
+  assert.equal(body.includes('/api/v1/enroll'), true, 'the page enrolls through the same-origin API');
+  assert.equal(body.includes("credentials: 'omit'"), true, 'enrollment never sends cookies');
+  assert.equal(body.includes('claude mcp add --transport http'), true, 'Claude Code HTTP MCP snippet is present');
+  assert.equal(body.includes('mcpServers'), true, 'generic JSON MCP snippet is present');
   assert.equal(body.includes('手工步骤'), true);
   // Only the exact GET route is public; every variant stays unresolvable.
   for (const path of ['/join/', '/join/extra', '/join#invite=x', '/join?x=1']) {

@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { parseImConfig } from '../src/im/config.js';
 import { renderJoinPage } from '../src/im/join-page.js';
+import { createImMcpHttp } from '../src/im/mcp-http.js';
 import { createImCenter } from '../src/im/server.js';
 import { assertImSchema } from '../src/im/schema.js';
 
@@ -57,7 +58,7 @@ if (!configPath || process.argv.length !== 3) {
   console.error('Usage: node scripts/im-center.mjs <existing-config.json>');
   process.exitCode = 1;
 } else {
-  let db, center, server;
+  let db, center, server, mcp;
   try {
     const settings = JSON.parse(readFileSync(existingFile(configPath), 'utf8'));
     if (!settings || typeof settings !== 'object' || Array.isArray(settings) ||
@@ -108,6 +109,7 @@ if (!configPath || process.argv.length !== 3) {
     db = new DatabaseSync(dbPath);
     db.exec('PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL');
     center = createImCenter({ db, policy });
+    mcp = createImMcpHttp({ ...center.modules, policy });
     // Both public routes are static: the pinned npx ref is resolved once at
     // startup, so a redeploy changes the page with the commit, not per request.
     const joinPage = Buffer.from(renderJoinPage({ commit: servedCommit }), 'utf8');
@@ -127,7 +129,9 @@ if (!configPath || process.argv.length !== 3) {
           res.setHeader('X-Content-Type-Options', 'nosniff');
           res.setHeader('Referrer-Policy', 'no-referrer');
           // No external script, font or image; nothing can leave the page.
-          res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; connect-src 'none'");
+          // The page may call only its own origin, for one-time enrollment. It
+          // still cannot load external scripts/fonts/images or navigate away.
+          res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; connect-src 'self'");
           res.end(joinPage);
           return;
         }
@@ -143,6 +147,10 @@ if (!configPath || process.argv.length !== 3) {
           res.end(caPem);
           return;
         }
+        // A remote MCP session requires HTTPS, a Bearer credential and an exact
+        // `/mcp` path. The handler declines every other path so `/api/v1`,
+        // `/join` and `/ca.pem` keep their existing dispatch behavior.
+        if (await mcp.handle(req, res)) return;
         if (!await center.handler.handle(req, res)) {
           res.statusCode = 404;
           res.setHeader('Cache-Control', 'no-store');
@@ -165,13 +173,15 @@ if (!configPath || process.argv.length !== 3) {
       server.listen(port, host, resolve);
     });
     console.log('IM center listening');
-    const shutdown = () => {
+    const shutdown = async () => {
+      await mcp.close();
       center.close();
       server.close(() => { db.close(); process.exitCode = 0; });
     };
-    process.once('SIGINT', shutdown);
-    process.once('SIGTERM', shutdown);
+    process.once('SIGINT', () => { void shutdown(); });
+    process.once('SIGTERM', () => { void shutdown(); });
   } catch {
+    await mcp?.close();
     center?.close();
     if (server?.listening) server.close();
     db?.close();

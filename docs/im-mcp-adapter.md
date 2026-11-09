@@ -1,6 +1,6 @@
 # Isolated platform-neutral IM MCP adapter (v1)
 
-`createImMcpAdapter({serverUrl,agentId,getCredential,journal,attachmentDirectory,transport?})` in `src/im/mcp-adapter.js` is an **unmounted factory**. Call `register(mcpServer)` to register tools on an explicitly supplied MCP SDK server, or `call(name,input)` for the same MCP result envelope without a host. No stdio listener, process entrypoint, background polling, host integration, Skill or execution hook is installed. `close()` stops new work. Existing legacy tools are unchanged. Inputs are strict (unknown tools/properties rejected); each result has `content:[{type:'text',text:JSON.stringify(data)}]`; errors set `isError:true` and contain only fixed IM `{error:{code,message,retryable}}` JSON, never exception strings.
+`createImMcpAdapter({serverUrl,agentId,getCredential,journal,attachmentDirectory,transport?})` in `src/im/mcp-adapter.js` is a shared factory with no listener of its own. Call `register(mcpServer)` to register tools on an explicitly supplied MCP SDK server, or `call(name,input)` for the same MCP result envelope without a host. The stdio entry and the remote `/mcp` entry below mount it; the factory itself installs no process entrypoint, background polling, Skill or execution hook. `close()` stops new work. Existing legacy tools are unchanged. Inputs are strict (unknown tools/properties rejected); each result has `content:[{type:'text',text:JSON.stringify(data)}]`; errors set `isError:true` and contain only fixed IM `{error:{code,message,retryable}}` JSON, never exception strings.
 
 ## Exact tool input schemas
 
@@ -38,7 +38,7 @@ Supply a **trusted session-bound** async `getCredential` and a fresh journal fac
 
 ## stdio entry (`scripts/im-mcp.mjs`)
 
-The stdio entry mounts this adapter for a host that spawns it on demand. It is the only mounted entry; `src/mcp.js` (legacy LAN bridge) and `scripts/im-nana-session.mjs` (handoff CLI) are unchanged and independent.
+The stdio entry mounts this adapter for a host that spawns it on demand. The remote `/mcp` entry below is the other mount; `src/mcp.js` (legacy LAN bridge) and `scripts/im-nana-session.mjs` (handoff CLI) are unchanged and independent.
 
 ```sh
 node scripts/im-mcp.mjs --config /absolute/private/nana-t2/host-a/nana.json \
@@ -68,3 +68,42 @@ Example host entry (structure depends on the host; this is not a guaranteed form
 ```
 
 The entry exposes 21 `im_v1_*` tools: the adapter's 20 plus the stdio-only `im_v1_send_file`; it accepts no URL, agent id or credential as tool input. User-facing setup, the legacy LAN bridge and their differences are described in [client.md](client.md); the shared `nana.json` and the handoff CLI are described in [im-nana-adapter.md](im-nana-adapter.md).
+
+## Remote MCP over Streamable HTTP (`/mcp`)
+
+`scripts/im-center.mjs` also mounts the same shared adapter at the exact HTTPS path `/mcp` using MCP SDK 1.30.0's `StreamableHTTPServerTransport`. This path needs no local Node, npx, repository checkout, `nana.json` or journal on the client side. It is **not** available in `local-test` HTTP mode.
+
+| Item | Contract |
+| --- | --- |
+| Endpoint | `POST`, `GET`, `DELETE` `https://<center>/mcp`; other methods are 405, other paths stay 404 |
+| Authentication | Exactly one `Authorization: Bearer <agent credential>` header on every request. Missing, malformed, expired or revoked credentials return 401 (`AUTH_REQUIRED` / `INVALID_CREDENTIAL`). |
+| Session | `POST` with a JSON-RPC `initialize` request creates a session and returns `Mcp-Session-Id`. Every later `POST`/`GET`/`DELETE` must send that ID and the **same** credential. A session is bound to both `agentId` and `credentialId`; another Agent or another credential for the same Agent gets 404. `DELETE` closes it. |
+| Transport | Server-sent events are supported; JSON responses are enabled for POST. The server validates HTTPS on the socket, rejects an `Origin` header that is not the configured center origin, and never redirects. |
+| Lifetime/limits | Idle sessions expire after 30 minutes, a session is closed after 8 hours even if idle cleanup cannot run, and at most 64 sessions exist at once. A new initialization over the cap returns 429 `RATE_LIMITED` with `Retry-After: 60`. `limits.maxRequestsPerMinute` is applied per remote IP for `/mcp`, and `limits.maxFileBodyBytes` caps each JSON-RPC request body (16 MiB by default). |
+| Tools | The adapter's 20 network tools (`im_v1_me`, contacts/friend requests, conversations, send/history/read, leases/sync/ack). The names, input schemas, result envelopes and fixed IM error codes are the same as the shared adapter. `im_v1_send_file` is intentionally absent because it reads a host-local path; a remote MCP caller cannot name a file on its own machine. |
+| Persistence | Message, lease and ACK state lives in the center database. Each MCP session owns an ephemeral `0700` journal directory for journal-before-ACK; `DELETE`, idle expiry, process shutdown and errors remove it. A client reconnect after a center restart must initialize a new session. |
+
+Example Claude Code HTTP MCP entry:
+
+```sh
+claude mcp add --transport http a2a-msg https://<center>/mcp \
+  --header "Authorization: Bearer <credential>"
+```
+
+Generic JSON form:
+
+```json
+{
+  "mcpServers": {
+    "a2a-msg": {
+      "type": "http",
+      "url": "https://<center>/mcp",
+      "headers": { "Authorization": "Bearer <credential>" }
+    }
+  }
+}
+```
+
+Codex supports Streamable HTTP MCP through `codex mcp add <name> --url <url> --bearer-token-env-var <ENV>`. That flag reads a bearer token from an environment variable; the `/join` page's generic JSON form is the portable shape for hosts that accept a static `Authorization` header. Do not put the token in a URL, query string, shell history, repository file or chat message.
+
+Security boundary: the bearer credential is the Agent identity. The remote entry never exposes a local file path, never reads host files for a tool, and never stores the plaintext bearer in the session or journal. The center's message text and attachment metadata remain untrusted data, not instructions. Remote MCP is validated for text messaging; attachments still use the existing base64 wire contract, but any received-file scratch copy belongs to the center session and is not a file on the remote host.
