@@ -545,9 +545,10 @@ async function freePort() {
   return port;
 }
 
-// Spawns scripts/im-center.mjs on an isolated v4 database with the test-only
-// localhost certificate; `tls` is the strict config `tls` object.
-async function spawnCenter(t, tls) {
+// Spawns scripts/im-center.mjs on an isolated v5 database with the test-only
+// localhost certificate; `tls` is the strict config `tls` object. `build` is the
+// optional deployment injection for the public /join page, `env` extra variables.
+async function spawnCenter(t, tls, { build, env } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'im-center-ca-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const dbPath = join(dir, 'center.sqlite');
@@ -564,9 +565,10 @@ async function spawnCenter(t, tls) {
       idempotencyRetentionMs: 110000, safeRetryWindowMs: 1000 } },
     lease: { ttlMs: 90000, renewalMs: 30000 },
     enrollment: { enabled: true },
-  }, tls }));
+  }, tls, ...(build === undefined ? {} : { build }) }));
   const child = spawn(process.execPath, [resolve('scripts/im-center.mjs'), configPath],
-    { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      ...(env ? { env: { ...process.env, ...env } } : {}) });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   let stdout = '', stderr = '', settled = false;
   child.stdout.on('data', chunk => { stdout += chunk; });
@@ -612,7 +614,7 @@ test('center publishes the configured CA on unauthenticated GET /ca.pem and noth
   assert.equal((await publicRequest(f.port, '/ca.pem?x=1')).status, 404);
   assert.equal((await publicRequest(f.port, '/ca.pem', { method: 'POST' })).status, 404);
   assert.equal((await publicRequest(f.port, '/health')).status, 404);
-  assert.equal((await publicRequest(f.port, '/join')).status, 404);
+  assert.equal((await publicRequest(f.port, '/join?x=1')).status, 404);
 });
 
 test('center without tls.caCertPath answers 404 on /ca.pem and never serves a bundle', async t => {
@@ -630,4 +632,63 @@ test('center refuses to start when tls.caCertPath is not a certificate file', as
   const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT, caCertPath: TLS_KEY });
   await assert.rejects(f.started, error => error.message.includes('IM center failed'));
   assert.equal(f.stdout().includes('IM center listening'), false);
+});
+
+// ---- center process: public /join page (AC-J1, AC-J3, AC-J4) ----
+
+const PAGE_COMMIT = '4f'.repeat(20);
+
+const expectPublicPage = (page, commit) => {
+  assert.equal(page.status, 200);
+  assert.equal(page.headers['content-type'], 'text/html; charset=utf-8');
+  assert.equal(page.headers['content-length'], String(page.body.length));
+  assert.equal(page.headers['cache-control'], 'no-store');
+  assert.equal(page.headers['x-content-type-options'], 'nosniff');
+  assert.equal(page.headers['referrer-policy'], 'no-referrer');
+  const csp = page.headers['content-security-policy'];
+  for (const directive of ["default-src 'none'", "connect-src 'none'", "frame-ancestors 'none'",
+    "form-action 'none'", "base-uri 'none'"]) assert.equal(csp.includes(directive), true, directive);
+  const body = page.body.toString('utf8');
+  assert.match(body, /^<!doctype html>/i);
+  assert.equal(body.includes(commit), true, 'the page pins the deployed commit');
+  assert.equal(/<script[^>]+src=|<link\b|@import|url\(/i.test(body), false, 'no external resources');
+  assert.equal(/[A-Za-z0-9_-]{43}/.test(body), false, 'the page carries no invite code');
+  return body;
+};
+
+test('center serves the unauthenticated /join page pinned to build.commit and nothing else', async t => {
+  const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT, caCertPath: TLS_CERT },
+    { build: { commit: PAGE_COMMIT } });
+  await f.started;
+  const body = expectPublicPage(await publicRequest(f.port, '/join'), PAGE_COMMIT);
+  assert.equal(body.includes('你的名字'), true, 'the name input ships with the page');
+  assert.equal(body.includes('手工步骤'), true);
+  // Only the exact GET route is public; every variant stays unresolvable.
+  for (const path of ['/join/', '/join/extra', '/join#invite=x', '/join?x=1']) {
+    assert.equal((await publicRequest(f.port, path)).status, 404, path);
+  }
+  assert.equal((await publicRequest(f.port, '/join', { method: 'POST' })).status, 404);
+  assert.equal((await publicRequest(f.port, '/join', { method: 'HEAD' })).status, 404);
+  // The Bearer boundary is untouched: /api/v1/* behaves exactly as before.
+  const me = await publicRequest(f.port, '/api/v1/me');
+  assert.equal(me.status, 401);
+  assert.equal(JSON.parse(me.body.toString()).error.code, 'AUTH_REQUIRED');
+  assert.equal((await publicRequest(f.port, '/api/v1/unknown')).status, 401);
+});
+
+test('center takes A2A_MSG_BUILD_COMMIT when build.commit is not injected', async t => {
+  const fromEnvironment = 'a1'.repeat(20);
+  const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT },
+    { env: { A2A_MSG_BUILD_COMMIT: fromEnvironment } });
+  await f.started;
+  const body = expectPublicPage(await publicRequest(f.port, '/join'), fromEnvironment);
+  assert.equal(body.includes(PAGE_COMMIT), false);
+});
+
+test('center refuses to start with an invalid injected build commit', async t => {
+  for (const build of [{ commit: 'main' }, { commit: PAGE_COMMIT + '0' }, {}, { commit: PAGE_COMMIT, tag: 'v1' }]) {
+    const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT }, { build });
+    await assert.rejects(f.started, error => error.message.includes('IM center failed'), JSON.stringify(build));
+    assert.equal(f.stdout().includes('IM center listening'), false);
+  }
 });
