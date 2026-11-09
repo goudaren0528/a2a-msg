@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Compact `/join` registration result (source only, not deployed, no npm release)
+
+- **One primary copy area after direct registration**: the page shows `agentId` as a single-line small code element, a host selector (Claude Code default / Codex / generic JSON), the selected host's only config, and one `复制配置` button. Switching hosts swaps the config; copying advances the step bar to `4 粘进宿主`. The previous three copy buttons (Claude command, generic JSON, CLI prompt) are no longer shown together.
+- **Correct host snippets**: Claude Code keeps `claude mcp add --transport http a2a-msg <origin>/mcp --header "Authorization: Bearer <credential>"`. Codex emits `[mcp_servers.a2a-msg]`, `url`, and `http_headers = { Authorization = "Bearer …" }` for `~/.codex/config.toml`. Generic JSON is the existing `mcpServers` object compacted to one horizontally scrollable line.
+- **Step bar and compact layout**: `1 填名字 → 2 直接注册 → 3 复制配置 → 4 粘进宿主` tracks empty name, valid name, successful registration and successful copy with `aria-current`. The config block is fixed to three rows with `wrap="off"` and horizontal scrolling. The tall prompt textarea (previously `46vh`) is gone.
+- **Fallbacks folded away**: the local CLI prompt lives in a collapsed `其他方式（本地 CLI 提示词）` details block, and manual steps live in a collapsed `手工步骤` block that opens automatically for an invalid link. Windows is told to use direct registration without Node/npx; npx is only a macOS/Linux fallback when the host lacks remote MCP support. Direct registration, prompt generation/copying, fixed invite errors, one-time token handling and CA fingerprint guidance remain.
+- Docs: `docs/install-npx.md` documents the new flow, Codex TOML and generic JSON. Tests: `tests/im-join-page.test.js` covers the step transitions, one primary copy button, all three host configs, three-line config block, collapsed fallbacks, no-build-commit direct registration and the existing fragment/name/prompt/error cases.
+
 ### Remote MCP and one-time web registration (source only, not deployed, no npm release)
 
 - **New Bearer-authenticated `POST/GET/DELETE /mcp`** (`src/im/mcp-http.js`, mounted by `scripts/im-center.mjs`) using MCP SDK 1.30.0 Streamable HTTP. `initialize` creates a stateful session; every request must carry the same `Mcp-Session-Id` and the same Agent credential. Sessions are bound to `agentId` plus `credentialId`, idle-expire after 30 minutes, are capped at 64, and never store the plaintext Bearer. The route requires an encrypted socket (never `local-test`), validates `Origin`, applies a per-IP 60-second request bucket and `limits.maxFileBodyBytes`, and returns fixed 401/404/405/429 responses. `/api/v1/*`, `/join` and `/ca.pem` keep their existing routing and auth boundaries.

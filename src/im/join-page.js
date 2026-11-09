@@ -94,11 +94,16 @@ export function buildRemoteMcpConfig({ origin, credential } = {}) {
   return {
     url,
     claude: 'claude mcp add --transport http a2a-msg ' + url + ' --header "' + header + '"',
+    codex: [
+      '[mcp_servers.a2a-msg]',
+      'url = "' + url + '"',
+      'http_headers = { Authorization = "Bearer ' + credential + '" }',
+    ].join('\n'),
     json: JSON.stringify({
       mcpServers: {
         'a2a-msg': { type: 'http', url, headers: { Authorization: 'Bearer ' + credential } },
       },
-    }, null, 2),
+    }),
   };
 }
 
@@ -238,92 +243,114 @@ export function renderJoinPage({ commit } = {}) {
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; }
-main { max-width: 46rem; margin: 0 auto; }
-h1 { font-size:1.35rem; line-height:1.3; margin:.2rem 0 .6rem; }
-h2 { font-size:1.05rem; margin:0 0 .5rem; }
+body { margin:0; padding:14px; background:var(--bg); color:var(--fg); font:16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif; }
+main { max-width: 40rem; margin: 0 auto; }
+h1 { font-size:1.25rem; line-height:1.3; margin:.1rem 0 .35rem; }
+h2 { font-size:1rem; margin:0 0 .4rem; }
 p, li { overflow-wrap: anywhere; }
-.lead { color:var(--muted); margin:0 0 1rem; }
-.status { margin:0 0 1rem; padding:.7rem .9rem; border-radius:.6rem; border:1px solid var(--line); background:var(--card); }
+.lead { color:var(--muted); margin:0 0 .75rem; font-size:.92rem; }
+.steps { display:flex; flex-wrap:wrap; align-items:center; gap:.3rem; list-style:none; margin:0 0 .8rem; padding:0; font-size:.8rem; }
+.step { color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:.18rem .5rem; background:var(--card); white-space:nowrap; }
+.step.active { color:#fff; background:var(--accent); border-color:var(--accent); font-weight:600; }
+.step.done { color:var(--ok); border-color:var(--ok); }
+.sep { color:var(--muted); font-size:.78rem; }
+.status { margin:0 0 .8rem; padding:.55rem .75rem; border-radius:.55rem; border:1px solid var(--line); background:var(--card); font-size:.88rem; }
 .status.ok { border-color:var(--ok); color:var(--ok); }
 .status.warn { border-color:var(--warn); background:var(--warn-bg); color:var(--warn); }
-section { background:var(--card); border:1px solid var(--line); border-radius:.8rem; padding:1rem; margin:0 0 1rem; }
-label { display:block; font-weight:600; margin:0 0 .5rem; }
-input[type=text] { width:100%; min-height:2.75rem; padding:.6rem .75rem; border:1px solid var(--line); border-radius:.6rem; background:var(--bg); color:var(--fg); font:16px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.hint { margin:.5rem 0 0; color:var(--muted); font-size:.9rem; }
+section, details.more { background:var(--card); border:1px solid var(--line); border-radius:.7rem; padding:.8rem; margin:0 0 .7rem; }
+label { display:block; font-weight:600; margin:0 0 .35rem; font-size:.92rem; }
+input[type=text] { width:100%; min-height:2.75rem; padding:.55rem .7rem; border:1px solid var(--line); border-radius:.55rem; background:var(--bg); color:var(--fg); font:16px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.hint { margin:.4rem 0 0; color:var(--muted); font-size:.84rem; }
 .hint.warn { color:var(--warn); }
-textarea { width:100%; min-height:46vh; padding:.75rem; border:1px solid var(--line); border-radius:.6rem; background:var(--bg); color:var(--fg); font:14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize:vertical; }
-.actions { display:flex; flex-wrap:wrap; gap:.6rem; align-items:center; margin-top:.75rem; }
-button { font:inherit; font-weight:600; padding:.6rem 1.1rem; min-height:2.75rem; border-radius:.6rem; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+textarea { width:100%; padding:.55rem .65rem; border:1px solid var(--line); border-radius:.55rem; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+textarea.config { height:5.25rem; min-height:5.25rem; resize:none; white-space:pre; overflow:auto; }
+#prompt { height:10rem; min-height:8rem; resize:vertical; }
+.actions { display:flex; flex-wrap:wrap; gap:.55rem; align-items:center; margin-top:.65rem; }
+button { font:inherit; font-weight:600; padding:.55rem 1rem; min-height:2.75rem; border-radius:.55rem; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
 button[disabled] { opacity:.5; cursor:not-allowed; }
 button:active { transform: translateY(1px); }
-.copy-status { margin:0; color:var(--muted); }
+.hosts { display:flex; flex-wrap:wrap; gap:.35rem; margin:.1rem 0 .55rem; }
+.host { min-height:2.2rem; padding:.35rem .7rem; font-size:.88rem; color:var(--fg); background:var(--bg); border:1px solid var(--line); }
+.host.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+.agent-line { margin:.1rem 0 .45rem; color:var(--muted); font-size:.8rem; white-space:nowrap; }
+.agent-line code { display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; vertical-align:bottom; font-size:.78rem; }
+.copy-status { margin:0; color:var(--muted); font-size:.84rem; }
 .copy-status.ok { color:var(--ok); }
 .copy-status.warn { color:var(--warn); }
 .danger { border-color:var(--warn); background:var(--warn-bg); color:var(--warn); }
-.secret { margin:.2rem 0 .75rem; }
-.secret textarea { min-height:3.6rem; }
+details.more summary { cursor:pointer; font-weight:600; font-size:.9rem; color:var(--accent); }
+details.more[open] summary { margin-bottom:.55rem; }
 ol, ul { padding-left:1.25rem; }
-code { font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:var(--bg); border:1px solid var(--line); border-radius:.3rem; padding:.1rem .3rem; }
-details summary { cursor:pointer; font-weight:600; }
-footer { color:var(--muted); font-size:.85rem; margin:1rem 0 2rem; }
+code { font:12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:var(--bg); border:1px solid var(--line); border-radius:.3rem; padding:.05rem .25rem; }
+footer { color:var(--muted); font-size:.8rem; margin:.6rem 0 1.2rem; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 </style>
 </head>
 <body>
 <main>
-  <h1>团队信箱 · 接入页</h1>
-  <p class="lead">这个页面只做一件事：用你地址栏 <code>#</code> 后面的邀请码和 CA 指纹，在本地生成一段接入提示词。把提示词复制下来，粘给你自己的 Agent（Codex / Claude 等），由它执行；页面本身不执行任何命令，也不上传任何内容。</p>
+  <h1>团队信箱 · 接入</h1>
+  <p class="lead">填名字 → 直接注册 → 选宿主 → 复制配置，粘进宿主即可。Windows 也无需 Node / npx。</p>
+  <ol class="steps" aria-label="接入步骤">
+    <li class="step active" id="step-1">1 填名字</li>
+    <li class="sep" aria-hidden="true">→</li>
+    <li class="step" id="step-2">2 直接注册</li>
+    <li class="sep" aria-hidden="true">→</li>
+    <li class="step" id="step-3">3 复制配置</li>
+    <li class="sep" aria-hidden="true">→</li>
+    <li class="step" id="step-4">4 粘进宿主</li>
+  </ol>
+  <p class="status" id="status" role="status" aria-live="polite">先填一个能认出这台设备的名字。</p>
+  <noscript><p class="status warn">这个页面需要 JavaScript 才能直接注册；请启用 JavaScript，或按下面的手工步骤接入。</p></noscript>
   <section id="name-block">
     <label for="name">你的名字（接入后对方看到的名字）</label>
     <input id="name" type="text" maxlength="255" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如 office-mac">
-    <p class="hint" id="name-status">必填：对方会看到这个名字（1–255 个字符，不能有控制字符）。浏览器读不到你的机器名，自己起一个能认出这台设备的名字，例如 <code>office-mac</code>；刷新会记住你填的名字。</p>
+    <p class="hint" id="name-status">必填：1–255 个字符，不能有控制字符。浏览器读不到你的机器名，自己起一个能认出这台设备的名字；刷新会记住。</p>
   </section>
-  <p class="status" id="status" role="status" aria-live="polite">页面只在你的浏览器里工作；只有点击“直接注册”时才会向同一个中心发送一次注册请求，<code>#</code> 后面的邀请码不会进入其他请求。</p>
-  <noscript><p class="status warn">这个页面需要 JavaScript 才能在本地生成提示词。请启用 JavaScript，或按下面的手工步骤接入。</p></noscript>
-  <section id="direct-block">
-    <h2>直接注册（推荐）</h2>
-    <p>在上面填好名字，然后点下面的按钮。浏览器会用同源请求兑换邀请码，并只在本页显示一次 <code>agentId</code> 和远程 MCP 配置。令牌不会写进浏览器存储，也不会出现在地址栏。</p>
+  <section id="register-block">
     <div class="actions">
-      <button type="button" id="register" disabled>直接注册并生成远程 MCP 配置</button>
+      <button type="button" id="register" disabled>直接注册</button>
+      <p class="copy-status" id="register-status" role="status" aria-live="polite"></p>
     </div>
-    <p class="copy-status" id="register-status" role="status" aria-live="polite"></p>
-    <div id="register-result" hidden>
-      <p class="status danger"><strong>下面这段包含 Bearer 令牌，只显示这一次。</strong>刷新页面后不会再显示；不要发到聊天、issue、仓库或 URL 里。请立即复制到你的 MCP 宿主配置中。</p>
-      <label for="agent-id">agentId</label>
-      <textarea id="agent-id" class="secret" readonly spellcheck="false"></textarea>
-      <label for="claude-config">Claude Code · HTTP MCP（复制后执行）</label>
-      <textarea id="claude-config" class="secret" readonly spellcheck="false"></textarea>
-      <div class="actions">
-        <button type="button" id="copy-claude">复制 Claude Code 命令</button>
-        <p class="copy-status" id="claude-copy-status"></p>
-      </div>
-      <label for="json-config">通用 JSON（例如支持 HTTP MCP 的宿主配置）</label>
-      <textarea id="json-config" class="secret" readonly spellcheck="false"></textarea>
-      <div class="actions">
-        <button type="button" id="copy-json">复制通用 JSON</button>
-        <p class="copy-status" id="json-copy-status"></p>
-      </div>
-      <p class="hint">远程 MCP 地址：<code id="mcp-url"></code>。配置成功后可以调用 <code>im_v1_me</code> 校验身份；整条路径不需要本机 Node、npx 或仓库。下面的 CLI 提示词仍保留，作为回退。</p>
-    </div>
+    <p class="hint">点击后用地址栏里的邀请码向同一个中心注册，并生成远程 MCP 配置；不需要在本机安装 Node 或 npx。</p>
   </section>
-  <section id="prompt-block" hidden>
-    <label for="prompt">接入提示词（整段复制）</label>
-    <textarea id="prompt" readonly spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="先把名字补好，提示词会出现在这里。"></textarea>
+  <section id="result-block" hidden>
+    <p class="agent-line">agentId <code id="agent-id"></code></p>
+    <p class="hint warn">这份配置含一次性令牌，只显示这一次；刷新后不再显示，不要发到聊天、issue 或仓库。</p>
+    <div class="hosts" role="group" aria-label="选择宿主">
+      <button type="button" class="host active" id="host-claude" aria-pressed="true">Claude Code</button>
+      <button type="button" class="host" id="host-codex" aria-pressed="false">Codex</button>
+      <button type="button" class="host" id="host-json" aria-pressed="false">通用 JSON</button>
+    </div>
+    <label class="sr-only" for="config">选中的宿主配置</label>
+    <textarea id="config" class="config" rows="3" wrap="off" readonly spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <p class="hint" id="host-hint"></p>
     <div class="actions">
-      <button type="button" id="copy" disabled>复制提示词</button>
-      <p class="copy-status" id="copy-status"></p>
+      <button type="button" id="copy-config">复制配置</button>
+      <p class="copy-status" id="copy-status" role="status" aria-live="polite"></p>
     </div>
   </section>
   <section id="error" hidden>
-    <h2>这条链接不能自动生成提示词</h2>
+    <h2 id="error-title">这条链接不能直接接入</h2>
     <p id="error-detail"></p>
   </section>
-  <section id="manual">
-    <h2>手工步骤</h2>
+  <details class="more" id="other-ways">
+    <summary>其他方式（本地 CLI 提示词）</summary>
+    <p class="hint">Windows 请直接用上面的「直接注册」，不需要 Node / npx。只有 macOS / Linux 且宿主不支持远程 MCP 时，才用下面的本地 CLI 提示词。</p>
+    <div id="prompt-block">
+      <label for="prompt">接入提示词（整段复制）</label>
+      <textarea id="prompt" readonly spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="先把名字补好，提示词会出现在这里。"></textarea>
+      <div class="actions">
+        <button type="button" id="copy" disabled>复制提示词</button>
+        <p class="copy-status" id="prompt-copy-status"></p>
+      </div>
+    </div>
+  </details>
+  <details class="more" id="manual">
+    <summary>手工步骤（链接有问题时再看）</summary>
     <ol>
 ${manual}
     </ol>
-  </section>
+  </details>
   <footer>部署提交：<code id="build-commit">${escapeHtml(commitText)}</code></footer>
 </main>
 <script>
@@ -338,37 +365,83 @@ var enrollDirect = ${enrollDirect.toString()};
 var buildJoinPrompt = ${buildJoinPrompt.toString()};
 (function () {
   var status = document.getElementById('status');
+  var nameBlock = document.getElementById('name-block');
+  var registerBlock = document.getElementById('register-block');
+  var registerButton = document.getElementById('register');
+  var registerStatus = document.getElementById('register-status');
+  var resultBlock = document.getElementById('result-block');
+  var agentIdBox = document.getElementById('agent-id');
+  var configBox = document.getElementById('config');
+  var hostHint = document.getElementById('host-hint');
+  var copyConfigButton = document.getElementById('copy-config');
+  var copyStatus = document.getElementById('copy-status');
   var promptBlock = document.getElementById('prompt-block');
   var promptBox = document.getElementById('prompt');
   var copyButton = document.getElementById('copy');
-  var copyStatus = document.getElementById('copy-status');
+  var promptCopyStatus = document.getElementById('prompt-copy-status');
   var nameInput = document.getElementById('name');
   var nameStatus = document.getElementById('name-status');
   var errorBox = document.getElementById('error');
   var errorDetail = document.getElementById('error-detail');
-  var registerButton = document.getElementById('register');
-  var registerStatus = document.getElementById('register-status');
-  var registerResult = document.getElementById('register-result');
-  var agentIdBox = document.getElementById('agent-id');
-  var claudeBox = document.getElementById('claude-config');
-  var jsonBox = document.getElementById('json-config');
-  var mcpUrl = document.getElementById('mcp-url');
-  var copyClaude = document.getElementById('copy-claude');
-  var copyJson = document.getElementById('copy-json');
-  var claudeCopyStatus = document.getElementById('claude-copy-status');
-  var jsonCopyStatus = document.getElementById('json-copy-status');
+  var errorTitle = document.getElementById('error-title');
+  var manualDetails = document.getElementById('manual');
+  var stepEls = {
+    1: document.getElementById('step-1'),
+    2: document.getElementById('step-2'),
+    3: document.getElementById('step-3'),
+    4: document.getElementById('step-4'),
+  };
+  var hostButtons = {
+    claude: document.getElementById('host-claude'),
+    codex: document.getElementById('host-codex'),
+    json: document.getElementById('host-json'),
+  };
+  var hostHints = {
+    claude: '在终端执行这一条；装好后重启 Claude Code。',
+    codex: '把这三行追加到 ~/.codex/config.toml（Windows 是 %USERPROFILE% 下的 .codex/config.toml），然后重启 Codex。',
+    json: '粘进宿主的 MCP 配置（JSON 对象），然后重启宿主。',
+  };
   var origin = typeof location.origin === 'string' ? location.origin : '';
   var parsed = parseJoinFragment(typeof location.hash === 'string' ? location.hash : '');
   var link = null;
   var directEnabled = parsed.ok && /^https:\\/\\/[^\\s\\/?#]+$/.test(origin);
   var registered = false;
   var registering = false;
+  var host = 'claude';
+  var configs = { claude: '', codex: '', json: '' };
   if (parsed.ok && /^https?:\\/\\/[^\\s\\/?#]+$/.test(origin)) {
     link = origin + '/join#invite=' + parsed.invite + '&ca=' + parsed.ca;
   }
   function setStatus(text, kind) { status.textContent = text; status.className = 'status ' + (kind || ''); }
   function setNameHint(text, kind) { nameStatus.textContent = text; nameStatus.className = 'hint ' + (kind || ''); }
   function setRegisterStatus(text, kind) { registerStatus.textContent = text; registerStatus.className = 'copy-status ' + (kind || ''); }
+  function setCopyStatus(text, kind) { copyStatus.textContent = text; copyStatus.className = 'copy-status ' + (kind || ''); }
+  function setStep(current) {
+    for (var index = 1; index <= 4; index += 1) {
+      var element = stepEls[index];
+      if (!element) continue;
+      element.className = 'step' + (index < current ? ' done' : (index === current ? ' active' : ''));
+      if (index === current) element.setAttribute('aria-current', 'step');
+      else element.removeAttribute('aria-current');
+    }
+  }
+  function setHostButtonState() {
+    for (var key in hostButtons) {
+      var button = hostButtons[key];
+      if (!button) continue;
+      button.className = 'host' + (key === host ? ' active' : '');
+      button.setAttribute('aria-pressed', key === host ? 'true' : 'false');
+    }
+  }
+  function setHost(next) {
+    if (next !== 'claude' && next !== 'codex' && next !== 'json') return;
+    host = next;
+    configBox.value = configs[host];
+    hostHint.textContent = hostHints[host];
+    setHostButtonState();
+    setCopyStatus('');
+    if (registered) setStep(3);
+  }
   function syncRegisterButton() {
     registerButton.disabled = registered || registering || !directEnabled || !validateJoinDisplayName(nameInput.value).ok;
   }
@@ -386,121 +459,148 @@ var buildJoinPrompt = ${buildJoinPrompt.toString()};
   }
   function fail(message) {
     promptBlock.hidden = true;
+    resultBlock.hidden = true;
+    nameBlock.hidden = true;
+    registerBlock.hidden = true;
     errorBox.hidden = false;
+    errorTitle.textContent = '这条链接不能直接接入';
     errorDetail.textContent = message;
-    setStatus('这条链接不能自动生成提示词，请按下面的手工步骤接入。', 'warn');
+    manualDetails.open = true;
+    setStep(1);
+    setStatus('这条链接不能直接接入，请按下面的手工步骤处理。', 'warn');
   }
   function selectBox(box) {
     try { box.focus(); box.select(); box.setSelectionRange(0, box.value.length); return true; }
     catch (error) { return false; }
   }
-  function copyBox(box, target) {
+  function copyBox(box, target, onDone) {
     var selected = selectBox(box);
-    var done = function (copied) {
-      target.textContent = copied ? '已复制。' : (selected ? '自动复制不可用：已选中全部文本，按 ⌘C（Mac）或 Ctrl+C 复制。'
+    var done = function (copiedOk) {
+      target.textContent = copiedOk ? '已复制。' : (selected ? '自动复制不可用：已选中全部文本，按 ⌘C（Mac）或 Ctrl+C 复制。'
         : '自动复制不可用：请手动选中后复制。');
-      target.className = 'copy-status ' + (copied ? 'ok' : 'warn');
+      target.className = 'copy-status ' + (copiedOk ? 'ok' : 'warn');
+      if (typeof onDone === 'function') onDone(copiedOk);
     };
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       navigator.clipboard.writeText(box.value).then(function () { done(true); }, function () {
-        var copied = false;
-        try { copied = document.execCommand('copy') === true; } catch (error) { copied = false; }
-        done(copied);
+        var copiedOk = false;
+        try { copiedOk = document.execCommand('copy') === true; } catch (error) { copiedOk = false; }
+        done(copiedOk);
       });
     } else {
-      var copied = false;
-      try { copied = document.execCommand('copy') === true; } catch (error) { copied = false; }
-      done(copied);
+      var copiedOk = false;
+      try { copiedOk = document.execCommand('copy') === true; } catch (error) { copiedOk = false; }
+      done(copiedOk);
     }
   }
   function refresh() {
     var name = nameInput.value;
     var checked = validateJoinDisplayName(name);
     if (!checked.ok) {
-      promptBlock.hidden = false;
+      promptBlock.hidden = true;
       promptBox.value = '';
       copyButton.disabled = true;
       var warn = checked.code !== 'EMPTY';
       setNameHint(checked.message, warn ? 'warn' : '');
-      setStatus(checked.code === 'EMPTY' ? '先在上面填你的名字，提示词会自动生成；没填好之前不能复制。' : '名字不符合要求：' + checked.message, warn ? 'warn' : '');
+      setStep(1);
+      setStatus(checked.code === 'EMPTY' ? '1 填名字：填好后「直接注册」按钮才会亮。' : '名字不符合要求：' + checked.message, warn ? 'warn' : '');
       syncRegisterButton();
       return;
     }
-    setNameHint('名字：' + name + '（对方会看到这个名字；1–255 个字符，不能有控制字符；刷新会记住）。', '');
-    var prompt;
-    try { prompt = buildJoinPrompt({ commit: BUILD_COMMIT, link: link, displayName: name }); }
-    catch (error) {
-      fail('生成提示词失败：链接或部署提交格式不对，请让管理员核对后重发链接。');
-      syncRegisterButton();
-      return;
+    setNameHint('名字：' + name + '（对方会看到；刷新会记住）。', '');
+    var prompt = null;
+    if (BUILD_COMMIT !== null && link !== null) {
+      try { prompt = buildJoinPrompt({ commit: BUILD_COMMIT, link: link, displayName: name }); }
+      catch (error) { prompt = null; }
     }
-    promptBox.value = prompt;
-    promptBlock.hidden = false;
-    copyButton.disabled = false;
-    copyStatus.textContent = '';
-    copyStatus.className = 'copy-status';
-    setStatus('提示词已生成（部署提交 ' + BUILD_COMMIT.slice(0, 7) + '…）：点「复制提示词」，粘给你自己的 Agent。', 'ok');
+    if (prompt === null) {
+      promptBlock.hidden = true;
+      promptBox.value = '';
+      copyButton.disabled = true;
+    } else {
+      promptBlock.hidden = false;
+      promptBox.value = prompt;
+      copyButton.disabled = false;
+    }
+    if (registered) { setStep(3); return; }
+    setStep(2);
+    if (BUILD_COMMIT === null) {
+      errorBox.hidden = false;
+      errorTitle.textContent = '本地 CLI 提示词不可用（直接注册仍可用）';
+      errorDetail.textContent = '中心没有注入部署提交号，无法把 npx 固定到某一次部署；直接注册不依赖部署提交，仍可使用。请让管理员在中心配置的 build.commit 里填入 40 位提交号后重新打开本页。';
+      setStatus('名字已填好：点「直接注册」。本地 CLI 提示词需要管理员先注入部署提交。', 'warn');
+    } else {
+      setStatus('名字已填好：点「直接注册」兑换邀请码。', '');
+    }
     syncRegisterButton();
   }
-  function selectAll() {
-    try { promptBox.focus(); promptBox.select(); promptBox.setSelectionRange(0, promptBox.value.length); return true; }
-    catch (error) { return false; }
-  }
-  function legacyCopy() { try { return document.execCommand('copy') === true; } catch (error) { return false; } }
   copyButton.addEventListener('click', function () {
     if (copyButton.disabled) return;
-    var selected = selectAll();
-    var done = function (copied) {
-      copyStatus.textContent = copied
-        ? '已复制整段提示词（含你的名字），粘给你自己的 Agent 即可。'
-        : (selected ? '自动复制不可用：已选中全部文本，按 ⌘C（Mac）或 Ctrl+C（Windows）复制。' : '自动复制不可用：请手动选中提示词后复制。');
-      copyStatus.className = 'copy-status ' + (copied ? 'ok' : 'warn');
-    };
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(promptBox.value).then(function () { done(true); }, function () { done(legacyCopy()); });
-    } else { done(legacyCopy()); }
+    copyBox(promptBox, promptCopyStatus, null);
+  });
+  hostButtons.claude.addEventListener('click', function () {
+    if (!registered) return;
+    setHost('claude');
+    setStatus('已切换到 Claude Code：点「复制配置」。', '');
+  });
+  hostButtons.codex.addEventListener('click', function () {
+    if (!registered) return;
+    setHost('codex');
+    setStatus('已切换到 Codex：点「复制配置」。', '');
+  });
+  hostButtons.json.addEventListener('click', function () {
+    if (!registered) return;
+    setHost('json');
+    setStatus('已切换到通用 JSON：点「复制配置」。', '');
+  });
+  copyConfigButton.addEventListener('click', function () {
+    if (!registered) return;
+    copyBox(configBox, copyStatus, function (copiedOk) {
+      if (!copiedOk) return;
+      setStep(4);
+      setStatus('配置已复制：粘进宿主后重启或新开宿主会话，再调用 im_v1_me 校验身份。', 'ok');
+    });
   });
   nameInput.addEventListener('input', function () { persist(nameInput.value); refresh(); });
   registerButton.addEventListener('click', function () {
-    if (registerButton.disabled || !parsed.ok) return;
+    if (registerButton.disabled || registered || !parsed.ok) return;
     var checked = validateJoinDisplayName(nameInput.value);
     if (!checked.ok) { setRegisterStatus(checked.message, 'warn'); return; }
     registering = true;
     syncRegisterButton();
+    setStatus('正在注册…', '');
     setRegisterStatus('正在注册…', '');
     enrollDirect({ origin: origin, invite: parsed.invite, displayName: nameInput.value }).then(function (result) {
       registering = false;
       if (!result.ok) {
         setRegisterStatus('注册失败（' + result.code + '）：' + result.message, 'warn');
+        setStatus('注册失败（' + result.code + '）：' + result.message, 'warn');
+        setStep(2);
         syncRegisterButton();
         return;
       }
       registered = true;
-      agentIdBox.value = result.agentId;
-      claudeBox.value = result.config.claude;
-      jsonBox.value = result.config.json;
-      mcpUrl.textContent = result.config.url;
-      registerResult.hidden = false;
-      registerButton.hidden = true;
-      setRegisterStatus('注册成功。令牌只显示在下面这一次；刷新页面后不会再显示。', 'ok');
-      syncRegisterButton();
+      registerButton.disabled = true;
+      configs = { claude: result.config.claude, codex: result.config.codex, json: result.config.json };
+      agentIdBox.textContent = result.agentId;
+      agentIdBox.title = result.agentId;
+      nameBlock.hidden = true;
+      registerBlock.hidden = true;
+      errorBox.hidden = true;
+      resultBlock.hidden = false;
+      setHost('claude');
+      setStep(3);
+      setStatus('注册成功：选宿主，点「复制配置」；粘进宿主后重启或新开宿主会话。', 'ok');
+      setRegisterStatus('');
     });
   });
-  copyClaude.addEventListener('click', function () { copyBox(claudeBox, claudeCopyStatus); });
-  copyJson.addEventListener('click', function () { copyBox(jsonBox, jsonCopyStatus); });
   var restored = storedName();
   nameInput.value = restored === null ? '' : restored;
   if (!parsed.ok) { fail(parsed.message); return; }
   if (link === null) { fail('无法识别当前页面地址，请确认是用中心发来的链接打开的。'); return; }
-  if (BUILD_COMMIT === null) {
-    fail('中心没有注入部署提交号，无法把 npx 固定到某一次部署；请让管理员在中心配置的 build.commit 里填入 40 位提交号后重新打开本页。直接注册不依赖部署提交，仍可使用。');
-    setNameHint('名字用于直接注册；下面的 CLI 提示词需要管理员先注入部署提交。', '');
-    syncRegisterButton();
-  } else {
-    refresh();
-  }
+  refresh();
   if (!directEnabled) {
-    setRegisterStatus(parsed.ok ? '直接注册只允许在 HTTPS 页面使用。' : '链接格式不对，无法直接注册。', 'warn');
+    setRegisterStatus('直接注册只允许在 HTTPS 页面使用；本地 CLI 提示词仍可用。', 'warn');
   }
 })();
 </script>
