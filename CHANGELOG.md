@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### One-command join (source only, not deployed, no npm release)
+
+- The center process (`scripts/im-center.mjs`) accepts an optional `tls.caCertPath` in the strict direct-TLS configuration and serves those bytes on the only public route outside `/api/v1`: `GET /ca.pem` (`Content-Type: application/x-pem-file`, no authentication, `nosniff`, `no-store`). Without `tls.caCertPath`, for non-GET methods and for every other path it answers `404`, so the Bearer boundary is unchanged. A file that is not a PEM certificate or that contains a private key refuses startup.
+- `scripts/im-register.mjs` gains `--ca-url` + `--ca-sha256`: the CA is fetched first-trust (server certificate not yet validated), the SHA-256 of the returned PEM bytes is compared with the pinned `sha256:<hex>`, and only a match is used as the `ca` for the enrollment request (chain and hostname still verified, redirects not followed). Without `--ca-url` behavior is unchanged (`fetch` + `NODE_EXTRA_CA_CERTS`).
+- New `join <link>` subcommand (`bin/a2a-msg.mjs` forwards to `scripts/im-register.mjs --join`): `https://<center>/join#invite=<code>&ca=sha256:<hex>` is one command for fetch CA, pin, and enroll; the fragment is never sent to the server. `--display-name` is now optional and defaults to the sanitized system hostname (characters outside `[A-Za-z0-9._-]` become `-`).
+- New fixed device-side errors: `INVALID_JOIN_LINK`, `CA_FETCH_FAILED`, `CA_INVALID`, `CA_FINGERPRINT_MISMATCH`, `CA_NOT_TRUSTED`. Every failure before identity writing leaves `identity.json`/credentials unwritten and the invite unspent; the state layout (`identity.json` + `credentials/`) is unchanged.
+- Docs: `docs/install-npx.md` leads with "Node 24 + one command", states that a fingerprint mismatch must stop, and keeps `NODE_EXTRA_CA_CERTS`/`register --center --invite` as the legacy path; `docs/im-http-contract.md` and `docs/im-enrollment-contract.md` document the route, flags, fingerprint semantics and error codes.
+- Tests: `tests/im-http.test.js` (public CA route, 404 matrix, invalid CA refuses startup), `tests/im-enrollment.test.js` (pinned CA success, wrong fingerprint, CA that did not issue the center certificate, unreachable CA, join link, hostname default), `tests/package.test.js` (join help/forwarding). New test-only fixture `tests/fixtures/im-tls/unrelated-ca.crt`.
+
 ### npx entry (source only, not published to npm)
 
 - `package.json` gains `bin: {"a2a-msg": "bin/a2a-msg.mjs"}` and ships `bin/` and `scripts/` through `files`; the package stays `private` and nothing is published to npm. Local `docs/delivery/*/evidence/` and `shots/` worktree evidence is excluded from the tarball.
