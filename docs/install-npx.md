@@ -181,13 +181,13 @@ npx 只新增一层入口，不替换既有用法：
 - `npx --yes git+file://<本地仓库> mcp --help`（等价于固定 Git ref 的直连形式）：退出码 0。
 - 同一 tarball 用 Node 22 运行入口：退出码 1，stderr 为 `NODE_VERSION_UNSUPPORTED`。
 
-2026-11-09 在 P6 阶段（`join` 当时还不落 CA）补验一行注册（证据：`docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/p6/`）；该段里「`~/.a2a-msg` 只有 `credentials/` 与 `identity.json`」是 P6 当时的事实，P7 之后以本节末尾的复验为准：
+2026-11-09 在 P6 阶段（`join` 当时还不落 CA）补验一行注册（证据在当时的工作区本地，未入库）；该段里「`~/.a2a-msg` 只有 `credentials/` 与 `identity.json`」是 P6 当时的事实，P7 之后以本节末尾的复验为准：
 
 - 本地起一个 `direct-tls` 中心（`tls.caCertPath` 已配），`GET /ca.pem` 返回 `200`、`Content-Type: application/x-pem-file`，字节与配置文件一致。
 - 从干净临时目录（`HOME` 也指向临时目录）执行 `npx --yes --package=<本地 tarball> a2a-msg join "https://localhost:<port>/join#invite=...&ca=sha256:..."`：退出码 0，空目录内不产生文件；`~/.a2a-msg` 只有 `credentials/` 与 `identity.json`（`0700`/`0600`），`displayName` 为清洗后的主机名。
 - 同一 tarball、同一中心，把链接里的 `ca=` 换成全 0 指纹：退出码 1，stderr 为 `{"error":{"code":"CA_FINGERPRINT_MISMATCH"}}`，没有写身份文件。
 
-2026-11-09 T100079 文档复验（同一台 macOS、Node v24.22.2、npm 11.19.1；脚本与日志：`docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/t100079-docs/` 的 `verify-docs-commands.mjs` / `verify.log`）：
+2026-11-09 T100079 文档复验（同一台 macOS、Node v24.22.2、npm 11.19.1；脚本与日志在产生它的工作区 `docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/t100079-docs/` 的 `verify-docs-commands.mjs` / `verify.log`，`evidence/` 按仓库约定不入库）：
 
 - Git commit 形式 `npx --yes git+file://<本地仓库>#<40 位 commit> mcp --help`：退出码 0（等价于 `npx --yes github:goudaren0528/a2a-msg#<COMMIT>`；分支未推送，没有直连 GitHub 验证这一条）。
 - 本地 tarball 形式 `npx --yes --package=<tarball> a2a-msg mcp --help`：退出码 0；把 `.tgz` 直接当命令（`npx --yes <tarball> mcp --help`）：退出码 126，`Permission denied`。
