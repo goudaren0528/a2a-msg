@@ -28,9 +28,10 @@ test('F1: public exports exact; immutable legacy schema and runner plus reviewed
   assert.equal(legacySchema.IM_SCHEMA_VERSION, 5);
   assert.deepEqual(legacySchema.SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3, 4, 5]);
   for (const path of ['src/im/schema.js', 'src/im/migration-runner.js']) {
-    // Re-pinned by P1 (schema v4): the legacy schema and runner intentionally
-    // changed; the assertion itself is unchanged and still pins exact bytes.
-    const committed = execFileSync('git', ['show', `631968f:${path}`], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
+    // Re-pinned by P7 (schema v5): the legacy schema and runner intentionally
+    // changed (additive v5 invite column + legacy plan whitelist); the assertion
+    // itself is unchanged and still pins exact bytes.
+    const committed = execFileSync('git', ['show', `c1975a3:${path}`], { cwd: new URL('..', import.meta.url), encoding: 'utf8' });
     assert.equal(readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n'), committed.replace(/\r\n/g, '\n'), path);
   }
   // Approved P5 standalone-WAL artifact-read adapter exception; pin every other publisher byte too.
