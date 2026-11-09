@@ -48,18 +48,31 @@ Expiry is exclusive. A successful redemption followed by a lost HTTP response co
 
 The returned `agentId` and `credential` can be used immediately with `GET /api/v1/me`. `createImCenter` constructs the enrollment module only when the validated policy enables enrollment, so enabling it on a pre-v4 database fails closed at startup.
 
+When the center configuration sets `tls.caCertPath`, the center process also serves that CA bundle on the public `GET /ca.pem` so a join link can fetch and pin it; see the [HTTP contract](im-http-contract.md). This is the only unauthenticated route outside `/api/v1`; it does not expose the enrollment route or any identity data.
+
 ## Device-side registration
 
-`node scripts/im-register.mjs --center <url> --invite <code> --display-name <name> [--state-dir <absolute dir>]`
+There are three equivalent entry points; `bin/a2a-msg.mjs` only checks the Node version and forwards to `scripts/im-register.mjs`.
+
+```sh
+# one command from the link an administrator hands over (recommended)
+node scripts/im-register.mjs --join 'https://<center>/join#invite=<code>&ca=sha256:<hex>' [--display-name <name>] [--state-dir <dir>]
+
+# explicit form; --ca-url requires --ca-sha256 (first trust, pinned)
+node scripts/im-register.mjs --center <url> --invite <code> [--display-name <name>] [--state-dir <dir>] [--ca-url <url> --ca-sha256 sha256:<hex>]
+```
 
 - Requires Node 24 (`NODE_VERSION_UNSUPPORTED` otherwise).
-- Accepts HTTPS, or plain HTTP only for a literal loopback center. Userinfo, query, fragment and non-root paths are rejected.
-- Uses `NODE_EXTRA_CA_CERTS` for a private CA; no certificate-skipping option exists.
+- Accepts HTTPS, or plain HTTP only for a literal loopback center. Userinfo, query, fragment and non-root paths are rejected for `--center`; a join link must be `<origin>/join` with a fragment holding exactly one `invite` and one `ca` value.
+- **Without `--ca-url`** a private CA is trusted exactly as before through `NODE_EXTRA_CA_CERTS`; no certificate-skipping option exists.
+- **With `--ca-url`/`--ca-sha256`** (or a join link) the device first fetches that URL without validating the server certificate, because the fingerprint is the only anchor available yet. It computes the SHA-256 of the returned PEM bytes and compares it with `sha256:<hex>` (`sha256sum ca.pem`); only a match is then used as the `ca` for the enrollment request, which keeps full chain and hostname verification and does not follow redirects. The CA is not persisted, so `~/.a2a-msg` keeps only `identity.json` and `credentials/`; an MCP host still needs `NODE_EXTRA_CA_CERTS` for routine traffic.
+- `--display-name` is optional: it defaults to the sanitized system hostname (characters outside `[A-Za-z0-9._-]` become `-`, runs collapse, empty becomes `device`, capped at 255) and is still validated by the center.
+- Fixed failure codes on stderr, exit code 1, and never an identity artifact: `INVALID_JOIN_LINK` (malformed/unpinned link), `CA_FETCH_FAILED` (unreachable or non-200 CA URL), `CA_INVALID` (body is not a PEM certificate), `CA_FINGERPRINT_MISMATCH` (pinned value does not match), `CA_NOT_TRUSTED` (the pinned CA did not verify the center chain or hostname), plus the existing `INVALID_ARGUMENTS`, `INVALID_INVITE`, `INVALID_CENTER`, `TLS_REQUIRED`, `CENTER_UNAVAILABLE`, `ENROLLMENT_FAILED`, `STATE_DIR_UNSAFE`, `IDENTITY_EXISTS` and `STATE_WRITE_FAILED`. A failed fetch/pin happens before redemption, so the invite is still unused.
 - Default state directory is `~/.a2a-msg` (`0700`); it creates `credentials/` (`0700`) and writes the credential record with mode `0600` through the existing protected-file helper. `identity.json` (`0600`) records the agent ID, display name, center URL and credential path.
-- Prints only `{agentId, displayName, centerUrl, credentialFile, identityFile}`. The credential is never printed, and errors are fixed codes without the invite code or response body.
+- Prints only `{agentId, displayName, centerUrl, credentialFile, identityFile}`. The credential is never printed, the invite code is never echoed, and errors contain no response body.
 - Refuses to overwrite an existing `identity.json` (`IDENTITY_EXISTS`) before spending the invite.
 
-A device that already holds a credential uses it as a Bearer token; enrollment is not re-run for routine use.
+A device that already holds a credential uses it as a Bearer token; enrollment is not re-run for routine use. The TOFU model assumes the join link reaches the device through a trusted channel; a fingerprint mismatch or an untrusted chain must stop the operator, not be worked around.
 
 ## Explicit migration
 

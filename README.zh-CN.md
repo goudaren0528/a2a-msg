@@ -22,6 +22,14 @@ node examples/im-local-demo.mjs
 
 新设备可用 `npx` 从固定 Git commit 直接拉起 IM v1 的 MCP stdio 入口或注册身份，不需要 clone 源码或手工 `npm ci`。前提是 Node.js 24.x；包仍为 `private`，不发布到 npm。完整说明见[主 README 的 npx 接入段](README.md#npx-轻量接入im-v1不-clone-源码)与 [npx 接入说明](docs/install-npx.md)。
 
+最短路径是「Node 24 + 一条命令」：拿到可信渠道给的 `https://<center>/join#invite=<code>&ca=sha256:<hex>` 后（链接要加引号）：
+
+```sh
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> join "https://<center>/join#invite=<one-time-code>&ca=sha256:<64-hex>"
+```
+
+先取 `/ca.pem`、用链接里的 `sha256:<hex>` 校验指纹，再用该 CA 校验中心证书并兑换邀请码；指纹不符必须停，不要改链接重试。`--display-name` 可省，缺省取系统主机名。旧形式 `register --center --invite` / `NODE_EXTRA_CA_CERTS` 不变：
+
 ```sh
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --help
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> register --help

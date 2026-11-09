@@ -63,6 +63,15 @@ node examples/im-nana-roundtrip.mjs
 
 新设备可以用 `npx` 从**固定 Git commit** 直接拉起 IM v1 的 MCP stdio 入口或注册身份，不需要 clone 源码、不需要手工 `npm ci`。前提是 Node.js 24.x；包仍是 `private`，**不发布到 npm**。完整参数、宿主配置与 tarball 用法见 [npx 接入说明](docs/install-npx.md)。
 
+公司机/新设备的最短路径是「Node 24 + 一条命令」：管理员从可信渠道给一条 `https://<center>/join#invite=<code>&ca=sha256:<hex>` 链接，设备上执行（链接要加引号）：
+
+```sh
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> join \
+  "https://<center>/join#invite=<one-time-code>&ca=sha256:<64-hex>"
+```
+
+它会先取中心的 `GET /ca.pem`，用链接里的 `sha256:<hex>` 校验返回字节的指纹，再用这份 CA 校验中心证书并兑换邀请码；**指纹不符必须停**（`CA_FINGERPRINT_MISMATCH` / `CA_NOT_TRUSTED` 等），不要改链接重试，回可信渠道重新核对。`--display-name` 可省略，缺省取清洗后的系统主机名。旧形式仍可用：
+
 ```sh
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --help
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> register --help
