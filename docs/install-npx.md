@@ -78,7 +78,7 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> join \
 - 页面顶部是「你的名字」（就是 `--display-name`，对方会看到的名字）：**必填、没有默认值**（placeholder 是 `例如 office-mac`；浏览器读不到对方机器名），1–255 个字符、不能有控制字符，刷新会记住输入（localStorage，不可用也不影响接入）；名字为空或含控制字符时「复制提示词」按钮禁用并提示原因，提示词不会用空名字生成。
 - 「复制提示词」优先用 Clipboard API，失败时自动选中整段文本让对方按 ⌘C / Ctrl+C，复制的是拼接好名字的完整提示词。
 - 提示词里的 npx ref 是**当前部署提交的完整 40 位 SHA**（`github:goudaren0528/a2a-msg#<COMMIT>`），不是分支名、也不是会移动的 tag。部署时注入：中心配置顶层 `build: {"commit": "<40 位 SHA>"}`，或环境变量 `A2A_MSG_BUILD_COMMIT`；两者都没有时用这份检出的 `git rev-parse HEAD`，所以 git 方式部署换版本后重启中心就会跟着变。注入值不是完整 40 位小写 SHA 时中心拒绝启动；一个提交都取不到时页面仍可打开，但只显示原因与手工步骤，不会退回分支名。
-- 提示词按顺序写清：Node.js 24.x 检查 → `join`（整条链接必须加引号）→ `nana.json` / `ca.pem` 校验（含 `shasum -a 256` 与链接指纹对照，**指纹不符必须停**）→ MCP 宿主配置（`mcp --config`）→ `im_v1_me` 校验 → 每次启动后 `im_v1_acquire_lease` → `im_v1_sync` 拉离线消息 → `im_v1_release_lease`。
+- 提示词按顺序写清：Node.js 24.x 检查 → `join`（整条链接必须加引号）→ `nana.json` / `ca.pem` 校验（含 `shasum -a 256` 与链接指纹对照，**指纹不符必须停**）→ MCP 宿主配置（`mcp --config`）→ `im_v1_me` 校验（该工具只返回 `{agentId}`，只校验它与 `identity.json` 的 `agentId` 一致；显示名以 `identity.json` 的 `displayName` 为准）→ 每次启动后 `im_v1_acquire_lease` → `im_v1_sync` 拉离线消息 → `im_v1_release_lease`。
 - 链接不完整（没带 `#invite=…&ca=…`、缺其中一项、多了别的参数、邀请码或指纹格式不对）时，页面不生成提示词，只显示原因和手工步骤：找发链接的人重发完整链接，或按下面的 `register --center … --ca-url … --ca-sha256 …` 手工注册。页面不会自动跳转，也不会“修复”链接。
 - 页面是中心进程的静态路由：`GET https://<center-host>/join` 返回 200 HTML，未鉴权、不含邀请码；带查询串、子路径、其它方法和 `/api/v1` 之外的其他路径仍是 404。
 

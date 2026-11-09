@@ -80,6 +80,20 @@ test('prompt pins the deployed commit, quotes the whole link and covers every st
   assert.equal(prompt.includes('<hostname>'), false);
 });
 
+test('prompt asks im_v1_me for agentId only and keeps displayName in identity.json', () => {
+  const prompt = buildJoinPrompt({ commit: COMMIT, link: LINK, displayName: 'office-mac' });
+  const lines = prompt.split('\n');
+  const at = lines.findIndex(text => text.includes('im_v1_me'));
+  assert.notEqual(at, -1, 'the prompt mentions im_v1_me');
+  const step = lines.slice(at, at + 2).join('\n');
+  assert.equal(step.includes('只返回 {"agentId"'), true, 'im_v1_me only returns {agentId}');
+  assert.equal(step.includes('只有 agentId'), true);
+  assert.equal(step.includes('不包含 displayName'), true);
+  assert.equal(step.includes('identity.json'), true, 'displayName is read from identity.json');
+  // The tool result has no displayName; asking for it would make the agent stop.
+  assert.equal(step.includes('displayName 是 office-mac'), false);
+});
+
 test('prompt shell-quotes a display name that contains a single quote', () => {
   const prompt = buildJoinPrompt({ commit: COMMIT, link: LINK, displayName: "office-o'ffice" });
   assert.equal(prompt.includes(`--display-name 'office-o'\\''ffice'`), true);
