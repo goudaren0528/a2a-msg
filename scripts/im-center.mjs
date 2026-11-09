@@ -1,11 +1,43 @@
+import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import { isAbsolute } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 import { parseImConfig } from '../src/im/config.js';
+import { renderJoinPage } from '../src/im/join-page.js';
 import { createImCenter } from '../src/im/server.js';
 import { assertImSchema } from '../src/im/schema.js';
+
+const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const BUILD_COMMIT = /^[0-9a-f]{40}$/;
+
+// The `/join` page must pin `npx` to the exact commit it was deployed from, never
+// a branch or a moving tag. Precedence: explicit center config `build.commit`
+// (deployment injection), then `A2A_MSG_BUILD_COMMIT`, then the checked-out HEAD
+// of this repository (a git-based deploy updates it on every redeploy). Anything
+// invalid refuses startup instead of silently serving a wrong ref.
+function buildCommit(settings) {
+  if (settings.build !== undefined) {
+    if (!settings.build || typeof settings.build !== 'object' || Array.isArray(settings.build) ||
+        Object.keys(settings.build).some(key => key !== 'commit') ||
+        typeof settings.build.commit !== 'string' || !BUILD_COMMIT.test(settings.build.commit)) {
+      throw Error('Invalid build commit');
+    }
+    return settings.build.commit;
+  }
+  const fromEnvironment = process.env.A2A_MSG_BUILD_COMMIT;
+  if (fromEnvironment !== undefined && fromEnvironment !== '') {
+    if (!BUILD_COMMIT.test(fromEnvironment)) throw Error('Invalid build commit');
+    return fromEnvironment;
+  }
+  try {
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: REPOSITORY_ROOT, encoding: 'utf8',
+      timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return BUILD_COMMIT.test(head) ? head : null;
+  } catch { return null; }
+}
 
 function existingFile(path) {
   // Require literal absolute filesystem paths, not SQLite pseudo-paths, URIs,
@@ -30,7 +62,8 @@ if (!configPath || process.argv.length !== 3) {
     const settings = JSON.parse(readFileSync(existingFile(configPath), 'utf8'));
     if (!settings || typeof settings !== 'object' || Array.isArray(settings) ||
         typeof settings.dbPath !== 'string' || !settings.dbPath || !settings.policy ||
-        Object.keys(settings).some(key => !['dbPath', 'policy', 'tls'].includes(key))) throw Error('Invalid configuration');
+        Object.keys(settings).some(key => !['dbPath', 'policy', 'tls', 'build'].includes(key))) throw Error('Invalid configuration');
+    const servedCommit = buildCommit(settings);
     const policy = parseImConfig(settings.policy);
     // Missing policy or transport never silently starts a network listener.
     if (!policy.transport || typeof policy.transport.serverUrl !== 'string' ||
@@ -75,9 +108,30 @@ if (!configPath || process.argv.length !== 3) {
     db = new DatabaseSync(dbPath);
     db.exec('PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL');
     center = createImCenter({ db, policy });
+    // Both public routes are static: the pinned npx ref is resolved once at
+    // startup, so a redeploy changes the page with the commit, not per request.
+    const joinPage = Buffer.from(renderJoinPage({ commit: servedCommit }), 'utf8');
+    if (servedCommit === null) {
+      console.error('IM center: build commit unknown; GET /join cannot pin an npx ref (set build.commit or A2A_MSG_BUILD_COMMIT)');
+    }
     const listener = async (req, res) => {
       try {
-        // The only public route outside /api/v1: the center CA bundle, served
+        // The only public HTML route: a static page that turns the browser-side
+        // join fragment into a prompt. It carries no invite code, no data and no
+        // external resource; the fragment never reaches this server.
+        if (req.method === 'GET' && req.url === '/join') {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.setHeader('Content-Length', joinPage.length);
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Referrer-Policy', 'no-referrer');
+          // No external script, font or image; nothing can leave the page.
+          res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; connect-src 'none'");
+          res.end(joinPage);
+          return;
+        }
+        // The other public route: the center CA bundle, served
         // byte-for-byte so a join link's sha256 fingerprint pins it. Absent
         // config, other methods and other paths stay unresolvable (404).
         if (caPem !== null && req.method === 'GET' && req.url === '/ca.pem') {
