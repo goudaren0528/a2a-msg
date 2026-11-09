@@ -28,7 +28,7 @@ node examples/im-local-demo.mjs
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> join "https://<center>/join#invite=<one-time-code>&ca=sha256:<64-hex>"
 ```
 
-先取 `/ca.pem`、用链接里的 `sha256:<hex>` 校验指纹，再用该 CA 校验中心证书并兑换邀请码；指纹不符必须停，不要改链接重试。`--display-name` 可省，缺省取系统主机名。旧形式 `register --center --invite` / `NODE_EXTRA_CA_CERTS` 不变：
+先取 `/ca.pem`、用链接里的 `sha256:<hex>` 校验指纹，再用该 CA 校验中心证书并兑换邀请码；指纹不符必须停，不要改链接重试。`--display-name` 可省，缺省取系统主机名。注册完成后 `~/.a2a-msg` 里有 `identity.json`、`ca.pem`、`nana.json`（`nana.json` 带 `caFile`，`mcp --config` 不再需要 `NODE_EXTRA_CA_CERTS`），命令会打印 MCP 片段；任何一个 active Agent 也能用 `invite --config ~/.a2a-msg/nana.json` 自己发一次性邀请（24h、日限默认 5、可撤销），兑换后双方立即互为好友。旧形式 `register --center --invite` / `NODE_EXTRA_CA_CERTS` 不变：
 
 ```sh
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --help

@@ -172,7 +172,8 @@ function interpretEnrollment(status, text) {
   try { body = JSON.parse(text); } catch { throw fail('ENROLLMENT_FAILED'); }
   if (status < 200 || status >= 300) {
     // Only fixed IM error codes are surfaced; response bodies are never echoed.
-    const code = typeof body?.error?.code === 'string' && /^[A-Z]{1,64}$/.test(body.error.code)
+    // Fixed IM codes are upper snake case (`INVITE_REVOKED`, `INVITE_EXPIRED`, ...).
+    const code = typeof body?.error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(body.error.code)
       ? body.error.code : 'ENROLLMENT_FAILED';
     throw fail(code);
   }
@@ -217,6 +218,7 @@ async function enroll({ center, invite, displayName, ca }) {
 
 async function main() {
   if (Number(process.versions.node.split('.')[0]) !== 24) throw fail('NODE_VERSION_UNSUPPORTED');
+  process.umask(0o077);
   const values = parse(process.argv.slice(2));
   const link = values.join === undefined ? null : joinLink(values.join);
   const center = link ? link.center : centerUrl(values.center);
@@ -239,7 +241,38 @@ async function main() {
   const remove = store.storeCredential({ credentialId: enrolled.credentialId,
     agentId: enrolled.agentId, credential: enrolled.credential });
   const credentialFile = join(state.credentials, `${enrolled.credentialId}.json`);
+  // `nana.json` (shared by the MCP entry and the session CLI) expects the bare
+  // credential string, while identity.json keeps pointing at the keystore record.
+  const nanaCredentialFile = join(state.credentials, `${enrolled.credentialId}.credential`);
+  // Everything a host needs after `join`: identity, the pinned CA (only when it
+  // was fetched), and a strict `nana.json` for `mcp --config`. The CA bundle is
+  // this device's own copy, so MCP and the session CLI no longer need
+  // NODE_EXTRA_CA_CERTS. `identity.json` stays the last artifact written, so its
+  // presence keeps meaning "this device is registered".
+  const caFile = ca === undefined ? null : join(state.directory, 'ca.pem');
+  const attachmentDirectory = join(state.directory, 'attachments');
+  const nanaConfigFile = join(state.directory, 'nana.json');
+  const journalPath = join(state.directory, 'journal.sqlite');
+  const statePath = join(state.directory, 'session-state.json');
+  const cleanup = [];
   try {
+    cleanup.push(saveProtectedFile(nanaCredentialFile, `${enrolled.credential}\n`, { report: () => {} }));
+    if (ca !== undefined) cleanup.push(saveProtectedFile(caFile, ca.toString('utf8'), { report: () => {} }));
+    mkdirSync(attachmentDirectory, { recursive: true, mode: 0o700 });
+    const attachments = lstatSync(attachmentDirectory);
+    if (!attachments.isDirectory() || attachments.isSymbolicLink() ||
+        (process.platform !== 'win32' && ((attachments.mode & 0o077) || attachments.uid !== process.geteuid()))) {
+      throw fail('STATE_DIR_UNSAFE');
+    }
+    cleanup.push(saveProtectedFile(nanaConfigFile, `${JSON.stringify({
+      serverUrl: center,
+      agentId: enrolled.agentId,
+      credentialFile: nanaCredentialFile,
+      journalPath,
+      attachmentDirectory,
+      statePath,
+      ...(caFile === null ? {} : { caFile }),
+    })}\n`, { report: () => {} }));
     saveProtectedFile(state.identityFile, `${JSON.stringify({
       agentId: enrolled.agentId,
       displayName: enrolled.displayName,
@@ -247,12 +280,18 @@ async function main() {
       credentialId: enrolled.credentialId,
       credentialFile,
     })}\n`, { report: () => {} });
-  } catch {
+  } catch (error) {
+    for (const undo of cleanup.reverse()) { try { undo(); } catch { /* best effort */ } }
     try { remove(); } catch { /* no DB credential exists if the identity artifact failed */ }
-    throw fail('STATE_WRITE_FAILED');
+    throw error?.code === 'STATE_DIR_UNSAFE' ? error : fail('STATE_WRITE_FAILED');
   }
+  // The MCP snippet is directly usable once `<ref>` is replaced with the pinned
+  // Git commit (or the local tarball command) this device installed from.
+  const mcp = Object.freeze({ transport: 'stdio', command: 'npx',
+    args: ['--yes', '<ref>', 'mcp', '--config', nanaConfigFile], env: {} });
   process.stdout.write(`${JSON.stringify({ agentId: enrolled.agentId, displayName: enrolled.displayName,
-    centerUrl: center, credentialFile, identityFile: state.identityFile })}\n`);
+    centerUrl: center, credentialFile, identityFile: state.identityFile, nanaCredentialFile,
+    nanaConfigFile, caFile, mcp })}\n`);
 }
 
 main().catch(error => {

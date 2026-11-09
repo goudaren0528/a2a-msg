@@ -4,9 +4,9 @@ import { getInstanceIdentity } from './schema.js';
 import { resolveImTimeGuard } from './clock.js';
 
 const VERSION = 'im-migration-runner-v2';
-// Legacy binding plans are schema-version agnostic within the frozen v3/v4
+// Legacy binding plans are schema-version agnostic within the frozen v3/v4/v5
 // legacy line; the identity comparison still requires an exact marker match.
-const LEGACY_SCHEMA_VERSIONS = Object.freeze([3, 4]);
+const LEGACY_SCHEMA_VERSIONS = Object.freeze([3, 4, 5]);
 const PLAN_VERSION = 'legacy-bindings-v2';
 const sha = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });

@@ -199,7 +199,7 @@ test('v1 upgrade is additive and identity requires one explicit initialization, 
   t.after(() => { db?.close(); rmSync(dir, { recursive: true, force: true }); });
   db.exec('PRAGMA foreign_keys=ON');
   v1(db);
-  assert.equal(IM_SCHEMA_VERSION, 4);
+  assert.equal(IM_SCHEMA_VERSION, 5);
   assert.equal(migrateImSchema(db), true);
   assert.equal(db.prepare('SELECT version FROM im_schema').get().version, 2);
   assert.equal(db.prepare('SELECT count(*) n FROM im_instance_identity').get().n, 0);

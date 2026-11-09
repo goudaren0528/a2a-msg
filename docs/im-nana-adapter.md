@@ -59,11 +59,12 @@ node scripts/im-nana-session.mjs read     --config /absolute/private/nana-t2/hos
   "journalPath": "/abs/root/host-a/journal.sqlite",
   "attachmentDirectory": "/abs/root/host-a/attachments",
   "statePath": "/abs/root/host-a/session-state.json",
-  "evidencePath": "/abs/root/host-a/evidence.jsonl"
+  "evidencePath": "/abs/root/host-a/evidence.jsonl",
+  "caFile": "/abs/root/host-a/ca.pem"
 }
 ```
 
-`evidencePath` 可选；`attachmentDirectory` 也可选：缺省解析为 `~/Downloads/a2a-msg/<center-host>[_<port>]`（MCP 入口按需创建；会话 CLI 仍要求目录存在）。显式目录必须已存在；未知字段、非 https origin、相对路径一律拒绝。
+`caFile` 可选（`join` 会写一份 `0600` 的 `ca.pem` 并在 `nana.json` 里指过去）：设置后 MCP 入口与会话 CLI 用它做该中心的私有 CA，因此不需要 `NODE_EXTRA_CA_CERTS`，链与主机名校验不放松；不设置时行为与之前一致。`evidencePath` 可选；`attachmentDirectory` 也可选：缺省解析为 `~/Downloads/a2a-msg/<center-host>[_<port>]`（MCP 入口按需创建；会话 CLI 仍要求目录存在）。显式目录必须已存在；未知字段、非 https origin、相对路径一律拒绝。
 
 ### MCP stdio 入口（同一份 `nana.json`）
 

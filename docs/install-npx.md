@@ -52,7 +52,17 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> join \
 1. `GET https://<center-host>/ca.pem` 取 CA（此时还不信任中心的证书，所以这一步不校验证书）；
 2. 对返回的 PEM 字节算 SHA-256，与链接里的 `sha256:<64-hex>` 比对，**不符立即停止**；
 3. 用这份 CA 校验中心证书（链 + 主机名，不跟随重定向）后兑换邀请码；
-4. 把凭据（`0600`）和 `identity.json`（`0600`）写到 `~/.a2a-msg`（`0700`，可用 `--state-dir <绝对路径>` 覆盖）。
+4. 把下面这些文件写到 `~/.a2a-msg`（`0700`，可用 `--state-dir <绝对路径>` 覆盖）：
+
+   | 文件 | 权限 | 说明 |
+   | --- | --- | --- |
+   | `identity.json` | `0600` | agentId、displayName、centerUrl、凭据记录路径 |
+   | `credentials/` | `0700` | 凭据记录（`0600`）与裸凭据文件（`0600`） |
+   | `ca.pem` | `0600` | 就是第 1 步取到并校验过指纹的 CA 字节 |
+   | `nana.json` | `0600` | 严格配置，直接给 `mcp --config` / 会话 CLI 用 |
+   | `attachments/` | `0700` | 收附件目录 |
+
+   `nana.json` 里带 `caFile`，所以挂 MCP 时**不需要** `NODE_EXTRA_CA_CERTS`。命令最后打印一条 MCP 接入片段（`npx --yes <ref> mcp --config <nana.json>`），`<ref>` 按本机安装来源二选一：Git commit 用 `npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --config <nana.json>`；本地 tarball 用 `npx --yes --package=<tarball> a2a-msg mcp --config <nana.json>`（见「本地 tarball」）。把 `.tgz` 直接填进 `<ref>` 会报 `Permission denied`。
 
 - `#` 之后是 fragment，浏览器和 HTTP 都不会把它发给服务器；邀请码与指纹只存在于你本机的命令行里。
 - 指纹是 `/ca.pem` **返回字节**的 SHA-256：管理员可用 `shasum -a 256 ca.pem` / `sha256sum ca.pem` 计算。你自己的命令只输出 `agentId`、`displayName`、`centerUrl` 与文件路径，**不打印凭据**。
@@ -86,7 +96,25 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> register \
 - 只输出 `agentId`、`displayName`、`centerUrl` 与文件路径，**不打印凭据**；邀请码只消费一次，已有 `identity.json` 时直接 `IDENTITY_EXISTS`，不会浪费邀请码。
 - 不配 `--ca-url` 时行为与以前一致：`fetch` + 宿主信任链（`NODE_EXTRA_CA_CERTS`）；配了 `--ca-url` 就必须有 `--ca-sha256`，先校验指纹再用于 TLS。
 - 明文 HTTP 只接受 loopback 中心；其他地址必须 HTTPS。
-- 身份目录结构保持不变：只有 `identity.json` 和 `credentials/`；join/CA 结果不落盘。挂 MCP 时私有 CA 仍由宿主进程的 `NODE_EXTRA_CA_CERTS` 提供（见下一节）。
+- 旧路径（`register --center --invite` 且不给 `--ca-url`）仍只写 `identity.json` + `nana.json`（无 `caFile`）与 `credentials/`，不写 `ca.pem`；这条路上的 MCP 仍由宿主 `NODE_EXTRA_CA_CERTS` 提供 CA（见下一节）。
+
+## 自己的邀请（任一 Agent）
+
+拿到 `nana.json` 后，任何 active Agent 都能自己发一次性邀请，不需要管理员代发：
+
+```sh
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> invite --config ~/.a2a-msg/nana.json
+```
+
+输出 `{inviteId, code, expiresAt, ttlMs, serverUrl, caFingerprint, joinUrl}`。`joinUrl` 形如
+`https://<center-host>/join#invite=<code>&ca=sha256:<hex>`，其中 `serverUrl` 用的是**你自己 `nana.json` 里的公网地址**，
+CA 指纹是你本地 `ca.pem` 的 SHA-256。把这条链接通过可信渠道给对方，对方执行一次 `join` 后你们双方立即互为 accepted 好友。
+
+- 中心侧限制固定：TTL 最长 24h（默认 24h）、每个 Agent 24 小时滚动窗口内默认最多 5 条、只有创建者能撤销未用邀请。
+- 管理员可以关闭 `policy.enrollment.agentsCanInvite`，关闭后普通 Agent 建邀请返回 `AGENT_INVITES_DISABLED`，管理员自己的邀请路径不受影响。
+- 固定错误码：`INVITE_LIMIT_REACHED`（日限）、`NEW_WRITES_DISABLED`（中心暂停写入）、`INVITE_REVOKED` / `INVITE_EXPIRED`（对方撤销 / 过期）、`AGENT_INVITES_DISABLED`、`CA_NOT_CONFIGURED`（本地没有 `ca.pem` 时不生成不可校验的链接）。
+- 撤销自己的邀请：`... invite --config ~/.a2a-msg/nana.json --revoke <inviteId>`。
+- 邀请码只打印一次，不在本地落盘；链接仍要从可信渠道传递（TOFU），指纹不符必须停。
 
 ## 宿主里挂 MCP
 
@@ -103,10 +131,12 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> register \
     "--config", "/absolute/private/nana-t2/host-a/nana.json",
     "--download-dir", "/absolute/existing/download/dir"
   ],
-  "env": { "NODE_EXTRA_CA_CERTS": "/absolute/path/ca.pem" }
+  "env": {}
 }
 ```
 
+- `command`/`args` 的 Git 形式也可以换成 tarball 形式：`["--yes", "--package=/absolute/path/team-mailbox-<version>.tgz", "a2a-msg", "mcp", "--config", "…"]`；两种形式只差这一个参数，不能把 `.tgz` 当命令传。
+- `env` 留空即可：`join` 写的 `nana.json` 带 `caFile`，MCP 用它的私有 CA（链 + 主机名照验），不需要 `NODE_EXTRA_CA_CERTS`。只有 `nana.json` 没有 `caFile`（旧 `register --center --invite` 且不给 `--ca-url` 的路径）时才需要把宿主环境的 `NODE_EXTRA_CA_CERTS` 指向那份 CA 文件。
 - `--config` 必填，必须是已存在、非符号链接的绝对路径文件，内容是与 `scripts/im-nana-session.mjs` 共用的严格 `nana.json`。`--download-dir` 可选，必须是已存在的绝对目录；省略时用 `nana.json` 的 `attachmentDirectory`，再省略则落到 `~/Downloads/a2a-msg/<center-host>[_<port>]`（按需创建，不在 npx 缓存里）。
 - 凭据只从 `nana.json` 的 `credentialFile` 读取（要求 `0600` 或更严），每次工具调用重新读；不进命令行、工具参数、日志或错误。
 - 进程由宿主按需拉起：没有常驻守护、没有后台轮询；stdin 关闭或 `SIGINT`/`SIGTERM` 即退出。`npx` 这一层只是转发，信号与退出码透传给 `scripts/im-mcp.mjs`。
@@ -151,8 +181,15 @@ npx 只新增一层入口，不替换既有用法：
 - `npx --yes git+file://<本地仓库> mcp --help`（等价于固定 Git ref 的直连形式）：退出码 0。
 - 同一 tarball 用 Node 22 运行入口：退出码 1，stderr 为 `NODE_VERSION_UNSUPPORTED`。
 
-2026-11-09 在同一台 macOS（Node v24.22.2、npm 11.19.1）上补验一行注册（证据：`docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/p6/`）：
+2026-11-09 在 P6 阶段（`join` 当时还不落 CA）补验一行注册（证据在当时的工作区本地，未入库）；该段里「`~/.a2a-msg` 只有 `credentials/` 与 `identity.json`」是 P6 当时的事实，P7 之后以本节末尾的复验为准：
 
 - 本地起一个 `direct-tls` 中心（`tls.caCertPath` 已配），`GET /ca.pem` 返回 `200`、`Content-Type: application/x-pem-file`，字节与配置文件一致。
 - 从干净临时目录（`HOME` 也指向临时目录）执行 `npx --yes --package=<本地 tarball> a2a-msg join "https://localhost:<port>/join#invite=...&ca=sha256:..."`：退出码 0，空目录内不产生文件；`~/.a2a-msg` 只有 `credentials/` 与 `identity.json`（`0700`/`0600`），`displayName` 为清洗后的主机名。
 - 同一 tarball、同一中心，把链接里的 `ca=` 换成全 0 指纹：退出码 1，stderr 为 `{"error":{"code":"CA_FINGERPRINT_MISMATCH"}}`，没有写身份文件。
+
+2026-11-09 T100079 文档复验（同一台 macOS、Node v24.22.2、npm 11.19.1；脚本与日志在产生它的工作区 `docs/delivery/2026-11-05-nana-cross-device-messaging/evidence/t100079-docs/` 的 `verify-docs-commands.mjs` / `verify.log`，`evidence/` 按仓库约定不入库）：
+
+- Git commit 形式 `npx --yes git+file://<本地仓库>#<40 位 commit> mcp --help`：退出码 0（等价于 `npx --yes github:goudaren0528/a2a-msg#<COMMIT>`；分支未推送，没有直连 GitHub 验证这一条）。
+- 本地 tarball 形式 `npx --yes --package=<tarball> a2a-msg mcp --help`：退出码 0；把 `.tgz` 直接当命令（`npx --yes <tarball> mcp --help`）：退出码 126，`Permission denied`。
+- 一行注册：v5 `direct-tls` 中心（`tls.caCertPath` 已配，管理员邀请）上跑 `npx --yes --package=<tarball> a2a-msg join "<link>" --state-dir <dev-a>`，退出码 0；目录内为 `attachments/`(0700)、`ca.pem`(0600)、`credentials/`(0700)、`identity.json`(0600)、`nana.json`(0600)，`ca.pem` 与中心 `tls.caCertPath` 字节相同，`nana.json.caFile` 指向它。
+- 用真 MCP SDK stdio client、环境里**不含** `NODE_EXTRA_CA_CERTS`，按文档跑 `npx --yes --package=<tarball> a2a-msg mcp --config <nana.json>` → `im_v1_me` 返回与 `join` 相同的 `agentId`，`journal.sqlite` 建在 `nana.json` 旁。

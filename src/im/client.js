@@ -41,7 +41,7 @@ function jsonResult(response) {
   return data;
 }
 
-function httpsTransport(origin, active) {
+function httpsTransport(origin, active, ca) {
   return ({ method, path, credential, body, headers = {}, binary }) => new Promise((resolve, reject) => {
     let settled = false, chunks = [];
     const finish = (error, value) => {
@@ -50,6 +50,7 @@ function httpsTransport(origin, active) {
       if (error) { chunks.length = 0; if (!req.destroyed) req.destroy(); reject(error); } else resolve(value);
     };
     const req = https.request(new URL(path, origin), { method, rejectUnauthorized: true, timeout: 30000,
+      ...(ca === undefined ? {} : { ca: [ca] }),
       headers: { Authorization: `Bearer ${credential}`, ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) } }, res => {
       let size = 0;
       res.on('data', chunk => {
@@ -76,16 +77,17 @@ function httpsTransport(origin, active) {
   });
 }
 
-export function createImClient({ serverUrl, agentId, getCredential, journal, attachmentDirectory, transport } = {}) {
+export function createImClient({ serverUrl, agentId, getCredential, journal, attachmentDirectory, transport, ca } = {}) {
   const center = origin(serverUrl), agent = id(agentId);
   if (typeof getCredential !== 'function' || typeof journal !== 'function' ||
-      typeof attachmentDirectory !== 'string' || typeof transport !== 'undefined' && typeof transport !== 'function') fail('INVALID_REQUEST');
+      typeof attachmentDirectory !== 'string' || typeof transport !== 'undefined' && typeof transport !== 'function' ||
+      ca !== undefined && !Buffer.isBuffer(ca) && typeof ca !== 'string') fail('INVALID_REQUEST');
   // Journal must be instantiated by the trusted installer with these supplied scope values.
   const store = journal({ centerId: center, agentId: agent });
   for (const name of ['stageOutgoing','getOutgoing','markAccepted','recordReceived','getReceived','listPendingAcks','markAcked','setLease','getLease'])
     if (typeof store?.[name] !== 'function') fail('INVALID_REQUEST');
   const active = new Set();
-  const network = transport ?? httpsTransport(center, active);
+  const network = transport ?? httpsTransport(center, active, ca);
   const credentials = new AsyncLocalStorage();
   let closed = false, leaseVerified = false;
   async function call(method, path, body, { binary = false, headers = {} } = {}) {
