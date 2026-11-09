@@ -2,9 +2,13 @@
 
 This document describes the v4 enrollment slice in `src/im/schema.js`, `src/im/enrollment.js`, `src/im/admin.js`, `src/im/http.js` and the `scripts/im-register.mjs` / `scripts/im-migrate-v4.mjs` helpers. It is **not** a deployment procedure or an internet-facing authentication design. Registration is disabled by default and is intended for a LAN/VPN center that already has TLS (or the explicit loopback `local-test` transport).
 
-## Schema v4
+## Schema v5
 
-`IM_SCHEMA_VERSION` is `4`; `SUPPORTED_IM_SCHEMA_VERSIONS` is `[1,2,3,4]`. v4 is additive over v3 and adds two tables plus two indexes:
+`IM_SCHEMA_VERSION` is `5`; `SUPPORTED_IM_SCHEMA_VERSIONS` is `[1,2,3,4,5]`. v5 is additive over v4 and adds one column plus one index to the invite table: `inviter_agent_id TEXT REFERENCES im_agents(agent_id)` (NULL means an administrator invite) and `im_enrollment_invites_inviter(inviter_agent_id,created_at)`. `migrateImSchemaV5(db)` creates a fresh v5 database, upgrades v4 → v5, is repeatable on v5, and refuses v1/v2/v3 with `IM_SCHEMA_MISMATCH` (they must take their original explicit upgrades first). The fresh and migrated paths store byte-identical DDL. **Back up and verify the center database before migrating**, then run `node scripts/im-migrate-v5.mjs <existing-center-config.json>` (accepts v4/v5, `MIGRATION_STALE` for older markers, prints `{status,from,to,schemaChecksum}`). A center with `policy.enrollment.enabled` and `agentsCanInvite=true` refuses to start on a v4 database (`POLICY_NOT_CONFIGURED`) instead of silently dropping inviter binding.
+
+## Schema v4 (previous slice)
+
+v4 is additive over v3 and adds two tables plus two indexes:
 
 - `im_enrollment_invites(invite_id PK, code_hash UNIQUE, created_at, expires_at, used_at, used_agent_id, revoked_at)`. Only the SHA-256 of the invite code is stored. `used_at`/`used_agent_id` are set together, and `revoked_at` is independent.
 - `im_contact_requests(request_id PK, requester_id, target_id, status, version, created_at, updated_at)` with `status IN ('pending','accepted','rejected','revoked')` and a unique requester/target pair. v4 creates the table; the friend state machine lands in a later package.
@@ -15,7 +19,14 @@ This document describes the v4 enrollment slice in `src/im/schema.js`, `src/im/e
 
 ## Invite lifecycle
 
-`createImAdmin({db,clock,authorizeAdmin})` adds:
+The authenticated Agent path lives in the same module (`createImEnrollment({db,clock,policy,auth})`):
+
+- `createInvite(principal,{ttlMs?})` → `{inviteId,code,expiresAt,ttlMs}`. `ttlMs` is optional and limited to 60 000–86 400 000 (default 24 h). The invite stores `inviter_agent_id`; only `sha256(code)` is persisted and the code is returned once. Requires `policy.enrollment.enabled`, `agentsCanInvite !== false`, an active principal, and the same write gate as friend requests (`policy.writeMode='enabled'` **and** `im_settings.write_mode='enabled'`), otherwise `ENROLLMENT_DISABLED`, `AGENT_INVITES_DISABLED`, `NEW_WRITES_DISABLED` or `IM_DISABLED`. At most `dailyInviteLimit` (default 5) invites per inviter in a rolling 24-hour window; the next attempt is `INVITE_LIMIT_REACHED`. The window is rolling, not calendar-day, so there is no timezone ambiguity.
+- `revokeInvite(principal,{inviteId})` → `{inviteId,revokedAt}`. Only the creator may revoke, only before redemption; unknown, foreign and used ids are all `RESOURCE_NOT_FOUND`. Revocation is allowed even when `agentsCanInvite` is off (safety action).
+
+`redeem()` on a v5 invite with an inviter, in the same immediate transaction as agent/credential creation, also inserts `im_contacts(agent_low,agent_high,allowed=1)` and one `im_contact_requests(status='accepted')` row for exactly that pair. No other contact row is touched, so invitees of different inviters never become contacts. If the inviter is disabled or revoked at redemption time the whole transaction rolls back with `INVITER_UNAVAILABLE` and the invite is still unused. Administrator invites (no inviter) keep the previous behavior: no contact is created. The enrollment audit row records `{inviteId}` plus `{inviterAgentId,autoFriend:true}` for the agent path; invite codes are never audited.
+
+`createImAdmin({db,clock,authorizeAdmin})` adds the administrator path:
 
 - `createEnrollmentInvite({ttlMs}, ctx)` → `{inviteId, code, expiresAt}`. `ttlMs` is an integer between 60,000 (1 minute) and 2,592,000,000 (30 days). `code` is 32 random bytes in unpadded base64url (43 characters) and is returned **once**. The database stores only `sha256(code)`; audit details hold `{expiresAt}` only.
 - `revokeEnrollmentInvite({inviteId, reason}, ctx)` → `{inviteId, revokedAt}`. Used invites cannot be revoked (they are already spent); missing, used or previously revoked invites return `RESOURCE_NOT_FOUND`.
@@ -68,12 +79,25 @@ node scripts/im-register.mjs --center <url> --invite <code> [--display-name <nam
 - **With `--ca-url`/`--ca-sha256`** (or a join link) the device first fetches that URL without validating the server certificate, because the fingerprint is the only anchor available yet. It computes the SHA-256 of the returned PEM bytes and compares it with `sha256:<hex>` (`sha256sum ca.pem`); only a match is then used as the `ca` for the enrollment request, which keeps full chain and hostname verification and does not follow redirects. The CA is not persisted, so `~/.a2a-msg` keeps only `identity.json` and `credentials/`; an MCP host still needs `NODE_EXTRA_CA_CERTS` for routine traffic.
 - `--display-name` is optional: it defaults to the sanitized system hostname (characters outside `[A-Za-z0-9._-]` become `-`, runs collapse, empty becomes `device`, capped at 255) and is still validated by the center.
 - Fixed failure codes on stderr, exit code 1, and never an identity artifact: `INVALID_JOIN_LINK` (malformed/unpinned link), `CA_FETCH_FAILED` (unreachable or non-200 CA URL), `CA_INVALID` (body is not a PEM certificate), `CA_FINGERPRINT_MISMATCH` (pinned value does not match), `CA_NOT_TRUSTED` (the pinned CA did not verify the center chain or hostname), plus the existing `INVALID_ARGUMENTS`, `INVALID_INVITE`, `INVALID_CENTER`, `TLS_REQUIRED`, `CENTER_UNAVAILABLE`, `ENROLLMENT_FAILED`, `STATE_DIR_UNSAFE`, `IDENTITY_EXISTS` and `STATE_WRITE_FAILED`. A failed fetch/pin happens before redemption, so the invite is still unused.
-- Default state directory is `~/.a2a-msg` (`0700`); it creates `credentials/` (`0700`) and writes the credential record with mode `0600` through the existing protected-file helper. `identity.json` (`0600`) records the agent ID, display name, center URL and credential path.
-- Prints only `{agentId, displayName, centerUrl, credentialFile, identityFile}`. The credential is never printed, the invite code is never echoed, and errors contain no response body.
+- Default state directory is `~/.a2a-msg` (`0700`). After a successful redemption it contains: `identity.json` (`0600`, agent id/display name/center URL/credential record path), `credentials/` (`0700`, keystore record + a bare `*.credential` file), `ca.pem` (`0600`, only when the CA was fetched and pinned), a strict `nana.json` (`0600`) and `attachments/` (`0700`).
+- `nana.json` is directly usable by `a2a-msg mcp --config <nana.json>` and `scripts/im-nana-session.mjs`: `{serverUrl, agentId, credentialFile (bare credential), journalPath, attachmentDirectory, statePath, caFile?}`. With `caFile` present the host needs no `NODE_EXTRA_CA_CERTS`; chain and hostname verification stay enabled. A `register --center --invite` without `--ca-url` writes `identity.json` + `nana.json` (no `caFile`) and no `ca.pem`.
+- Prints `{agentId, displayName, centerUrl, credentialFile, identityFile, nanaCredentialFile, nanaConfigFile, caFile, mcp}` where `mcp` is a stdio host snippet (`npx --yes <ref> mcp --config <nana.json>`); replace `<ref>` with the pinned Git commit or local tarball the device installed from. The credential is never printed, the invite code is never echoed, and errors contain no response body.
+- Fixed center codes on stderr (exit 1) include `INVITE_NOT_FOUND`, `INVITE_ALREADY_USED`, `INVITE_EXPIRED`, `INVITE_REVOKED`, `ENROLLMENT_DISABLED`, `AGENT_INVITES_DISABLED`, `INVITER_UNAVAILABLE`, `INVITE_LIMIT_REACHED` and `NEW_WRITES_DISABLED`; unknown response bodies collapse to `ENROLLMENT_FAILED`.
+
+## Device-side invitations (`a2a-msg invite`)
+
+Any active Agent that holds a `nana.json` (and the local `ca.pem`) can mint its own invite:
+
+```sh
+a2a-msg invite --config ~/.a2a-msg/nana.json                 # {inviteId,code,expiresAt,ttlMs,serverUrl,caFingerprint,joinUrl}
+a2a-msg invite --config ~/.a2a-msg/nana.json --revoke <id>   # {inviteId,revokedAt}
+```
+
+The join link is `${nana.json.serverUrl}/join#invite=<code>&ca=sha256:<local ca.pem bytes>`. It deliberately uses the caller's own public `serverUrl`, never the center's internal `transport.serverUrl`. The CA is located at `nana.json.caFile` or `<config dir>/ca.pem`; without either the command fails with `CA_NOT_CONFIGURED` rather than emit an unpinned link. The code is printed once and not stored locally. Center limits (24 h TTL, rolling daily cap, revocation, `agentsCanInvite`) apply unchanged, and any redemption still only befriends the inviter.
 - Refuses to overwrite an existing `identity.json` (`IDENTITY_EXISTS`) before spending the invite.
 
 A device that already holds a credential uses it as a Bearer token; enrollment is not re-run for routine use. The TOFU model assumes the join link reaches the device through a trusted channel; a fingerprint mismatch or an untrusted chain must stop the operator, not be worked around.
 
 ## Explicit migration
 
-`node scripts/im-migrate-v4.mjs <existing-center-config.json>` opens the `dbPath` from the same strict center configuration shape (`dbPath`, optional `policy`, optional `tls`), verifies `PRAGMA foreign_keys=ON`, and runs `migrateImSchemaV4`. It prints `{status:'migrated', from, to, schemaChecksum}` and is repeatable on v4. It refuses v1/v2 (`MIGRATION_STALE`) and never creates or backs up a database. Take and verify a backup, and record the deployed ref, before running it on a real center.
+`node scripts/im-migrate-v4.mjs <existing-center-config.json>` / `node scripts/im-migrate-v5.mjs <existing-center-config.json>` open the `dbPath` from the same strict center configuration shape (`dbPath`, optional `policy`, optional `tls`), verify `PRAGMA foreign_keys=ON`, and run `migrateImSchemaV4` / `migrateImSchemaV5`. Each prints `{status:'migrated', from, to, schemaChecksum}` and is repeatable on its own target version. The v4 script refuses anything but v3/v4 and the v5 script refuses anything but v4/v5 (`MIGRATION_STALE`); neither creates or backs up a database. **Take and verify a backup, and record the deployed ref, before running either on a real center.**

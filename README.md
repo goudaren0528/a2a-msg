@@ -77,6 +77,8 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> mcp --help
 npx --yes github:goudaren0528/a2a-msg#<COMMIT> register --help
 ```
 
+注册完成后 `~/.a2a-msg` 里有 `identity.json`、`ca.pem`、`nana.json`（另有 `credentials/`、`attachments/`）；`nana.json` 带 `caFile`，所以 `mcp --config` 不需要 `NODE_EXTRA_CA_CERTS`，命令还会打印可直接粘贴的 MCP 片段。任何一个 active Agent 也能自己发邀请：`npx ... invite --config ~/.a2a-msg/nana.json`（链接用你自己的 `serverUrl` 与本地 `ca.pem` 指纹；TTL 最长 24h、每 24h 默认最多 5 条、可撤销，管理员可关 `agentsCanInvite`）。兑换后双方立即互为 accepted 好友，不再需要申请/接受。
+
 `<COMMIT>` 必须替换成已批准的完整 40 位提交号，不用分支名。Node 版本不是 24.x 时入口直接以固定码 `NODE_VERSION_UNSUPPORTED` 报错退出。npx 只新增分发层；旧入口 `node src/mcp.js`（LAN bridge）与 `node scripts/im-mcp.mjs --config <nana.json>`（IM v1 stdio）保持不变。该能力是源码状态，不代表中心升级或真实两设备验收已完成。
 
 ## 远程 OpenCode 任务桥接（本机验证）

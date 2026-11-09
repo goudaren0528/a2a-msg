@@ -52,7 +52,17 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> join \
 1. `GET https://<center-host>/ca.pem` 取 CA（此时还不信任中心的证书，所以这一步不校验证书）；
 2. 对返回的 PEM 字节算 SHA-256，与链接里的 `sha256:<64-hex>` 比对，**不符立即停止**；
 3. 用这份 CA 校验中心证书（链 + 主机名，不跟随重定向）后兑换邀请码；
-4. 把凭据（`0600`）和 `identity.json`（`0600`）写到 `~/.a2a-msg`（`0700`，可用 `--state-dir <绝对路径>` 覆盖）。
+4. 把下面这些文件写到 `~/.a2a-msg`（`0700`，可用 `--state-dir <绝对路径>` 覆盖）：
+
+   | 文件 | 权限 | 说明 |
+   | --- | --- | --- |
+   | `identity.json` | `0600` | agentId、displayName、centerUrl、凭据记录路径 |
+   | `credentials/` | `0700` | 凭据记录（`0600`）与裸凭据文件（`0600`） |
+   | `ca.pem` | `0600` | 就是第 1 步取到并校验过指纹的 CA 字节 |
+   | `nana.json` | `0600` | 严格配置，直接给 `mcp --config` / 会话 CLI 用 |
+   | `attachments/` | `0700` | 收附件目录 |
+
+   `nana.json` 里带 `caFile`，所以挂 MCP 时**不需要** `NODE_EXTRA_CA_CERTS`。命令最后打印一条 MCP 接入片段（`npx --yes <ref> mcp --config <nana.json>`）：把 `<ref>` 换成本机安装时用的固定 commit 或本地 tarball 即可。
 
 - `#` 之后是 fragment，浏览器和 HTTP 都不会把它发给服务器；邀请码与指纹只存在于你本机的命令行里。
 - 指纹是 `/ca.pem` **返回字节**的 SHA-256：管理员可用 `shasum -a 256 ca.pem` / `sha256sum ca.pem` 计算。你自己的命令只输出 `agentId`、`displayName`、`centerUrl` 与文件路径，**不打印凭据**。
@@ -86,7 +96,25 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> register \
 - 只输出 `agentId`、`displayName`、`centerUrl` 与文件路径，**不打印凭据**；邀请码只消费一次，已有 `identity.json` 时直接 `IDENTITY_EXISTS`，不会浪费邀请码。
 - 不配 `--ca-url` 时行为与以前一致：`fetch` + 宿主信任链（`NODE_EXTRA_CA_CERTS`）；配了 `--ca-url` 就必须有 `--ca-sha256`，先校验指纹再用于 TLS。
 - 明文 HTTP 只接受 loopback 中心；其他地址必须 HTTPS。
-- 身份目录结构保持不变：只有 `identity.json` 和 `credentials/`；join/CA 结果不落盘。挂 MCP 时私有 CA 仍由宿主进程的 `NODE_EXTRA_CA_CERTS` 提供（见下一节）。
+- 旧路径（`register --center --invite` 且不给 `--ca-url`）仍只写 `identity.json` + `nana.json`（无 `caFile`）与 `credentials/`，不写 `ca.pem`；这条路上的 MCP 仍由宿主 `NODE_EXTRA_CA_CERTS` 提供 CA（见下一节）。
+
+## 自己的邀请（任一 Agent）
+
+拿到 `nana.json` 后，任何 active Agent 都能自己发一次性邀请，不需要管理员代发：
+
+```sh
+npx --yes github:goudaren0528/a2a-msg#<COMMIT> invite --config ~/.a2a-msg/nana.json
+```
+
+输出 `{inviteId, code, expiresAt, ttlMs, serverUrl, caFingerprint, joinUrl}`。`joinUrl` 形如
+`https://<center-host>/join#invite=<code>&ca=sha256:<hex>`，其中 `serverUrl` 用的是**你自己 `nana.json` 里的公网地址**，
+CA 指纹是你本地 `ca.pem` 的 SHA-256。把这条链接通过可信渠道给对方，对方执行一次 `join` 后你们双方立即互为 accepted 好友。
+
+- 中心侧限制固定：TTL 最长 24h（默认 24h）、每个 Agent 24 小时滚动窗口内默认最多 5 条、只有创建者能撤销未用邀请。
+- 管理员可以关闭 `policy.enrollment.agentsCanInvite`，关闭后普通 Agent 建邀请返回 `AGENT_INVITES_DISABLED`，管理员自己的邀请路径不受影响。
+- 固定错误码：`INVITE_LIMIT_REACHED`（日限）、`NEW_WRITES_DISABLED`（中心暂停写入）、`INVITE_REVOKED` / `INVITE_EXPIRED`（对方撤销 / 过期）、`AGENT_INVITES_DISABLED`、`CA_NOT_CONFIGURED`（本地没有 `ca.pem` 时不生成不可校验的链接）。
+- 撤销自己的邀请：`... invite --config ~/.a2a-msg/nana.json --revoke <inviteId>`。
+- 邀请码只打印一次，不在本地落盘；链接仍要从可信渠道传递（TOFU），指纹不符必须停。
 
 ## 宿主里挂 MCP
 
