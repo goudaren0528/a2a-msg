@@ -43,7 +43,11 @@ if (!configPath || process.argv.length !== 3) {
     if (policy.transport.mode === 'direct-tls') {
       if (typeof settings.tls?.keyPath !== 'string' || !settings.tls.keyPath ||
           typeof settings.tls?.certPath !== 'string' || !settings.tls.certPath ||
-          Object.keys(settings.tls).some(key => !['keyPath', 'certPath'].includes(key))) throw Error('TLS files not configured');
+          Object.keys(settings.tls).some(key => !['keyPath', 'certPath', 'caCertPath'].includes(key)) ||
+          (settings.tls.caCertPath !== undefined &&
+            (typeof settings.tls.caCertPath !== 'string' || !settings.tls.caCertPath))) {
+        throw Error('TLS files not configured');
+      }
     } else if (settings.tls !== undefined || url.protocol !== 'http:' ||
         !['localhost', '127.0.0.1', '::1'].includes(host)) {
       throw Error('Unsupported transport configuration');
@@ -51,6 +55,16 @@ if (!configPath || process.argv.length !== 3) {
     const dbPath = existingFile(settings.dbPath);
     const keyPath = policy.transport.mode === 'direct-tls' ? existingFile(settings.tls.keyPath) : null;
     const certPath = policy.transport.mode === 'direct-tls' ? existingFile(settings.tls.certPath) : null;
+    // The optional CA bundle is published as-is on GET /ca.pem, so it may only
+    // contain certificate blocks: refuse anything else (keys included) at start.
+    const caCertPath = policy.transport.mode === 'direct-tls' && settings.tls.caCertPath !== undefined
+      ? existingFile(settings.tls.caCertPath) : null;
+    const caPem = caCertPath === null ? null : readFileSync(caCertPath);
+    if (caPem && !(caPem.length > 0 && caPem.length <= 1024 * 1024 &&
+        /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/.test(caPem.toString('latin1')) &&
+        !/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(caPem.toString('latin1')))) {
+      throw Error('Invalid CA certificate file');
+    }
     // Probe the existing schema read-only before any writable open. Protected
     // directory ownership must prevent replacement between these two opens.
     const probe = new DatabaseSync(dbPath, { readOnly: true });
@@ -63,6 +77,18 @@ if (!configPath || process.argv.length !== 3) {
     center = createImCenter({ db, policy });
     const listener = async (req, res) => {
       try {
+        // The only public route outside /api/v1: the center CA bundle, served
+        // byte-for-byte so a join link's sha256 fingerprint pins it. Absent
+        // config, other methods and other paths stay unresolvable (404).
+        if (caPem !== null && req.method === 'GET' && req.url === '/ca.pem') {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/x-pem-file');
+          res.setHeader('Content-Length', caPem.length);
+          res.setHeader('Cache-Control', 'no-store');
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.end(caPem);
+          return;
+        }
         if (!await center.handler.handle(req, res)) {
           res.statusCode = 404;
           res.setHeader('Cache-Control', 'no-store');

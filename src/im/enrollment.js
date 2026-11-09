@@ -10,6 +10,16 @@ const own = (value, keys) => value !== null && typeof value === 'object' && !Arr
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 const displayName = value => typeof value === 'string' && value.length >= 1 && value.length <= 255 &&
   !/[\x00-\x1f\x7f]/.test(value);
+
+// Device-side default display name: the local hostname reduced to a printable
+// label. Characters outside [A-Za-z0-9._-] (spaces, Unicode, control bytes) are
+// replaced, runs collapse to one '-', and an empty result falls back to
+// 'device', so the value always passes the enrollment displayName check.
+export function defaultDisplayName(hostname) {
+  const cleaned = String(hostname ?? '').replace(/[^A-Za-z0-9._-]+/g, '-')
+    .slice(0, 255).replace(/^-+|-+$/g, '');
+  return cleaned.length >= 1 ? cleaned : 'device';
+}
 const schemaMismatch = () => Object.assign(
   new Error('IM storage schema does not match the supported migration'), { code: 'IM_SCHEMA_MISMATCH' });
 

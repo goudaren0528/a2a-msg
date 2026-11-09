@@ -14,7 +14,10 @@ const NODE_RANGE = '>=24 <25';
 const globalUsage = [
   'Usage:',
   '  a2a-msg mcp --config <ABSOLUTE_EXISTING_JSON> [--download-dir <ABSOLUTE_EXISTING_DIR>]',
-  '  a2a-msg register --center <URL> --invite <CODE> --display-name <NAME> [--state-dir <ABSOLUTE_PATH>]',
+  '  a2a-msg register --center <URL> --invite <CODE> [--display-name <NAME>] [--state-dir <ABSOLUTE_PATH>]',
+  '                   [--ca-url <URL> --ca-sha256 sha256:<HEX>]',
+  '  a2a-msg join <https://CENTER/join#invite=CODE&ca=sha256:HEX>',
+  '               [--display-name <NAME>] [--state-dir <ABSOLUTE_PATH>]',
   '  a2a-msg --help',
   '',
   'Commands:',
@@ -23,8 +26,11 @@ const globalUsage = [
   '  register  Redeem a one-time invite and store this device\'s identity under',
   '            the state directory (default ~/.a2a-msg). The credential is never',
   '            printed.',
+  '  join      One command from a join link: fetch the center CA, verify its',
+  '            sha256 fingerprint, then redeem the invite in the link fragment.',
+  '            The fragment is never sent to the server.',
   '',
-  `Both commands forward to scripts/im-mcp.mjs and scripts/im-register.mjs.`,
+  'All commands forward to scripts/im-mcp.mjs and scripts/im-register.mjs.',
   `Run "a2a-msg <command> --help" for the full option list. Requires Node.js ${NODE_RANGE}.`,
 ].join('\n');
 
@@ -39,13 +45,29 @@ const mcpUsage = [
 ].join('\n');
 
 const registerUsage = [
-  'Usage: a2a-msg register --center <URL> --invite <CODE> --display-name <NAME> [--state-dir <ABSOLUTE_PATH>]',
+  'Usage: a2a-msg register --center <URL> --invite <CODE> [--display-name <NAME>] [--state-dir <ABSOLUTE_PATH>]',
+  '                        [--ca-url <URL> --ca-sha256 sha256:<HEX>]',
   '',
   'Redeems one invitation at an IM v1 center and writes the credential (0600) and',
   'identity.json (0600) under --state-dir (default ~/.a2a-msg). Accepts HTTPS, or',
   'plain HTTP only for a loopback center; a private CA is trusted through',
-  'NODE_EXTRA_CA_CERTS. Prints agentId/displayName/centerUrl/paths, never the',
-  'credential. Refuses to overwrite an existing identity.json.',
+  'NODE_EXTRA_CA_CERTS. --display-name defaults to the sanitized system hostname.',
+  '--ca-url fetches the center CA first trust and requires --ca-sha256 to pin it',
+  '(sha256 of the served PEM bytes) before any TLS use; a mismatch stops.',
+  'Prints agentId/displayName/centerUrl/paths, never the credential. Refuses to',
+  'overwrite an existing identity.json.',
+].join('\n');
+
+const joinUsage = [
+  'Usage: a2a-msg join <https://CENTER/join#invite=CODE&ca=sha256:HEX>',
+  '                    [--display-name <NAME>] [--state-dir <ABSOLUTE_PATH>]',
+  '',
+  'One command: reads the invite code and CA fingerprint from the link fragment',
+  '(never sent to the server), fetches <CENTER>/ca.pem, verifies its sha256',
+  'fingerprint, then redeems the invite with the pinned CA and writes identity.json',
+  'and the credential (0600) under --state-dir (default ~/.a2a-msg).',
+  'If the fingerprint does not match, stop: the link or the center is not the one',
+  'you expected. --display-name defaults to the sanitized system hostname.',
 ].join('\n');
 
 /**
@@ -116,6 +138,12 @@ export async function main(argv) {
   if (command === 'register') {
     if (isHelp(rest)) { process.stdout.write(`${registerUsage}\n`); return 0; }
     return runScript(scriptPath('im-register.mjs'), rest);
+  }
+  if (command === 'join') {
+    if (isHelp(rest)) { process.stdout.write(`${joinUsage}\n`); return 0; }
+    // Link parsing and CA pinning live in the register script; the wrapper only
+    // forwards `<link>` plus the optional --display-name/--state-dir flags.
+    return runScript(scriptPath('im-register.mjs'), ['--join', ...rest]);
   }
   writeError('INVALID_ARGUMENTS');
   process.stderr.write(`${globalUsage}\n`);
