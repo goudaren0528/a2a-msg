@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
-import { migrateImSchemaV4 } from '../src/im/schema.js';
+import { migrateImSchemaV5 } from '../src/im/schema.js';
 import { createImAdmin } from '../src/im/admin.js';
 import { createImAuth } from '../src/im/auth.js';
 import { createImAcl } from '../src/im/acl.js';
@@ -26,7 +26,7 @@ const policy = { enabled: true, writeMode: 'enabled', transport: { mode: 'local-
     idempotencyRetentionMs: 110000, safeRetryWindowMs: 1000 } }, lease: { ttlMs: 90000, renewalMs: 30000 } };
 
 async function fixture(options = {}) {
-  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON'); migrateImSchemaV4(db);
+  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON'); migrateImSchemaV5(db);
   const blobReads = [];
   const store = options.traceBlob ? new Proxy(db, { get(target, key) {
     if (key === 'prepare') return sql => {
@@ -553,7 +553,7 @@ async function spawnCenter(t, tls) {
   const dbPath = join(dir, 'center.sqlite');
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA foreign_keys=ON');
-  migrateImSchemaV4(db);
+  migrateImSchemaV5(db);
   db.close();
   const port = await freePort();
   const configPath = join(dir, 'center.json');

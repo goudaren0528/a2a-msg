@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { IM_SCHEMA_VERSION, migrateImSchema, migrateImSchemaV3, migrateImSchemaV4, assertImSchema, getInstanceIdentity, initInstanceIdentity } from '../src/im/schema.js';
+import { IM_SCHEMA_VERSION, migrateImSchema, migrateImSchemaV3, migrateImSchemaV4, migrateImSchemaV5, assertImSchema, getInstanceIdentity, initInstanceIdentity } from '../src/im/schema.js';
 import { createHash } from 'node:crypto';
 import { V2_DDL, V2_CHECKSUM } from './fixtures/im-schema/v2.js';
 import { V1_DDL, V1_CHECKSUM } from './fixtures/im-schema/v1.js';
@@ -20,7 +20,7 @@ function agent(db, agentId) {
 
 test('first migration, repeat migration, manifest and isolated defaults', (t) => {
   const db = database(t);
-  assert.equal(IM_SCHEMA_VERSION, 4);
+  assert.equal(IM_SCHEMA_VERSION, 5);
   assert.equal(migrateImSchema(db), true);
   const before = db.prepare('SELECT * FROM im_schema').get();
   assert.match(before.migration_checksum, /^[0-9a-f]{64}$/);
@@ -93,6 +93,63 @@ test('fresh v4 and explicit v3 to v4 are additive, repeatable and preserve all r
   migrateImSchema(v2);
   assert.throws(() => migrateImSchemaV4(v2), { code: 'IM_SCHEMA_MISMATCH' });
   assert.equal(v2.prepare('SELECT version FROM im_schema').get().version, 2);
+});
+
+test('fresh v5 and explicit v4 to v5 are additive, repeatable and preserve all rows', t => {
+  const db = database(t);
+  assert.equal(migrateImSchemaV5(db), true);
+  assert.equal(assertImSchema(db), true);
+  assert.equal(db.prepare('SELECT version FROM im_schema').get().version, 5);
+  assert.equal(db.prepare('SELECT sql FROM sqlite_master WHERE name=?').get('im_enrollment_invites_inviter').sql,
+    'CREATE INDEX im_enrollment_invites_inviter ON im_enrollment_invites(inviter_agent_id,created_at)');
+  assert.deepEqual(db.prepare('PRAGMA table_info(im_enrollment_invites)').all().map(r => r.name),
+    ['invite_id', 'code_hash', 'created_at', 'expires_at', 'used_at', 'used_agent_id', 'revoked_at', 'inviter_agent_id']);
+  assert.equal(migrateImSchemaV5(db), true);
+
+  const old = database(t);
+  migrateImSchemaV4(old);
+  old.exec("INSERT INTO im_agents VALUES ('a','A','active',1,NULL),('b','B','active',1,NULL)");
+  old.exec("INSERT INTO im_contacts VALUES ('a','b',1,1,2)");
+  old.prepare(`INSERT INTO im_enrollment_invites(invite_id,code_hash,created_at,expires_at)
+    VALUES ('invite',?,1,2)`).run('d'.repeat(64));
+  const plain = list => list.map(row => ({ ...row }));
+  const before = snapshot(old);
+  assert.equal(migrateImSchemaV5(old), true);
+  const after = snapshot(old);
+  for (const [name, rows] of Object.entries(before)) {
+    if (name === 'im_enrollment_invites') {
+      assert.deepEqual(plain(after[name]).map(({ inviter_agent_id, ...rest }) => rest), plain(rows), name);
+      assert.ok(after[name].every(row => row.inviter_agent_id === null), 'existing invites stay administrator invites');
+    } else assert.deepEqual(after[name], rows, name);
+  }
+  // The fresh path and the migrated path must store byte-identical DDL.
+  assert.deepEqual(old.prepare("SELECT sql FROM sqlite_master WHERE name='im_enrollment_invites'").get(),
+    db.prepare("SELECT sql FROM sqlite_master WHERE name='im_enrollment_invites'").get());
+  assert.equal(migrateImSchemaV5(old), true);
+  assert.deepEqual(snapshot(old), after);
+});
+
+test('v4 to v5 refuses older markers and rolls back column, index and marker together', t => {
+  for (const version of [2, 3]) {
+    const stale = database(t);
+    if (version === 2) migrateImSchema(stale); else migrateImSchemaV3(stale);
+    assert.throws(() => migrateImSchemaV5(stale), { code: 'IM_SCHEMA_MISMATCH' });
+    assert.equal(stale.prepare('SELECT version FROM im_schema').get().version, version);
+  }
+  const db = database(t);
+  migrateImSchemaV4(db);
+  const proxy = new Proxy(db, { get(target, prop) {
+    if (prop === 'exec') return sql => {
+      if (sql.startsWith('CREATE INDEX im_enrollment_invites_inviter')) throw new Error('injected v5 fault');
+      return target.exec(sql);
+    };
+    const value = target[prop]; return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  assert.throws(() => migrateImSchemaV5(proxy), /injected v5 fault/);
+  assert.equal(db.isTransaction, false);
+  assert.equal(db.prepare('SELECT version FROM im_schema').get().version, 4);
+  assert.equal(db.prepare('PRAGMA table_info(im_enrollment_invites)').all().some(r => r.name === 'inviter_agent_id'), false);
+  assert.equal(assertImSchema(db), true);
 });
 
 test('v3 to v4 failure rolls back both tables and the marker together', t => {

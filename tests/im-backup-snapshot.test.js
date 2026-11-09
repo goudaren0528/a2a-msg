@@ -13,8 +13,8 @@ const nativeOnly = process.platform === 'win32' ? 'strict protected registry req
 
 test('fixture proof: frozen v1/v2/v3 DDL and real native DELETE/WAL snapshots contain the post-mode committed business fact',
   { timeout: 20000 }, async t => {
-    assert.equal(IM_SCHEMA_VERSION, 4);
-    assert.deepEqual(SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3, 4]);
+    assert.equal(IM_SCHEMA_VERSION, 5);
+    assert.deepEqual(SUPPORTED_IM_SCHEMA_VERSIONS, [1, 2, 3, 4, 5]);
     for (const version of [1, 2, 3]) for (const mode of ['DELETE', 'WAL']) {
       const f = sourceFixture(t, version, mode), path = await nativeFixture(f);
       const before = readFileSync(path);

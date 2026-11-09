@@ -50,15 +50,21 @@ export function createImCenter({ db, policy, clock = Date.now, onCommitted, trus
   try { contactRequestsEnabled = parseImConfig(policy).contacts?.requests === 'enabled'; } catch { /* invalid policy fails elsewhere */ }
   let contacts;
   if (contactRequestsEnabled) {
-    if (db.prepare('SELECT version FROM im_schema').get()?.version !== 4) throw new ImError('POLICY_NOT_CONFIGURED');
+    if (![4, 5].includes(db.prepare('SELECT version FROM im_schema').get()?.version)) throw new ImError('POLICY_NOT_CONFIGURED');
     contacts = createImContacts({ db, auth, clock, timeGuard: guard, policy });
   }
   // Enrollment is only constructed when the validated policy enables it; an
-  // enabled policy on a pre-v4 database fails closed at startup.
+  // enabled policy on a pre-v4 database fails closed at startup. Agent-created
+  // invites need the v5 inviter column, so a v4 database refuses to start while
+  // `agentsCanInvite` is on instead of silently dropping the capability.
   let enrollment;
-  try {
-    if (parseImConfig(policy).enrollment?.enabled) enrollment = createImEnrollment({ db, clock, timeGuard: guard });
-  } catch { enrollment = undefined; }
+  let enrollPolicy;
+  try { enrollPolicy = parseImConfig(policy).enrollment; } catch { enrollPolicy = undefined; }
+  if (enrollPolicy?.enabled) {
+    if (enrollPolicy.agentsCanInvite !== false && db.prepare('SELECT version FROM im_schema').get()?.version !== 5)
+      throw new ImError('POLICY_NOT_CONFIGURED');
+    enrollment = createImEnrollment({ db, clock, timeGuard: guard, policy, auth });
+  }
   const handler = createImHandler({ auth, acl, messages, contacts, delivery, events, listEventPeers, enrollment, policy, trustedTimers });
   return Object.freeze({ handler, close: () => { events.close(); handler.close(); }, guard,
     modules: Object.freeze({ auth, acl, messages, contacts, delivery, events }) });

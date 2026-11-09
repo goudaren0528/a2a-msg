@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { withImmediateTransaction } from './transaction.js';
 
-export const IM_SCHEMA_VERSION = 4;
-export const SUPPORTED_IM_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4]);
+export const IM_SCHEMA_VERSION = 5;
+export const SUPPORTED_IM_SCHEMA_VERSIONS = Object.freeze([1, 2, 3, 4, 5]);
 const MAX_INT = 9007199254740991;
 const MAX_JSON = 65536;
 const id = (column) => `CHECK(length(${column}) BETWEEN 1 AND 255)`;
@@ -78,6 +78,21 @@ const V4_EXPECTED = manifest(V4_DDL.map((sql) => {
   return { type: type.toLowerCase(), name, tbl_name: type === 'TABLE' ? name : / ON (im_\w+)/.exec(sql)[1], sql };
 }));
 const V4_CHECKSUM = createHash('sha256').update(JSON.stringify(V4_EXPECTED)).digest('hex');
+// v5 is additive: an invite may carry the Agent that created it, so redemption
+// can make that pair accepted contacts. SQLite appends an ALTERed column at the
+// end of the column list (before table-level CHECKs), so the frozen text below is
+// exactly what a migrated v4 database stores; the fresh path uses the same text.
+const V5_INVITES_TABLE = `CREATE TABLE im_enrollment_invites (invite_id TEXT PRIMARY KEY CHECK(length(invite_id) BETWEEN 1 AND 255), code_hash TEXT NOT NULL UNIQUE CHECK(length(code_hash) = 64 AND code_hash NOT GLOB '*[^0-9a-f]*'), created_at INTEGER NOT NULL CHECK(created_at IS NULL OR (typeof(created_at) = 'integer' AND created_at BETWEEN 0 AND ${MAX_INT})), expires_at INTEGER NOT NULL CHECK(expires_at IS NULL OR (typeof(expires_at) = 'integer' AND expires_at BETWEEN 0 AND ${MAX_INT})), used_at INTEGER CHECK(used_at IS NULL OR (typeof(used_at) = 'integer' AND used_at BETWEEN 0 AND ${MAX_INT})), used_agent_id TEXT REFERENCES im_agents(agent_id) CHECK(length(used_agent_id) BETWEEN 1 AND 255), revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at) = 'integer' AND revoked_at BETWEEN 0 AND ${MAX_INT})), inviter_agent_id TEXT REFERENCES im_agents(agent_id), CHECK(expires_at > created_at), CHECK(used_at IS NULL OR used_agent_id IS NOT NULL), CHECK(used_at IS NULL OR used_at >= created_at), CHECK(revoked_at IS NULL OR revoked_at >= created_at))`;
+const V5_INDEX = `CREATE INDEX im_enrollment_invites_inviter ON im_enrollment_invites(inviter_agent_id,created_at)`;
+const V5_SCHEMA = `CREATE TABLE im_schema (version INTEGER NOT NULL PRIMARY KEY CHECK(version = 5), migration_checksum TEXT NOT NULL CHECK(length(migration_checksum) = 64))`;
+const V5_DDL = [V5_SCHEMA, V5_INVITES_TABLE,
+  ...V4_DDL.slice(1).filter(sql => !sql.startsWith('CREATE TABLE im_enrollment_invites ')),
+  V5_INDEX];
+const V5_EXPECTED = manifest(V5_DDL.map((sql) => {
+  const [, type, name] = /^CREATE (TABLE|INDEX) (im_\w+)/.exec(sql);
+  return { type: type.toLowerCase(), name, tbl_name: type === 'TABLE' ? name : / ON (im_\w+)/.exec(sql)[1], sql };
+}));
+const V5_CHECKSUM = createHash('sha256').update(JSON.stringify(V5_EXPECTED)).digest('hex');
 
 function mismatch() {
   const error = new Error('IM storage schema does not match the supported migration');
@@ -102,13 +117,13 @@ function checkImSchema(db, allowUninitializedIdentity = false) {
   if (marker.length !== 1) throw mismatch();
   const { version, migration_checksum: checksum } = marker[0];
   const expected = version === 1 ? EXPECTED : version === 2 ? V2_EXPECTED :
-    version === 3 ? V3_EXPECTED : version === 4 ? V4_EXPECTED : null;
+    version === 3 ? V3_EXPECTED : version === 4 ? V4_EXPECTED : version === 5 ? V5_EXPECTED : null;
   const expectedChecksum = version === 1 ? CHECKSUM : version === 2 ? V2_CHECKSUM :
-    version === 3 ? V3_CHECKSUM : version === 4 ? V4_CHECKSUM : null;
+    version === 3 ? V3_CHECKSUM : version === 4 ? V4_CHECKSUM : version === 5 ? V5_CHECKSUM : null;
   if (!expected || checksum !== expectedChecksum || JSON.stringify(manifest(rows)) !== JSON.stringify(expected)) throw mismatch();
   if (db.prepare('SELECT singleton,write_mode FROM im_settings').all().length !== 1 ||
       db.prepare('SELECT singleton,last_observed_at FROM im_clock').all().length !== 1) throw mismatch();
-  if (version === 2 || version === 3 || version === 4) {
+  if (version === 2 || version === 3 || version === 4 || version === 5) {
     const identities = db.prepare('SELECT singleton,instance_id,created_at FROM im_instance_identity').all();
     if ((!allowUninitializedIdentity && identities.length !== 1) || identities.length > 1 || identities.some(row => row.singleton !== 1 ||
         typeof row.instance_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(row.instance_id) ||
@@ -124,7 +139,7 @@ export function assertImSchema(db) {
 
 export function assertInstanceIdentity(db) {
   assertImSchema(db);
-  if (![2, 3, 4].includes(db.prepare('SELECT version FROM im_schema').get().version)) throw mismatch();
+  if (![2, 3, 4, 5].includes(db.prepare('SELECT version FROM im_schema').get().version)) throw mismatch();
   if (!db.prepare('SELECT 1 FROM im_instance_identity WHERE singleton=1').get())
     throw Object.assign(new Error('Instance identity not initialized'), { code: 'IM_IDENTITY_MISSING' });
   return true;
@@ -203,6 +218,32 @@ export function migrateImSchemaV4(db) {
   });
 }
 
+// Explicit v4 -> v5 only. Fresh databases may initialize directly at v5; an
+// existing v4 database is upgraded additively (column + index + marker) and a
+// repeated call is a no-op. v1/v2/v3 must take their original explicit upgrades.
+export function migrateImSchemaV5(db) {
+  requireForeignKeys(db);
+  return withImmediateTransaction(db, () => {
+    if (!objects(db).length) {
+      for (const sql of V5_DDL) db.exec(sql);
+      db.prepare('INSERT INTO im_schema(version,migration_checksum) VALUES (?,?)').run(5, V5_CHECKSUM);
+      db.exec("INSERT INTO im_settings(singleton,write_mode) VALUES (1,'paused')");
+      db.exec('INSERT INTO im_clock(singleton,last_observed_at) VALUES (1,0)');
+      return checkImSchema(db, true);
+    }
+    checkImSchema(db, true);
+    const version = db.prepare('SELECT version FROM im_schema').get().version;
+    if (version === 5) return true;
+    if (version !== 4) throw mismatch();
+    db.exec('ALTER TABLE im_enrollment_invites ADD COLUMN inviter_agent_id TEXT REFERENCES im_agents(agent_id)');
+    db.exec(V5_INDEX);
+    db.exec('DROP TABLE im_schema');
+    db.exec(V5_SCHEMA);
+    db.prepare('INSERT INTO im_schema(version,migration_checksum) VALUES (?,?)').run(5, V5_CHECKSUM);
+    return checkImSchema(db, true);
+  });
+}
+
 export function initInstanceIdentity(db, options = {}) {
   if (options === null || typeof options !== 'object' || Array.isArray(options) ||
       Object.keys(options).some(key => key !== 'clock') || Object.getOwnPropertySymbols(options).length)
@@ -212,7 +253,7 @@ export function initInstanceIdentity(db, options = {}) {
     throw Object.assign(new Error('Invalid identity initialization clock'), { code: 'IM_IDENTITY_INPUT_INVALID' });
   return withImmediateTransaction(db, () => {
     checkImSchema(db, true);
-    if (![2, 3, 4].includes(db.prepare('SELECT version FROM im_schema').get().version)) throw mismatch();
+    if (![2, 3, 4, 5].includes(db.prepare('SELECT version FROM im_schema').get().version)) throw mismatch();
     if (db.prepare('SELECT 1 FROM im_instance_identity').get()) throw Object.assign(new Error('Instance identity already initialized'), { code: 'IM_IDENTITY_EXISTS' });
     const createdAt = clock();
     if (!Number.isSafeInteger(createdAt) || createdAt < 0) throw Object.assign(new Error('Invalid identity time'), { code: 'IM_IDENTITY_TIME_INVALID' });

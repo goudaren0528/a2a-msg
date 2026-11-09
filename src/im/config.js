@@ -19,7 +19,8 @@ const schema = z.object({
     }).strict(),
   }).strict().optional(),
   lease: z.object({ ttlMs: positive, renewalMs: positive }).strict().optional(),
-  enrollment: z.object({ enabled: z.boolean() }).strict().optional(),
+  enrollment: z.object({ enabled: z.boolean(), agentsCanInvite: z.boolean().optional(),
+    dailyInviteLimit: positive.max(1000).optional() }).strict().optional(),
   contacts: z.object({ requests: z.enum(['enabled', 'legacy']) }).strict().optional(),
   limits: z.object({
     maxAttachmentBytes: positive.max(MAX_ATTACHMENT_BYTES),
@@ -66,7 +67,7 @@ export function parseImConfig(input = {}) {
     ...parsed.data,
     enabled: parsed.data.enabled ?? false,
     writeMode: parsed.data.writeMode ?? 'paused',
-    enrollment: parsed.data.enrollment ?? { enabled: false },
+    enrollment: { enabled: false, agentsCanInvite: true, dailyInviteLimit: 5, ...(parsed.data.enrollment ?? {}) },
     contacts: parsed.data.contacts ?? { requests: 'legacy' },
     limits: parsed.data.limits ?? { ...DEFAULT_LIMITS },
   };

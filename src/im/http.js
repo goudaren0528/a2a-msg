@@ -175,7 +175,7 @@ export function createImHandler({ auth, acl, messages, contacts, delivery, event
           (path === '/api/v1/messages' || path === '/api/v1/conversations' ||
            path === '/api/v1/contact-requests' ||
            /^\/api\/v1\/contact-requests\/[^/]+\/(?:accept|reject|revoke)$/.test(path) ||
-           path === '/api/v1/acks' || path.startsWith('/api/v1/receiver/lease') ||
+           path === '/api/v1/acks' || path === '/api/v1/invites' || path.startsWith('/api/v1/receiver/lease') ||
            /^\/api\/v1\/messages\/[^/]+\/read$/.test(path))) fail('NEW_WRITES_DISABLED');
       let result, status = 200;
       if (method === 'GET' && path === '/api/v1/me') {
@@ -233,6 +233,13 @@ export function createImHandler({ auth, acl, messages, contacts, delivery, event
         return true;
       } else if (method === 'POST' && /^\/api\/v1\/messages\/[^/]+\/read$/.test(path)) {
         query(); object(await body(), []); result = messages.markRead(principal, { messageId: id(path.split('/')[4]) });
+      } else if (method === 'POST' && path === '/api/v1/invites') {
+        if (typeof enrollment?.createInvite !== 'function') fail('POLICY_NOT_CONFIGURED');
+        query(); result = enrollment.createInvite(principal, object(await body(), [], ['ttlMs'])); status = 201;
+      } else if (method === 'POST' && /^\/api\/v1\/invites\/[^/]+\/revoke$/.test(path)) {
+        if (typeof enrollment?.revokeInvite !== 'function') fail('POLICY_NOT_CONFIGURED');
+        query(); object(await body(), []);
+        result = enrollment.revokeInvite(principal, { inviteId: id(path.split('/')[4]) });
       } else if (method === 'POST' && path === '/api/v1/receiver/lease') {
         query(); result = delivery.acquire(principal, object(await body(), ['instanceId', 'requestId']));
       } else if (method === 'POST' && path === '/api/v1/receiver/lease/renew') {

@@ -19,7 +19,7 @@ const requiredInput = (value, required, optional = []) => {
 // existing requirePeer checks enforce ACCEPTED on the server for every route.
 export function createImContacts({ db, auth, clock = Date.now, timeGuard, policy } = {}) {
   assertImSchema(db);
-  if (db.prepare('SELECT version FROM im_schema').get()?.version !== 4) {
+  if (![4, 5].includes(db.prepare('SELECT version FROM im_schema').get()?.version)) {
     throw Object.assign(new Error('IM storage schema does not match the supported migration'),
       { code: 'IM_SCHEMA_MISMATCH' });
   }
