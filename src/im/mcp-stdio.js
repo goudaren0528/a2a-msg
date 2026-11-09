@@ -6,7 +6,7 @@ import { ImError, MAX_ATTACHMENT_BYTES } from './contracts.js';
 import { createImJournal } from './journal.js';
 import { createImMcpAdapter, imMcpToolSchemas } from './mcp-adapter.js';
 import { localFileToolSchemas, sendLocalFile, SEND_FILE_DESCRIPTION } from './mcp-local-files.js';
-import { defaultAttachmentDirectory, normalizeOrigin, parseNanaConfig } from '../nana/config.js';
+import { defaultAttachmentDirectory, normalizeOrigin, parseNanaConfig, readNanaCaFile } from '../nana/config.js';
 
 const MAX_JSON = 16 * 1024 * 1024;
 const REQUEST_DEADLINE_MS = 30000;
@@ -43,7 +43,7 @@ export function readNanaConfigFile(filePath) {
 // Re-read the session-bound credential on every request so rotations and revocations
 // take effect without restarting the host. Missing, unreadable or group/world-visible
 // credential files fail closed with a fixed code and never echo file contents.
-function readCredential(config) {
+export function readNanaCredential(config) {
   let info;
   try { info = lstatSync(config.credentialFile); } catch { fail('AUTH_REQUIRED'); }
   if (!info.isFile() || info.isSymbolicLink()) fail('AUTH_REQUIRED');
@@ -60,7 +60,7 @@ function readCredential(config) {
 // entry installs its own verified HTTPS transport: bearer-only auth, no redirects,
 // bounded bodies, verified chain and hostname. CA trust comes from the host process
 // (e.g. NODE_EXTRA_CA_CERTS); no CA path is accepted from tool input.
-function httpsTransport(origin, active) {
+function httpsTransport(origin, active, ca) {
   return ({ method, path, credential, body, headers = {}, binary }) => new Promise((resolve, reject) => {
     let settled = false;
     const chunks = [];
@@ -74,6 +74,7 @@ function httpsTransport(origin, active) {
       if (error) { chunks.length = 0; if (!req.destroyed) req.destroy(); reject(error); } else resolve(value);
     };
     const req = https.request(new URL(path, origin), { method, rejectUnauthorized: true, timeout: REQUEST_DEADLINE_MS,
+      ...(ca === undefined ? {} : { ca: [ca] }),
       headers: { Authorization: `Bearer ${credential}`, ...headers,
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) } }, res => {
       res.on('data', chunk => {
@@ -142,7 +143,10 @@ export function createImMcpStdio({ config: rawConfig, downloadDirectory } = {}) 
   const origin = normalizeOrigin(config.serverUrl);
   const attachmentDirectory = resolveAttachmentDirectory(config, downloadDirectory);
   requireDirectory(dirname(config.journalPath));
-  readCredential(config); // fail closed before any tool is exposed
+  readNanaCredential(config); // fail closed before any tool is exposed
+  // A `caFile` written by `join` replaces NODE_EXTRA_CA_CERTS with the pinned
+  // center CA; verification stays on, and an absent field keeps today's behavior.
+  const ca = config.caFile === undefined ? undefined : readNanaCaFile(config.caFile);
 
   const active = new Set();
   const db = new DatabaseSync(config.journalPath);
@@ -154,10 +158,10 @@ export function createImMcpStdio({ config: rawConfig, downloadDirectory } = {}) 
     adapter = createImMcpAdapter({
       serverUrl: origin,
       agentId: config.agentId,
-      getCredential: async () => readCredential(config),
+      getCredential: async () => readNanaCredential(config),
       journal: scope => createImJournal({ db, ...scope }),
       attachmentDirectory,
-      transport: httpsTransport(origin, active),
+      transport: httpsTransport(origin, active, ca),
     });
   } catch (error) {
     try { db.close(); } catch { /* ignore */ }

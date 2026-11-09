@@ -18,6 +18,7 @@ const globalUsage = [
   '                   [--ca-url <URL> --ca-sha256 sha256:<HEX>]',
   '  a2a-msg join <https://CENTER/join#invite=CODE&ca=sha256:HEX>',
   '               [--display-name <NAME>] [--state-dir <ABSOLUTE_PATH>]',
+  '  a2a-msg invite --config <ABSOLUTE_EXISTING_JSON> [--revoke <INVITE_ID>]',
   '  a2a-msg --help',
   '',
   'Commands:',
@@ -28,9 +29,15 @@ const globalUsage = [
   '            printed.',
   '  join      One command from a join link: fetch the center CA, verify its',
   '            sha256 fingerprint, then redeem the invite in the link fragment.',
-  '            The fragment is never sent to the server.',
+  '            The fragment is never sent to the server. Writes identity.json,',
+  '            ca.pem and a strict nana.json (plus attachments/) under --state-dir,',
+  '            and prints the MCP host snippet.',
+  '  invite    As the Agent in nana.json, create a one-time join link bound to it',
+  '            (POST /api/v1/invites), or --revoke one of its unused invites.',
+  '            The link uses the config serverUrl and the local ca.pem fingerprint.',
   '',
-  'All commands forward to scripts/im-mcp.mjs and scripts/im-register.mjs.',
+  'All commands forward to scripts/im-mcp.mjs, scripts/im-register.mjs and',
+  'scripts/im-invite.mjs.',
   `Run "a2a-msg <command> --help" for the full option list. Requires Node.js ${NODE_RANGE}.`,
 ].join('\n');
 
@@ -56,6 +63,17 @@ const registerUsage = [
   '(sha256 of the served PEM bytes) before any TLS use; a mismatch stops.',
   'Prints agentId/displayName/centerUrl/paths, never the credential. Refuses to',
   'overwrite an existing identity.json.',
+].join('\n');
+
+const inviteUsage = [
+  'Usage: a2a-msg invite --config <ABSOLUTE_EXISTING_JSON> [--revoke <INVITE_ID>]',
+  '',
+  'Creates a one-time `https://<serverUrl>/join#invite=CODE&ca=sha256:HEX` link bound',
+  'to the Agent in the strict nana.json (the serverUrl it contains, never the',
+  'center transport URL). The CA fingerprint is the sha256 of the device-local',
+  'ca.pem (nana.json `caFile`, or ca.pem next to the config). Center limits apply:',
+  '24h TTL, a daily cap per Agent, and revocation by the creator. Prints the invite',
+  'code and link once; never prints the credential.',
 ].join('\n');
 
 const joinUsage = [
@@ -144,6 +162,10 @@ export async function main(argv) {
     // Link parsing and CA pinning live in the register script; the wrapper only
     // forwards `<link>` plus the optional --display-name/--state-dir flags.
     return runScript(scriptPath('im-register.mjs'), ['--join', ...rest]);
+  }
+  if (command === 'invite') {
+    if (isHelp(rest)) { process.stdout.write(`${inviteUsage}\n`); return 0; }
+    return runScript(scriptPath('im-invite.mjs'), rest);
   }
   writeError('INVALID_ARGUMENTS');
   process.stderr.write(`${globalUsage}\n`);

@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createImClient } from '../im/client.js';
 import { createImJournal } from '../im/journal.js';
 import { ImError, PROTOCOL } from '../im/contracts.js';
-import { normalizeOrigin, parseNanaConfig } from './config.js';
+import { normalizeOrigin, parseNanaConfig, readNanaCaFile } from './config.js';
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const CREDENTIAL = /^[A-Za-z0-9._-]{1,128}$/;
@@ -62,7 +62,7 @@ function writeState(statePath, handedThrough) {
 
 // Read-only GET lookup for operations the durable client does not expose. HTTPS
 // only, no redirects, verified chain/hostname, bounded body, fixed error codes.
-function httpsLookup(origin, getCredential) {
+function httpsLookup(origin, getCredential, ca) {
   return path => new Promise((resolve, reject) => {
     let credential;
     try { credential = getCredential(); } catch { reject(new ImError('AUTH_REQUIRED')); return; }
@@ -70,6 +70,7 @@ function httpsLookup(origin, getCredential) {
     let settled = false;
     const finish = (error, value) => { if (settled) return; settled = true; error ? reject(error) : resolve(value); };
     const req = https.request(new URL(path, origin), { method: 'GET', rejectUnauthorized: true, timeout: 30000,
+      ...(ca === undefined ? {} : { ca: [ca] }),
       headers: { Authorization: `Bearer ${credential}` } }, res => {
       const chunks = [];
       let size = 0;
@@ -111,6 +112,9 @@ export function createNanaSession({ config: rawConfig, transport, clock = Date.n
     } catch { throw new ImError('AUTH_REQUIRED'); }
   }
 
+  // Optional `caFile` (written by `join`) replaces NODE_EXTRA_CA_CERTS for this
+  // center without relaxing chain or hostname verification.
+  const ca = config.caFile === undefined ? undefined : readNanaCaFile(config.caFile);
   const db = new DatabaseSync(config.journalPath);
   db.exec('PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL');
   const client = createImClient({
@@ -119,9 +123,10 @@ export function createNanaSession({ config: rawConfig, transport, clock = Date.n
     getCredential: async () => credential(),
     journal: scope => createImJournal({ db, ...scope }),
     attachmentDirectory: config.attachmentDirectory,
+    ...(ca === undefined ? {} : { ca }),
     ...(transport === undefined ? {} : { transport }),
   });
-  const lookup = transport === undefined ? httpsLookup(origin, credential) : path => transport({
+  const lookup = transport === undefined ? httpsLookup(origin, credential, ca) : path => transport({
     method: 'GET', path, credential: credential(), headers: {}, binary: false });
   let closed = false;
 
