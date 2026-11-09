@@ -60,6 +60,90 @@ export function validateJoinDisplayName(name) {
     return { ok: false, code: 'CONTROL', message: '名字里不能有控制字符（换行、制表符等）。' };
   return { ok: true, code: 'OK', message: '' };
 }
+
+// Direct enrollment uses the same invite fragment as the CLI prompt. The
+// browser calls the center's only unauthenticated API route on the same origin;
+// the returned credential is kept only in this page's JavaScript/DOM memory.
+export function enrollmentErrorMessage(code) {
+  const messages = {
+    ENROLLMENT_DISABLED: '中心没有开启自助注册，请让管理员开启后再试。',
+    INVITE_NOT_FOUND: '邀请码不存在，请确认链接完整、没有被改动。',
+    INVITE_ALREADY_USED: '这个邀请码已经被使用过；一条邀请只能注册一次。',
+    INVITE_EXPIRED: '这个邀请码已经过期，请让邀请人重新发一条。',
+    INVITE_REVOKED: '这个邀请码已经被撤销，请让邀请人重新发一条。',
+    INVITER_UNAVAILABLE: '发邀请的 Agent 当前不可用，请联系邀请人。',
+    RATE_LIMITED: '请求过于频繁，请稍后再试。',
+    INSECURE_ORIGIN: '直接注册只允许在 HTTPS 页面使用；请用中心提供的 https 链接打开。',
+    NETWORK_ERROR: '网络请求失败，请检查网络后重试；如果邀请已被使用，请让邀请人重发。',
+    INVALID_RESPONSE: '中心返回的数据无法识别，请让管理员检查部署。',
+    INVALID_REQUEST: '名字或请求格式不符合要求，请检查名字后重试。',
+    REGISTRATION_FAILED: '注册失败，请把固定错误码发给邀请人。',
+  };
+  const fixed = Object.hasOwn(messages, code) ? code : 'REGISTRATION_FAILED';
+  return { code: fixed, message: messages[fixed] };
+}
+
+export function buildRemoteMcpConfig({ origin, credential } = {}) {
+  const credentialPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/;
+  if (typeof origin !== 'string' || !/^https:\/\/[^/?#\s]+$/.test(origin))
+    throw new Error('INSECURE_ORIGIN');
+  if (typeof credential !== 'string' || !credentialPattern.test(credential))
+    throw new Error('INVALID_CREDENTIAL');
+  const url = origin + '/mcp';
+  const header = 'Authorization: Bearer ' + credential;
+  return {
+    url,
+    claude: 'claude mcp add --transport http a2a-msg ' + url + ' --header "' + header + '"',
+    json: JSON.stringify({
+      mcpServers: {
+        'a2a-msg': { type: 'http', url, headers: { Authorization: 'Bearer ' + credential } },
+      },
+    }, null, 2),
+  };
+}
+
+export async function enrollDirect({ origin, invite, displayName } = {}) {
+  const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const credentialPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/;
+  if (typeof origin !== 'string' || !/^https:\/\/[^/?#\s]+$/.test(origin))
+    return { ok: false, code: 'INSECURE_ORIGIN' };
+  if (typeof invite !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(invite))
+    return { ok: false, code: 'INVALID_REQUEST' };
+  if (!validateJoinDisplayName(displayName).ok) return { ok: false, code: 'INVALID_REQUEST' };
+  let response;
+  try {
+    response = await fetch(origin + '/api/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ inviteCode: invite, displayName }),
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+    });
+  } catch { return { ok: false, code: 'NETWORK_ERROR' }; }
+  let value = null;
+  try { value = await response.json(); } catch { /* fixed error below */ }
+  if (response.status !== 201) {
+    const raw = value && typeof value === 'object' && value.error && typeof value.error === 'object'
+      ? value.error.code : undefined;
+    const fixed = enrollmentErrorMessage(raw);
+    return { ok: false, code: fixed.code, message: fixed.message };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !agentIdPattern.test(value.agentId ?? '') || !credentialPattern.test(value.credential ?? '')) {
+    const fixed = enrollmentErrorMessage('INVALID_RESPONSE');
+    return { ok: false, code: fixed.code, message: fixed.message };
+  }
+  let config;
+  try { config = buildRemoteMcpConfig({ origin, credential: value.credential }); }
+  catch {
+    const fixed = enrollmentErrorMessage('INVALID_RESPONSE');
+    return { ok: false, code: fixed.code, message: fixed.message };
+  }
+  return { ok: true, agentId: value.agentId, credential: value.credential, config };
+}
+
 export function buildJoinPrompt({ commit, link, displayName } = {}) {
   const shaPattern = /^[0-9a-f]{40}$/;
   const linkPattern = /^(https?:\/\/[^\s"'<>&]+)\/join#invite=([A-Za-z0-9_-]{43})&ca=sha256:([0-9a-f]{64})$/;
@@ -176,6 +260,9 @@ button:active { transform: translateY(1px); }
 .copy-status { margin:0; color:var(--muted); }
 .copy-status.ok { color:var(--ok); }
 .copy-status.warn { color:var(--warn); }
+.danger { border-color:var(--warn); background:var(--warn-bg); color:var(--warn); }
+.secret { margin:.2rem 0 .75rem; }
+.secret textarea { min-height:3.6rem; }
 ol, ul { padding-left:1.25rem; }
 code { font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background:var(--bg); border:1px solid var(--line); border-radius:.3rem; padding:.1rem .3rem; }
 details summary { cursor:pointer; font-weight:600; }
@@ -191,8 +278,34 @@ footer { color:var(--muted); font-size:.85rem; margin:1rem 0 2rem; }
     <input id="name" type="text" maxlength="255" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="例如 office-mac">
     <p class="hint" id="name-status">必填：对方会看到这个名字（1–255 个字符，不能有控制字符）。浏览器读不到你的机器名，自己起一个能认出这台设备的名字，例如 <code>office-mac</code>；刷新会记住你填的名字。</p>
   </section>
-  <p class="status" id="status" role="status" aria-live="polite">页面只在你的浏览器里生成提示词；<code>#</code> 后面的内容不会发给服务器。</p>
+  <p class="status" id="status" role="status" aria-live="polite">页面只在你的浏览器里工作；只有点击“直接注册”时才会向同一个中心发送一次注册请求，<code>#</code> 后面的邀请码不会进入其他请求。</p>
   <noscript><p class="status warn">这个页面需要 JavaScript 才能在本地生成提示词。请启用 JavaScript，或按下面的手工步骤接入。</p></noscript>
+  <section id="direct-block">
+    <h2>直接注册（推荐）</h2>
+    <p>在上面填好名字，然后点下面的按钮。浏览器会用同源请求兑换邀请码，并只在本页显示一次 <code>agentId</code> 和远程 MCP 配置。令牌不会写进浏览器存储，也不会出现在地址栏。</p>
+    <div class="actions">
+      <button type="button" id="register" disabled>直接注册并生成远程 MCP 配置</button>
+    </div>
+    <p class="copy-status" id="register-status" role="status" aria-live="polite"></p>
+    <div id="register-result" hidden>
+      <p class="status danger"><strong>下面这段包含 Bearer 令牌，只显示这一次。</strong>刷新页面后不会再显示；不要发到聊天、issue、仓库或 URL 里。请立即复制到你的 MCP 宿主配置中。</p>
+      <label for="agent-id">agentId</label>
+      <textarea id="agent-id" class="secret" readonly spellcheck="false"></textarea>
+      <label for="claude-config">Claude Code · HTTP MCP（复制后执行）</label>
+      <textarea id="claude-config" class="secret" readonly spellcheck="false"></textarea>
+      <div class="actions">
+        <button type="button" id="copy-claude">复制 Claude Code 命令</button>
+        <p class="copy-status" id="claude-copy-status"></p>
+      </div>
+      <label for="json-config">通用 JSON（例如支持 HTTP MCP 的宿主配置）</label>
+      <textarea id="json-config" class="secret" readonly spellcheck="false"></textarea>
+      <div class="actions">
+        <button type="button" id="copy-json">复制通用 JSON</button>
+        <p class="copy-status" id="json-copy-status"></p>
+      </div>
+      <p class="hint">远程 MCP 地址：<code id="mcp-url"></code>。配置成功后可以调用 <code>im_v1_me</code> 校验身份；整条路径不需要本机 Node、npx 或仓库。下面的 CLI 提示词仍保留，作为回退。</p>
+    </div>
+  </section>
   <section id="prompt-block" hidden>
     <label for="prompt">接入提示词（整段复制）</label>
     <textarea id="prompt" readonly spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="先把名字补好，提示词会出现在这里。"></textarea>
@@ -216,10 +329,12 @@ ${manual}
 <script>
 'use strict';
 var BUILD_COMMIT = ${pinned === null ? 'null' : JSON.stringify(pinned)};
-var validateJoinDisplayName = ${validateJoinDisplayName.toString()};
 var NAME_STORAGE_KEY = 'a2a-msg.join.display-name';
 var parseJoinFragment = ${parseJoinFragment.toString()};
 var validateJoinDisplayName = ${validateJoinDisplayName.toString()};
+var enrollmentErrorMessage = ${enrollmentErrorMessage.toString()};
+var buildRemoteMcpConfig = ${buildRemoteMcpConfig.toString()};
+var enrollDirect = ${enrollDirect.toString()};
 var buildJoinPrompt = ${buildJoinPrompt.toString()};
 (function () {
   var status = document.getElementById('status');
@@ -231,14 +346,32 @@ var buildJoinPrompt = ${buildJoinPrompt.toString()};
   var nameStatus = document.getElementById('name-status');
   var errorBox = document.getElementById('error');
   var errorDetail = document.getElementById('error-detail');
+  var registerButton = document.getElementById('register');
+  var registerStatus = document.getElementById('register-status');
+  var registerResult = document.getElementById('register-result');
+  var agentIdBox = document.getElementById('agent-id');
+  var claudeBox = document.getElementById('claude-config');
+  var jsonBox = document.getElementById('json-config');
+  var mcpUrl = document.getElementById('mcp-url');
+  var copyClaude = document.getElementById('copy-claude');
+  var copyJson = document.getElementById('copy-json');
+  var claudeCopyStatus = document.getElementById('claude-copy-status');
+  var jsonCopyStatus = document.getElementById('json-copy-status');
   var origin = typeof location.origin === 'string' ? location.origin : '';
   var parsed = parseJoinFragment(typeof location.hash === 'string' ? location.hash : '');
   var link = null;
+  var directEnabled = parsed.ok && /^https:\\/\\/[^\\s\\/?#]+$/.test(origin);
+  var registered = false;
+  var registering = false;
   if (parsed.ok && /^https?:\\/\\/[^\\s\\/?#]+$/.test(origin)) {
     link = origin + '/join#invite=' + parsed.invite + '&ca=' + parsed.ca;
   }
   function setStatus(text, kind) { status.textContent = text; status.className = 'status ' + (kind || ''); }
   function setNameHint(text, kind) { nameStatus.textContent = text; nameStatus.className = 'hint ' + (kind || ''); }
+  function setRegisterStatus(text, kind) { registerStatus.textContent = text; registerStatus.className = 'copy-status ' + (kind || ''); }
+  function syncRegisterButton() {
+    registerButton.disabled = registered || registering || !directEnabled || !validateJoinDisplayName(nameInput.value).ok;
+  }
   function persist(name) {
     try {
       if (validateJoinDisplayName(name).ok) localStorage.setItem(NAME_STORAGE_KEY, name);
@@ -257,6 +390,29 @@ var buildJoinPrompt = ${buildJoinPrompt.toString()};
     errorDetail.textContent = message;
     setStatus('这条链接不能自动生成提示词，请按下面的手工步骤接入。', 'warn');
   }
+  function selectBox(box) {
+    try { box.focus(); box.select(); box.setSelectionRange(0, box.value.length); return true; }
+    catch (error) { return false; }
+  }
+  function copyBox(box, target) {
+    var selected = selectBox(box);
+    var done = function (copied) {
+      target.textContent = copied ? '已复制。' : (selected ? '自动复制不可用：已选中全部文本，按 ⌘C（Mac）或 Ctrl+C 复制。'
+        : '自动复制不可用：请手动选中后复制。');
+      target.className = 'copy-status ' + (copied ? 'ok' : 'warn');
+    };
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(box.value).then(function () { done(true); }, function () {
+        var copied = false;
+        try { copied = document.execCommand('copy') === true; } catch (error) { copied = false; }
+        done(copied);
+      });
+    } else {
+      var copied = false;
+      try { copied = document.execCommand('copy') === true; } catch (error) { copied = false; }
+      done(copied);
+    }
+  }
   function refresh() {
     var name = nameInput.value;
     var checked = validateJoinDisplayName(name);
@@ -267,18 +423,24 @@ var buildJoinPrompt = ${buildJoinPrompt.toString()};
       var warn = checked.code !== 'EMPTY';
       setNameHint(checked.message, warn ? 'warn' : '');
       setStatus(checked.code === 'EMPTY' ? '先在上面填你的名字，提示词会自动生成；没填好之前不能复制。' : '名字不符合要求：' + checked.message, warn ? 'warn' : '');
+      syncRegisterButton();
       return;
     }
     setNameHint('名字：' + name + '（对方会看到这个名字；1–255 个字符，不能有控制字符；刷新会记住）。', '');
     var prompt;
     try { prompt = buildJoinPrompt({ commit: BUILD_COMMIT, link: link, displayName: name }); }
-    catch (error) { fail('生成提示词失败：链接或部署提交格式不对，请让管理员核对后重发链接。'); return; }
+    catch (error) {
+      fail('生成提示词失败：链接或部署提交格式不对，请让管理员核对后重发链接。');
+      syncRegisterButton();
+      return;
+    }
     promptBox.value = prompt;
     promptBlock.hidden = false;
     copyButton.disabled = false;
     copyStatus.textContent = '';
     copyStatus.className = 'copy-status';
     setStatus('提示词已生成（部署提交 ' + BUILD_COMMIT.slice(0, 7) + '…）：点「复制提示词」，粘给你自己的 Agent。', 'ok');
+    syncRegisterButton();
   }
   function selectAll() {
     try { promptBox.focus(); promptBox.select(); promptBox.setSelectionRange(0, promptBox.value.length); return true; }
@@ -299,12 +461,47 @@ var buildJoinPrompt = ${buildJoinPrompt.toString()};
     } else { done(legacyCopy()); }
   });
   nameInput.addEventListener('input', function () { persist(nameInput.value); refresh(); });
+  registerButton.addEventListener('click', function () {
+    if (registerButton.disabled || !parsed.ok) return;
+    var checked = validateJoinDisplayName(nameInput.value);
+    if (!checked.ok) { setRegisterStatus(checked.message, 'warn'); return; }
+    registering = true;
+    syncRegisterButton();
+    setRegisterStatus('正在注册…', '');
+    enrollDirect({ origin: origin, invite: parsed.invite, displayName: nameInput.value }).then(function (result) {
+      registering = false;
+      if (!result.ok) {
+        setRegisterStatus('注册失败（' + result.code + '）：' + result.message, 'warn');
+        syncRegisterButton();
+        return;
+      }
+      registered = true;
+      agentIdBox.value = result.agentId;
+      claudeBox.value = result.config.claude;
+      jsonBox.value = result.config.json;
+      mcpUrl.textContent = result.config.url;
+      registerResult.hidden = false;
+      registerButton.hidden = true;
+      setRegisterStatus('注册成功。令牌只显示在下面这一次；刷新页面后不会再显示。', 'ok');
+      syncRegisterButton();
+    });
+  });
+  copyClaude.addEventListener('click', function () { copyBox(claudeBox, claudeCopyStatus); });
+  copyJson.addEventListener('click', function () { copyBox(jsonBox, jsonCopyStatus); });
   var restored = storedName();
   nameInput.value = restored === null ? '' : restored;
   if (!parsed.ok) { fail(parsed.message); return; }
   if (link === null) { fail('无法识别当前页面地址，请确认是用中心发来的链接打开的。'); return; }
-  if (BUILD_COMMIT === null) { fail('中心没有注入部署提交号，无法把 npx 固定到某一次部署；请让管理员在中心配置的 build.commit 里填入 40 位提交号后重新打开本页。'); return; }
-  refresh();
+  if (BUILD_COMMIT === null) {
+    fail('中心没有注入部署提交号，无法把 npx 固定到某一次部署；请让管理员在中心配置的 build.commit 里填入 40 位提交号后重新打开本页。直接注册不依赖部署提交，仍可使用。');
+    setNameHint('名字用于直接注册；下面的 CLI 提示词需要管理员先注入部署提交。', '');
+    syncRegisterButton();
+  } else {
+    refresh();
+  }
+  if (!directEnabled) {
+    setRegisterStatus(parsed.ok ? '直接注册只允许在 HTTPS 页面使用。' : '链接格式不对，无法直接注册。', 'warn');
+  }
 })();
 </script>
 </body>

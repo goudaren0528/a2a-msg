@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {
-  buildJoinPrompt, parseJoinFragment, renderJoinPage, validateJoinDisplayName,
+  buildJoinPrompt, buildRemoteMcpConfig, enrollDirect, enrollmentErrorMessage,
+  parseJoinFragment, renderJoinPage, validateJoinDisplayName,
 } from '../src/im/join-page.js';
 
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
@@ -10,6 +11,9 @@ const INVITE = 'Ab9_-'.padEnd(43, 'x');
 const HEX = 'f'.repeat(64);
 const FRAGMENT = `#invite=${INVITE}&ca=sha256:${HEX}`;
 const LINK = `https://center.example/join${FRAGMENT}`;
+const AGENT_ID = '01234567-89ab-4def-8123-456789abcdef';
+const CREDENTIAL_ID = '89abcdef-0123-4567-89ab-cdef01234567';
+const CREDENTIAL = `${CREDENTIAL_ID}.${'A'.repeat(43)}`;
 
 // ---- fragment parsing (same rules as scripts/im-register.mjs#joinLink) ----
 
@@ -109,6 +113,59 @@ test('prompt builder refuses an unpinned, malformed or empty input', () => {
   assert.throws(() => buildJoinPrompt({ commit: COMMIT, link: LINK, displayName: 'a\nb' }), /INVALID_DISPLAY_NAME/);
 });
 
+// ---- direct enrollment (AC-M3) ----
+
+test('remote MCP snippets cover Claude Code and generic JSON and never accept plaintext HTTP', () => {
+  const config = buildRemoteMcpConfig({ origin: 'https://center.example', credential: CREDENTIAL });
+  assert.equal(config.url, 'https://center.example/mcp');
+  assert.equal(config.claude.includes('claude mcp add --transport http a2a-msg https://center.example/mcp'), true);
+  assert.equal(config.claude.includes(`Authorization: Bearer ${CREDENTIAL}`), true);
+  const generic = JSON.parse(config.json);
+  assert.deepEqual(generic, { mcpServers: { 'a2a-msg': { type: 'http', url: 'https://center.example/mcp',
+    headers: { Authorization: `Bearer ${CREDENTIAL}` } } } });
+  assert.throws(() => buildRemoteMcpConfig({ origin: 'http://center.example', credential: CREDENTIAL }), /INSECURE_ORIGIN/);
+  assert.throws(() => buildRemoteMcpConfig({ origin: 'https://center.example', credential: 'bad' }), /INVALID_CREDENTIAL/);
+});
+
+test('direct enrollment uses same-origin /api/v1/enroll and returns fixed error codes', async () => {
+  const calls = [];
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url, options });
+      return { status: 201, json: async () => ({ agentId: AGENT_ID, credential: CREDENTIAL }) };
+    };
+    const enrolled = await enrollDirect({ origin: 'https://center.example', invite: INVITE, displayName: 'office-mac' });
+    assert.equal(enrolled.ok, true);
+    assert.equal(enrolled.agentId, AGENT_ID);
+    assert.equal(enrolled.config.claude.includes(CREDENTIAL), true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://center.example/api/v1/enroll');
+    assert.equal(calls[0].options.method, 'POST');
+    assert.deepEqual(JSON.parse(calls[0].options.body), { inviteCode: INVITE, displayName: 'office-mac' });
+    assert.equal(calls[0].options.credentials, 'omit');
+    assert.equal(calls[0].options.redirect, 'error');
+
+    for (const [status, code] of [[409, 'INVITE_ALREADY_USED'], [410, 'INVITE_EXPIRED'],
+      [404, 'INVITE_NOT_FOUND'], [403, 'INVITE_REVOKED'], [429, 'RATE_LIMITED']]) {
+      globalThis.fetch = async () => ({ status, json: async () => ({ error: { code, message: 'server text' } }) });
+      const failed = await enrollDirect({ origin: 'https://center.example', invite: INVITE, displayName: 'office-mac' });
+      assert.equal(failed.ok, false);
+      assert.equal(failed.code, code);
+      assert.equal(JSON.stringify(failed).includes('server text'), false, 'server messages are not echoed');
+      assert.equal(enrollmentErrorMessage(code).code, code);
+    }
+    globalThis.fetch = async () => { throw new Error('offline'); };
+    assert.equal((await enrollDirect({ origin: 'https://center.example', invite: INVITE,
+      displayName: 'office-mac' })).code, 'NETWORK_ERROR');
+    globalThis.fetch = async () => ({ status: 201, json: async () => ({ agentId: AGENT_ID }) });
+    assert.equal((await enrollDirect({ origin: 'https://center.example', invite: INVITE,
+      displayName: 'office-mac' })).code, 'INVALID_RESPONSE');
+    assert.equal((await enrollDirect({ origin: 'http://center.example', invite: INVITE,
+      displayName: 'office-mac' })).code, 'INSECURE_ORIGIN');
+  } finally { globalThis.fetch = original; }
+});
+
 // ---- rendered page ----
 
 const scriptOf = html => {
@@ -129,12 +186,17 @@ test('page is self-contained, mobile ready and never redirects', () => {
   const script = scriptOf(html);
   for (const forbidden of [/innerHTML/, /insertAdjacentHTML/, /document\.write/,
     /location\.(?:href\s*=|assign|replace)/, /window\.open/, /history\.(?:push|replace)State/,
-    /\bfetch\(/, /XMLHttpRequest/, /sendBeacon/, /new WebSocket/]) {
+    /XMLHttpRequest/, /sendBeacon/, /new WebSocket/]) {
     assert.equal(forbidden.test(script), false, `page never uses ${forbidden}`);
   }
   assert.equal(script.includes(parseJoinFragment.toString()), true, 'ships the tested parser');
   assert.equal(script.includes(validateJoinDisplayName.toString()), true, 'ships the tested name rule');
   assert.equal(script.includes(buildJoinPrompt.toString()), true, 'ships the tested prompt builder');
+  assert.equal(script.includes(enrollDirect.toString()), true, 'ships the tested direct-enrollment call');
+  assert.equal(script.includes(buildRemoteMcpConfig.toString()), true, 'ships the tested MCP snippets');
+  assert.equal(script.includes("origin + '/api/v1/enroll'"), true, 'the only network call is same-origin enrollment');
+  assert.equal(script.includes("credentials: 'omit'"), true, 'enrollment does not send cookies');
+  assert.equal(script.includes("redirect: 'error'"), true, 'enrollment never follows a redirect');
   assert.equal(html.includes('placeholder="例如 office-mac"'), true, 'the name field has no default value');
   assert.equal(script.includes('getRandomValues'), false, 'no random default name');
   assert.equal(script.includes('localStorage'), true);
@@ -157,26 +219,33 @@ test('page without an injected commit explains the manual path instead of printi
 // ---- behaviour in a minimal DOM (no browser needed) ----
 
 const ELEMENT_IDS = ['status', 'prompt-block', 'prompt', 'copy', 'copy-status',
-  'name', 'name-status', 'error', 'error-detail'];
-const HIDDEN_AT_LOAD = new Set(['prompt-block', 'error']);
+  'name', 'name-status', 'error', 'error-detail', 'register', 'register-status', 'register-result',
+  'agent-id', 'claude-config', 'json-config', 'mcp-url', 'copy-claude', 'copy-json',
+  'claude-copy-status', 'json-copy-status'];
+const HIDDEN_AT_LOAD = new Set(['prompt-block', 'error', 'register-result']);
 
 function createPage({ hash = FRAGMENT, commit = COMMIT, storage = new Map(), storageThrows = false,
-  clipboard = true, execCommandResult = false } = {}) {
+  clipboard = true, execCommandResult = false, fetchImpl = null, origin = 'https://center.example' } = {}) {
   const html = renderJoinPage({ commit });
   const script = scriptOf(html);
   const elements = new Map(ELEMENT_IDS.map(id => [id, {
-    id, hidden: HIDDEN_AT_LOAD.has(id), disabled: false, value: '', textContent: '', className: '',
+    id, hidden: HIDDEN_AT_LOAD.has(id), disabled: id === 'register', value: '', textContent: '', className: '',
     listeners: {}, selected: false,
     addEventListener(type, handler) { this.listeners[type] = handler; },
     focus() {}, select() { this.selected = true; }, setSelectionRange() {},
   }]));
   const copied = [];
+  const fetchCalls = [];
+  const fetch = fetchImpl === null ? undefined : async (url, options) => {
+    fetchCalls.push({ url, options });
+    return fetchImpl(url, options);
+  };
   const sandbox = {
     document: {
       getElementById: id => elements.get(id),
       execCommand: command => (command === 'copy' ? execCommandResult : false),
     },
-    location: { origin: 'https://center.example', hash },
+    location: { origin, hash },
     navigator: clipboard ? { clipboard: { writeText: text => { copied.push(text); return Promise.resolve(); } } } : {},
     localStorage: {
       getItem: key => (storageThrows ? (() => { throw new Error('denied'); })() : (storage.has(key) ? storage.get(key) : null)),
@@ -187,13 +256,16 @@ function createPage({ hash = FRAGMENT, commit = COMMIT, storage = new Map(), sto
     },
     URLSearchParams,
     crypto: { getRandomValues: bytes => { for (let i = 0; i < bytes.length; i += 1) bytes[i] = i === 0 ? 0x7f : 0x3a; return bytes; } },
+    ...(fetch === undefined ? {} : { fetch }),
     console,
   };
   vm.runInNewContext(script, sandbox);
   const element = id => elements.get(id);
-  return { element, copied, storage,
+  return { element, copied, storage, fetchCalls,
     type(value) { element('name').value = value; element('name').listeners.input(); },
     clickCopy() { return element('copy').listeners.click(); },
+    clickRegister() { return element('register').listeners.click(); },
+    copy(id) { return element(id).listeners.click(); },
   };
 }
 
@@ -285,6 +357,79 @@ test('unavailable localStorage does not break the page', async () => {
   await page.clickCopy();
   await flush();
   assert.equal(page.copied.length, 1);
+});
+
+test('direct registration shows agentId, Claude Code and generic JSON once, with no token in storage or URL', async () => {
+  const storage = new Map([['a2a-msg.join.display-name', 'office-mac']]);
+  const hash = FRAGMENT;
+  const page = createPage({ storage, hash, fetchImpl: async () => ({ status: 201,
+    json: async () => ({ agentId: AGENT_ID, credential: CREDENTIAL }) }) });
+  assert.equal(page.element('register').disabled, false);
+  await page.clickRegister();
+  await flush();
+  await flush();
+  assert.equal(page.fetchCalls.length, 1);
+  assert.equal(page.fetchCalls[0].url, 'https://center.example/api/v1/enroll');
+  assert.deepEqual(JSON.parse(page.fetchCalls[0].options.body), { inviteCode: INVITE, displayName: 'office-mac' });
+  assert.equal(page.fetchCalls[0].url.includes(CREDENTIAL), false, 'the token is never in a URL');
+  assert.equal(page.element('register-result').hidden, false);
+  assert.equal(page.element('agent-id').value, AGENT_ID);
+  assert.equal(page.element('claude-config').value.includes(CREDENTIAL), true);
+  assert.equal(page.element('json-config').value.includes(CREDENTIAL), true);
+  assert.equal(page.element('mcp-url').textContent, 'https://center.example/mcp');
+  assert.match(page.element('register-status').textContent, /只显示.*一次/);
+  for (const value of storage.values()) {
+    assert.equal(String(value).includes(CREDENTIAL), false, 'localStorage never contains the token');
+    assert.equal(String(value).includes('Bearer'), false);
+  }
+  assert.equal(page.element('agent-id').value.includes('Bearer'), false);
+  assert.equal(page.element('register').hidden, true);
+
+  await page.copy('copy-claude');
+  assert.equal(page.copied.at(-1).includes(CREDENTIAL), true, 'Claude Code command copies with its Bearer header');
+  await page.copy('copy-json');
+  assert.equal(page.copied.at(-1).includes(CREDENTIAL), true, 'generic JSON copies with its Bearer header');
+
+  await page.clickRegister();
+  assert.equal(page.fetchCalls.length, 1, 'a successful registration cannot be submitted twice from the same page');
+
+  const reloaded = createPage({ storage, hash, fetchImpl: async () => ({ status: 201,
+    json: async () => ({ agentId: AGENT_ID, credential: CREDENTIAL }) }) });
+  assert.equal(reloaded.element('register-result').hidden, true, 'refresh hides the one-time token panel');
+  assert.equal(reloaded.element('agent-id').value, '');
+  assert.equal(reloaded.element('claude-config').value, '');
+  assert.equal(reloaded.element('json-config').value, '');
+  assert.equal(reloaded.element('register').hidden, false, 'the form is back after refresh');
+});
+
+test('direct registration displays fixed invite errors and keeps the token panel hidden', async () => {
+  for (const [status, code] of [[404, 'INVITE_NOT_FOUND'], [409, 'INVITE_ALREADY_USED'],
+    [410, 'INVITE_EXPIRED'], [403, 'INVITE_REVOKED'], [429, 'RATE_LIMITED']]) {
+    const page = createPage({ storage: new Map([['a2a-msg.join.display-name', 'office-mac']]),
+      fetchImpl: async () => ({ status, json: async () => ({ error: { code, message: 'raw server detail' } }) }) });
+    await page.clickRegister();
+    await flush();
+    await flush();
+    assert.equal(page.element('register-result').hidden, true);
+    assert.match(page.element('register-status').textContent, new RegExp(code));
+    assert.equal(page.element('register-status').textContent.includes('raw server detail'), false);
+    assert.equal(page.element('register').disabled, false, 'a failed registration stays retryable');
+  }
+});
+
+test('direct registration is disabled without a valid HTTPS page, invite or name', () => {
+  const page = createPage();
+  assert.equal(page.element('register').disabled, true, 'no default name means no registration');
+  page.clickRegister();
+  assert.equal(page.fetchCalls.length, 0);
+  page.type('office-mac');
+  assert.equal(page.element('register').disabled, false);
+
+  const invalid = createPage({ hash: '' });
+  assert.equal(invalid.element('register').disabled, true);
+  const http = createPage({ origin: 'http://center.example' });
+  assert.equal(http.element('register').disabled, true);
+  assert.match(http.element('register-status').textContent, /HTTPS/);
 });
 
 test('missing or invalid fragment and missing commit show errors plus manual steps', () => {
