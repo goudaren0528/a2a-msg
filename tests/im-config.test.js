@@ -51,6 +51,32 @@ test('enabled requires safe transport even while paused; unknown/insecure keys r
   assert.equal(parseImConfig({ enabled: true, transport: { mode: 'direct-tls', serverUrl: 'https://example.test' } }).writeMode, 'paused');
 });
 
+test('bindUrl is optional, defaults to serverUrl, and is validated with the same mode rules', () => {
+  // AC-A1: deployments that never set bindUrl keep the pre-split listener.
+  const unsplit = parseImConfig(enabled());
+  assert.equal(unsplit.transport.bindUrl, unsplit.transport.serverUrl);
+  assert.equal(parseImConfig({ transport: { mode: 'local-test', serverUrl: 'http://127.0.0.1:8787' } })
+    .transport.bindUrl, 'http://127.0.0.1:8787');
+
+  // AC-A2: a loopback listener behind a reverse proxy keeps the public origin.
+  const split = parseImConfig({ ...enabled(), transport: {
+    mode: 'direct-tls', serverUrl: 'https://114.134.185.39', bindUrl: 'https://127.0.0.1:4443' } });
+  assert.equal(split.transport.serverUrl, 'https://114.134.185.39');
+  assert.equal(split.transport.bindUrl, 'https://127.0.0.1:4443');
+
+  for (const bindUrl of ['not a url', 'https://u:p@127.0.0.1:4443',
+    'https://127.0.0.1:4443/x', 'https://127.0.0.1:4443?x=1', 'https://127.0.0.1:4443#x']) {
+    rejects({ ...enabled(), transport: { mode: 'direct-tls', serverUrl: 'https://example.test', bindUrl } },
+      'INVALID_REQUEST');
+  }
+  rejects({ ...enabled(), transport: { mode: 'direct-tls', serverUrl: 'https://example.test',
+    bindUrl: 'http://127.0.0.1:4443' } }, 'TLS_REQUIRED');
+  rejects({ ...enabled(), transport: { mode: 'local-test', serverUrl: 'http://127.0.0.1:8787',
+    bindUrl: 'http://192.168.1.2:8788' } }, 'TLS_REQUIRED');
+  rejects({ ...enabled(), transport: { mode: 'local-test', serverUrl: 'http://127.0.0.1:8787',
+    bindUrl: 'ftp://127.0.0.1:8788' } }, 'TLS_REQUIRED');
+});
+
 test('write policies fail closed for absent, incomplete or incoherent retention and lease', () => {
   rejects({ ...enabled(), retention: undefined }, 'POLICY_NOT_CONFIGURED');
   rejects({ ...enabled(), retention: { policy: { messageRetentionMs: 100 } } }, 'POLICY_NOT_CONFIGURED');

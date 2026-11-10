@@ -548,7 +548,7 @@ async function freePort() {
 // Spawns scripts/im-center.mjs on an isolated v5 database with the test-only
 // localhost certificate; `tls` is the strict config `tls` object. `build` is the
 // optional deployment injection for the public /join page, `env` extra variables.
-async function spawnCenter(t, tls, { build, env } = {}) {
+async function spawnCenter(t, tls, { build, env, publicOrigin } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'im-center-ca-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const dbPath = join(dir, 'center.sqlite');
@@ -557,10 +557,14 @@ async function spawnCenter(t, tls, { build, env } = {}) {
   migrateImSchemaV5(db);
   db.close();
   const port = await freePort();
+  // `publicOrigin` exercises the split between the advertised origin and the
+  // loopback listener (reverse-proxy deployments); otherwise both stay identical.
+  const serverUrl = publicOrigin ?? `https://localhost:${port}`;
+  const bindUrl = publicOrigin === undefined ? undefined : `https://127.0.0.1:${port}`;
   const configPath = join(dir, 'center.json');
   writeFileSync(configPath, JSON.stringify({ dbPath, policy: {
     enabled: true, writeMode: 'enabled',
-    transport: { mode: 'direct-tls', serverUrl: `https://localhost:${port}` },
+    transport: { mode: 'direct-tls', serverUrl, ...(bindUrl === undefined ? {} : { bindUrl }) },
     retention: { policy: { messageRetentionMs: 100000, attachmentRetentionMs: 90000,
       idempotencyRetentionMs: 110000, safeRetryWindowMs: 1000 } },
     lease: { ttlMs: 90000, renewalMs: 30000 },
@@ -583,7 +587,7 @@ async function spawnCenter(t, tls, { build, env } = {}) {
     child.stdout.on('data', () => { if (stdout.includes('IM center listening')) finish(null); });
     setTimeout(() => finish(Error(`center did not start: ${stderr}`)), 15000).unref();
   });
-  return { dir, port, child, started, stdout: () => stdout, stderr: () => stderr };
+  return { dir, port, serverUrl, child, started, stdout: () => stdout, stderr: () => stderr };
 }
 
 function publicRequest(port, path, { method = 'GET', headers = {}, body } = {}) {
@@ -693,6 +697,29 @@ test('center takes A2A_MSG_BUILD_COMMIT when build.commit is not injected', asyn
   await f.started;
   const body = expectPublicPage(await publicRequest(f.port, '/join'), fromEnvironment);
   assert.equal(body.includes(PAGE_COMMIT), false);
+});
+
+test('center listens on bindUrl while public routes keep the serverUrl origin', async t => {
+  const publicOrigin = 'https://114.134.185.39';
+  const f = await spawnCenter(t, { keyPath: TLS_KEY, certPath: TLS_CERT, caCertPath: TLS_CERT },
+    { publicOrigin, build: { commit: PAGE_COMMIT } });
+  await f.started;
+  assert.equal(f.serverUrl, publicOrigin);
+
+  // The process bound 127.0.0.1:<free port>; it never tried the public host.
+  const ca = await publicRequest(f.port, '/ca.pem');
+  assert.equal(ca.status, 200);
+  assert.deepEqual(ca.body, readFileSync(TLS_CERT), 'the CA bytes are independent of the bind address');
+  const page = await publicRequest(f.port, '/join');
+  expectPublicPage(page, PAGE_COMMIT);
+  const mcp = await publicRequest(f.port, '/mcp', { method: 'POST',
+    body: { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} } });
+  assert.equal(mcp.status, 401);
+  assert.equal(JSON.parse(mcp.body.toString()).error.code, 'AUTH_REQUIRED');
+
+  // Nothing served on the split configuration may expose the loopback address.
+  for (const response of [ca, page, mcp])
+    assert.equal(response.body.toString('utf8').includes('127.0.0.1'), false);
 });
 
 test('center refuses to start with an invalid injected build commit', async t => {

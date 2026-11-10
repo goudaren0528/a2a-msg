@@ -18,7 +18,9 @@ const PROTOCOL_VERSION = '2025-11-25';
 const policy = {
   enabled: true,
   writeMode: 'enabled',
-  transport: { mode: 'direct-tls', serverUrl: CENTER },
+  // The listener address is deliberately different from the advertised origin:
+  // remote MCP must keep using `serverUrl` for journals, attachments and output.
+  transport: { mode: 'direct-tls', serverUrl: CENTER, bindUrl: 'https://127.0.0.1:4443' },
   retention: { policy: { messageRetentionMs: 100000, attachmentRetentionMs: 90000,
     idempotencyRetentionMs: 110000, safeRetryWindowMs: 1000 } },
   lease: { ttlMs: 90000, renewalMs: 30000 },
