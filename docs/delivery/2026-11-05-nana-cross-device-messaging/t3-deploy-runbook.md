@@ -247,7 +247,7 @@ ssh root@114.134.185.39 'systemctl is-active a2a-msg-center; ss -ltnp | grep 444
 ssh root@114.134.185.39 'curl -sS --cacert /etc/a2a-msg/tls/ca-cert.pem https://127.0.0.1:4443/join | head -c 80'
 ssh root@114.134.185.39 'openssl s_client -connect 127.0.0.1:4443 -servername 114.134.185.39 \
   -CAfile /etc/a2a-msg/tls/ca-cert.pem </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256'
-curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem https://114.134.185.39/ca.pem | shasum -a 256   # 经 Caddy，待主会话加站点后
+curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem https://114.134.185.39/ca.pem | shasum -a 256   # 经 Caddy，应为 b6b73089…
 ```
 
 ## 6. 本机（MacBook Air M4）侧
