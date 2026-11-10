@@ -9,6 +9,7 @@ const schema = z.object({
   transport: z.object({
     mode: z.enum(['local-test', 'direct-tls']),
     serverUrl: z.string().min(1),
+    bindUrl: z.string().min(1).optional(),
   }).strict().optional(),
   retention: z.object({
     policy: z.object({
@@ -39,20 +40,32 @@ const DEFAULT_LIMITS = Object.freeze({
   maxRequestsPerMinute: 600,
 });
 
-function validateTransport(transport) {
-  if (!transport) throw new ImError('POLICY_NOT_CONFIGURED');
+function transportUrl(input) {
   let url;
-  try { url = new URL(transport.serverUrl); } catch { throw new ImError('INVALID_REQUEST'); }
+  try { url = new URL(input); } catch { throw new ImError('INVALID_REQUEST'); }
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
     throw new ImError('INVALID_REQUEST');
   }
+  return url;
+}
+
+function validateTransportUrl(input, mode) {
+  const url = transportUrl(input);
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const loopback = host === 'localhost' || (ipaddr.isValid(host) && ipaddr.parse(host).range() === 'loopback');
-  if (transport.mode === 'local-test') {
+  if (mode === 'local-test') {
     if (!loopback || !['http:', 'https:'].includes(url.protocol)) throw new ImError('TLS_REQUIRED');
   } else if (url.protocol !== 'https:') {
     throw new ImError('TLS_REQUIRED');
   }
+}
+
+function validateTransport(transport) {
+  if (!transport) throw new ImError('POLICY_NOT_CONFIGURED');
+  validateTransportUrl(transport.serverUrl, transport.mode);
+  // `serverUrl` is the advertised origin; `bindUrl` only narrows the listener.
+  // Both must describe a safe endpoint for the same mode.
+  if (transport.bindUrl !== undefined) validateTransportUrl(transport.bindUrl, transport.mode);
 }
 
 export function parseImConfig(input = {}) {
@@ -71,6 +84,11 @@ export function parseImConfig(input = {}) {
     contacts: parsed.data.contacts ?? { requests: 'legacy' },
     limits: parsed.data.limits ?? { ...DEFAULT_LIMITS },
   };
+  // The listener defaults to the advertised origin, so deployments that never
+  // configure `bindUrl` keep the exact pre-split address.
+  if (config.transport && config.transport.bindUrl === undefined) {
+    config.transport = { ...config.transport, bindUrl: config.transport.serverUrl };
+  }
   if (!config.enabled) return config;
   validateTransport(config.transport);
   if (config.lease && config.lease.renewalMs >= config.lease.ttlMs) {

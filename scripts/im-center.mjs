@@ -68,12 +68,20 @@ if (!configPath || process.argv.length !== 3) {
     const policy = parseImConfig(settings.policy);
     // Missing policy or transport never silently starts a network listener.
     if (!policy.transport || typeof policy.transport.serverUrl !== 'string' ||
+        typeof policy.transport.bindUrl !== 'string' ||
         !['direct-tls', 'local-test'].includes(policy.transport.mode)) throw Error('Transport not configured');
-    const url = new URL(policy.transport.serverUrl);
-    if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
-        (policy.transport.mode === 'direct-tls' && url.protocol !== 'https:')) throw Error('Invalid transport URL');
-    const host = url.hostname.replace(/^\[|\]$/g, '');
-    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    // `serverUrl` is the public origin clients and responses keep using;
+    // `bindUrl` (defaulted to `serverUrl` by the policy parser) is only where
+    // this process listens, so a reverse proxy can front a loopback listener.
+    const publicUrl = new URL(policy.transport.serverUrl);
+    const listenUrl = new URL(policy.transport.bindUrl);
+    for (const url of [publicUrl, listenUrl]) {
+      if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
+          (policy.transport.mode === 'direct-tls' && url.protocol !== 'https:')) throw Error('Invalid transport URL');
+    }
+    const publicHost = publicUrl.hostname.replace(/^\[|\]$/g, '');
+    const host = listenUrl.hostname.replace(/^\[|\]$/g, '');
+    const port = Number(listenUrl.port || (listenUrl.protocol === 'https:' ? 443 : 80));
     if (policy.transport.mode === 'direct-tls') {
       if (typeof settings.tls?.keyPath !== 'string' || !settings.tls.keyPath ||
           typeof settings.tls?.certPath !== 'string' || !settings.tls.certPath ||
@@ -82,7 +90,8 @@ if (!configPath || process.argv.length !== 3) {
             (typeof settings.tls.caCertPath !== 'string' || !settings.tls.caCertPath))) {
         throw Error('TLS files not configured');
       }
-    } else if (settings.tls !== undefined || url.protocol !== 'http:' ||
+    } else if (settings.tls !== undefined || publicUrl.protocol !== 'http:' || listenUrl.protocol !== 'http:' ||
+        !['localhost', '127.0.0.1', '::1'].includes(publicHost) ||
         !['localhost', '127.0.0.1', '::1'].includes(host)) {
       throw Error('Unsupported transport configuration');
     }

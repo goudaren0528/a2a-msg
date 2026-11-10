@@ -249,6 +249,9 @@ export function createImMcpHttp({ auth, acl, messages, contacts, delivery, polic
     throw new ImError('POLICY_NOT_CONFIGURED');
   }
   let origin = null;
+  // The advertised origin stays `serverUrl` even when the process listens on a
+  // different `bindUrl`; bind addresses must never leak into journals, attachment
+  // paths or tool output.
   try { origin = config.transport ? new URL(config.transport.serverUrl).origin : null; } catch { /* disabled policy */ }
   const limits = config.limits;
   const sessions = new Map();
