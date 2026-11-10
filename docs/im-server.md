@@ -17,6 +17,24 @@ For an explicitly approved, existing migrated DB, run `node scripts/im-center.mj
 
 `local-test` binds loopback HTTP only, never a LAN address. Adding `"enrollment": {"enabled": true}` enables the unauthenticated enrollment route; the database must already be schema v4 (v5 if Agent-created invites are left enabled — `agentsCanInvite` defaults to true, and a v4 database with it on refuses startup until `scripts/im-migrate-v5.mjs` runs after a verified backup). Leaving the field out keeps registration disabled. For direct TLS use `transport: {"mode":"direct-tls","serverUrl":"https://<approved-host>:<port>"}` and explicit `tls: {"keyPath":"<absolute-key-path>","certPath":"<absolute-certificate-path>"}`. `tls.caCertPath` is optional: when set to the absolute path of the CA certificate that signs `certPath`, the center also serves the unauthenticated `GET /ca.pem` route (exactly that CA certificate, `Content-Type: application/x-pem-file`) for the one-line `join` registration flow; when omitted the route returns 404 and every other path keeps its existing auth boundary. The CA file must be an existing regular file, like the other TLS paths.
 
+`transport.bindUrl` optionally separates the listener from the advertised origin. `serverUrl` stays the public origin used in responses, journals and attachment paths; `bindUrl`, when present, is the only address the process listens on, and it obeys the same validation as `serverUrl` for the selected mode. It defaults to `serverUrl`, so an existing configuration keeps its exact pre-split listener. For example, a center fronted by a TLS-terminating reverse proxy that still needs its own encrypted upstream socket can listen on loopback while advertising the public name:
+
+```json
+{
+  "policy": {
+    "enabled": true,
+    "transport": {
+      "mode": "direct-tls",
+      "serverUrl": "https://mailbox.example.invalid",
+      "bindUrl": "https://127.0.0.1:4443"
+    }
+  },
+  "tls": { "keyPath": "<absolute-key-path>", "certPath": "<absolute-certificate-path>" }
+}
+```
+
+The bind address is never used to build links or tool output. Note that the HTTP and remote MCP boundaries require `req.socket.encrypted`; a proxy must forward with TLS to `bindUrl` rather than terminate TLS and speak plain HTTP to the center.
+
 The unauthenticated `GET /join` page (see [HTTP contract](im-http-contract.md)) pins its npx ref to the deployed commit. Inject it explicitly — `build: {"commit": "<full 40-char lowercase sha>"}` at the top level of the center config (next to `dbPath`/`policy`/`tls`), or the `A2A_MSG_BUILD_COMMIT` environment variable — which is what a tarball or container deploy without `.git` needs. With neither, the entry point uses `git rev-parse HEAD` of this checkout, so a git-based redeploy updates the page automatically; if no commit can be resolved the page still renders but explains the manual path instead of printing a branch or a moving tag. An injected value that is not a full 40-character lowercase SHA refuses startup. The page is static per process: restart the center after redeploying so the new commit is served. Configure and protect certs and keys outside this repository; proxy-forwarded headers cannot substitute for TLS. No policy, no transport, malformed policy, missing DB, or mismatched schema prevents listener startup. The script first verifies the existing DB schema through a read-only connection, then opens it writable; directory permissions and ownership **must** prevent path replacement between these opens. This is not a guarantee against concurrent replacement in an untrusted directory. The script enables SQLite FK and FULL synchronization but never runs migration. The HTTP host limits header bytes, header count, request time, and connections. Additional host-level rate/connection limits and operational approval are required for actual deployment; localhost tests are **not** proof of internet availability.
 
 The legacy `createServer` accepts an optional injected `imHandler`; it forwards only the exact `/api/v1` prefix to that handler **before** IP-to-member authentication. With no handler, or a handler declining a versioned request, the boundary responds `IM_DISABLED` (503). Other paths retain their legacy routing and IP identity. No default process mounts an enabled IM handler. Stop new writes before a planned shutdown; this entry point does not implement backup, release or migration procedures.

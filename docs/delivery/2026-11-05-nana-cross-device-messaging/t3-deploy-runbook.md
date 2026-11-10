@@ -115,6 +115,8 @@ ssh root@<CENTER_PUBLIC_IP> 'cd /opt/a2a-msg && sudo -u a2a node scripts/im-nana
 
 `center-config.json` 里的 `policy.transport.serverUrl` 必须是**能 bind 的地址**（这里是私网 `<CENTER_PRIVATE_IP>:443`）；客户端配置里用的是公网 `https://<CENTER_PUBLIC_IP>`（注意：**不能带 `:443`**，客户端 `normalizeOrigin` 要求 `serverUrl === URL.origin`，写 `:443` 会被判 `INVALID_REQUEST`）。
 
+> 2026-11-10 T100123 起该约束已解除：监听地址可以单独写 `policy.transport.bindUrl`，`serverUrl` 只作对外 origin。新的部署口径见 §5.4。
+
 ### 5.1 systemd 单元（`/etc/systemd/system/a2a-msg-center.service`）
 
 ```ini
@@ -190,6 +192,48 @@ sed -i '' 's|/nana-home/|/lya-h/|g; s|/nana-office/|/lya-o/|g; s|nana-home-crede
 ```
 
 改名的历史痕迹：`evidence/t3/logs/roundtrip-*`、`offline-*`、`acl/`、`server/02-…` 里的旧名字是改名**前**的原始记录（照实留档，没有回改）；改名本身与改名后的复核见 `server/05-agent-rename.json`、`server/06-state-after-rename.json`、`logs/rename-20261107-181322/`。以后重建中心时直接用 `--agent-a-display lya-h --agent-b-display lya-o`，不需要再跑这节。
+
+### 5.4 Caddy 前置 443，中心监听 `127.0.0.1:4443`（2026-11-10 T100123）
+
+deadliftx API 占用 443 后由 Caddy 接管公网 443；中心改为只在回环监听，公网 origin 仍由 `serverUrl` 表达：
+
+```json
+{
+  "dbPath": "/srv/a2a-msg/instance/center-v3.sqlite",
+  "policy": {
+    "enabled": true,
+    "writeMode": "enabled",
+    "transport": {
+      "mode": "direct-tls",
+      "serverUrl": "https://114.134.185.39",
+      "bindUrl": "https://127.0.0.1:4443"
+    },
+    "retention": { "policy": { "messageRetentionMs": 86400000, "attachmentRetentionMs": 86400000,
+      "idempotencyRetentionMs": 172800000, "safeRetryWindowMs": 60000 } },
+    "lease": { "ttlMs": 60000, "renewalMs": 10000 },
+    "enrollment": { "enabled": true },
+    "contacts": { "requests": "enabled" }
+  },
+  "tls": {
+    "keyPath": "/etc/a2a-msg/tls/server-key.pem",
+    "certPath": "/etc/a2a-msg/tls/server-cert.pem",
+    "caCertPath": "/etc/a2a-msg/tls/ca-cert.pem"
+  }
+}
+```
+
+- 未写 `bindUrl` 时监听地址等于 `serverUrl`，行为与分离前完全一致；写了才分离。`bindUrl` 与 `serverUrl` 受同一套 mode 校验（`direct-tls` 必须 `https:`，`local-test` 必须回环）。
+- `/join`、`/ca.pem`、`/mcp` 的响应只出现 `serverUrl`（公网 origin），`bindUrl` 不会进入链接、journal 或附件路径。
+- 中心仍检查 `req.socket.encrypted`，所以 Caddy 必须以 TLS 连上游，例如 `reverse_proxy https://127.0.0.1:4443 { transport http { tls_insecure_skip_verify } }`；Caddy 站点由主会话维护，本节不修改 `/etc/caddy/Caddyfile`。
+- 只读核验：
+
+```sh
+ssh root@114.134.185.39 'systemctl is-active a2a-msg-center; ss -ltnp | grep 4443'
+ssh root@114.134.185.39 'curl -sS --cacert /etc/a2a-msg/tls/ca-cert.pem https://127.0.0.1:4443/join | head -c 80'
+ssh root@114.134.185.39 'openssl s_client -connect 127.0.0.1:4443 -servername 114.134.185.39 \
+  -CAfile /etc/a2a-msg/tls/ca-cert.pem </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256'
+curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem https://114.134.185.39/ca.pem | shasum -a 256   # 经 Caddy，待主会话加站点后
+```
 
 ## 6. 本机（MacBook Air M4）侧
 
