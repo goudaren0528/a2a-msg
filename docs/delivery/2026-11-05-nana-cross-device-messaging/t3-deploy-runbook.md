@@ -228,17 +228,18 @@ deadliftx API 占用 443 后由 Caddy 接管公网 443；中心改为只在回�
 
 ```caddyfile
 114.134.185.39 {
-  tls /etc/a2a-msg/tls/server-cert.pem /etc/a2a-msg/tls/server-key.pem
+  tls /etc/caddy/a2a/server-cert.pem /etc/caddy/a2a/server-key.pem
   reverse_proxy https://127.0.0.1:4443 {
     transport http {
       tls_server_name 114.134.185.39
-      tls_trusted_ca_certs /etc/a2a-msg/tls/ca-cert.pem
+      tls_trust_pool file /etc/caddy/a2a/ca-cert.pem
     }
   }
 }
 ```
 
-  对外 TLS 必须继续用现有 `server-cert.pem`/`server-key.pem`（或同一 CA 签发的证书），否则客户端 `caFile` 校验会断。Caddy 站点由主会话维护，本节不修改 `/etc/caddy/Caddyfile`。
+- 对外 TLS 必须继续用现有 `server-cert.pem`/`server-key.pem`（或同一 CA 签发的证书），否则客户端 `caFile` 校验会断。Caddy 以 `caddy` 用户运行，读不到 `/etc/a2a-msg/tls`（`0750 root:a2a`），所以证书、key、CA 各留一份在 `/etc/caddy/a2a/`：`ca-cert.pem`（0600 caddy）、`server-cert.pem`（0644 root:caddy）、`server-key.pem`（0640 root:caddy）。**中心证书轮换时必须同步这三个副本并 `systemctl reload caddy`。**
+- 该站点于 2026-11-10 按主会话决定 A 添加；`dlx-api.mindriver.top` 站点未改。Caddyfile 备份在 `/root/a2a-backups/Caddyfile-*.t100123.bak`。
 - 只读核验：
 
 ```sh
