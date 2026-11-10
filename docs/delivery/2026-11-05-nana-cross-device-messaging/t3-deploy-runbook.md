@@ -224,7 +224,21 @@ deadliftx API 占用 443 后由 Caddy 接管公网 443；中心改为只在回�
 
 - 未写 `bindUrl` 时监听地址等于 `serverUrl`，行为与分离前完全一致；写了才分离。`bindUrl` 与 `serverUrl` 受同一套 mode 校验（`direct-tls` 必须 `https:`，`local-test` 必须回环）。
 - `/join`、`/ca.pem`、`/mcp` 的响应只出现 `serverUrl`（公网 origin），`bindUrl` 不会进入链接、journal 或附件路径。
-- 中心仍检查 `req.socket.encrypted`，所以 Caddy 必须以 TLS 连上游，例如 `reverse_proxy https://127.0.0.1:4443 { transport http { tls_insecure_skip_verify } }`；Caddy 站点由主会话维护，本节不修改 `/etc/caddy/Caddyfile`。
+- 中心仍检查 `req.socket.encrypted`，所以 Caddy 必须以 TLS 连上游；推荐保留校验的写法（上游 SNI 用公网名、信任中心 CA）：
+
+```caddyfile
+114.134.185.39 {
+  tls /etc/a2a-msg/tls/server-cert.pem /etc/a2a-msg/tls/server-key.pem
+  reverse_proxy https://127.0.0.1:4443 {
+    transport http {
+      tls_server_name 114.134.185.39
+      tls_trusted_ca_certs /etc/a2a-msg/tls/ca-cert.pem
+    }
+  }
+}
+```
+
+  对外 TLS 必须继续用现有 `server-cert.pem`/`server-key.pem`（或同一 CA 签发的证书），否则客户端 `caFile` 校验会断。Caddy 站点由主会话维护，本节不修改 `/etc/caddy/Caddyfile`。
 - 只读核验：
 
 ```sh
