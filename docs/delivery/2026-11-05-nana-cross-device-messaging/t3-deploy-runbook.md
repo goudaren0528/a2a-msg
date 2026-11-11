@@ -2,8 +2,8 @@
 type: runbook
 slug: 2026-11-05-nana-cross-device-messaging-T3
 status: active
-updated: 2026-11-07
-summary: "T3 本机侧交付：香港 VPS 上部署 a2a-msg IM v1 中心（direct-tls 443 + systemd + ufw），注册 lya-h / lya-o 两个 Nana 身份，本机经真实中心完成派发→回报往返、离线恢复与失败回退，证据在 evidence/t3/。2026-11-07 T1087 修了两处：§7 公司机文件传递改成考虑 22/tcp 白名单的两段式，§8 证据指针按当前脚本重跑结果校正（新增 §8.1）。"
+updated: 2026-11-11
+summary: "T3 本机侧交付：香港 VPS 上部署 a2a-msg IM v1 中心（direct-tls 443 + systemd + ufw），注册 lya-h / lya-o 两个 Nana 身份，本机经真实中心完成派发→回报往返、离线恢复与失败回退，证据在 evidence/t3/。2026-11-07 T1087 修了两处：§7 公司机文件传递改成考虑 22/tcp 白名单的两段式，§8 证据指针按当前脚本重跑结果校正（新增 §8.1）。2026-11-10 T100123 加 §5.4（Caddy 前置 443、中心回环 4443）。2026-11-11 T100190 起部署基线改为 origin/main（§2、§5.5），main 为唯一主分支。"
 ---
 
 # T3 两台真实设备接入 · 本机侧部署与验证手册
@@ -24,14 +24,18 @@ summary: "T3 本机侧交付：香港 VPS 上部署 a2a-msg IM v1 中心（direc
 
 ## 2. 代码基线与分支
 
-- 部署的代码基线是 **`origin/master` = `66f1c53f0545b5825868b8722c451259a9d1f961`**（「合入 a2a 最小双端往返（T2，独立验收通过）」）。IM v1 中心（`src/im/`）、Nana 会话适配层（`src/nana/`）、`scripts/im-*.mjs` 只在这条线上；本任务分支 `goudaren0528/11-07-t3-pi` 的基线是 `origin/main`（`7bdf589`），**不含**这些代码。
-- 因此本轮**没有在本分支合并或搬运 `src/im/`**：服务器与本地客户端都用 `git archive origin/master` 的同一棵树运行，本分支只提交文档。
-- 服务器上 `/opt/a2a-msg/.deployed-ref` 写着部署用的 ref；复跑前先核对：
+> **2026-11-11 T100190 起：部署基线是 `origin/main`，`main` 是唯一主分支。** 本节其余内容记录 T3 当时的基线，仅作历史说明。
+
+- 当前部署与本地客户端都以 `git archive origin/main` 的同一棵树运行；`feat/a2a-no-install` 已整体合入 `main`，`master`、`archive/lan`、`chore/trunk-docs` 已确认被 `main` 包含后删除。
+- 每次重新部署按 `main` 的提交建新目录 `/opt/a2a-msg-<短 SHA>`，systemd 单元指向新目录（见 §5.5）；部署目录里的 `.deployed-ref` 写完整 SHA 与 `origin/main`。
+- 复跑前先核对：
 
 ```sh
-git -C <仓库> rev-parse origin/master   # 期望 66f1c53f0545b5825868b8722c451259a9d1f961
+git fetch origin
+git -C <仓库> rev-parse origin/main   # 与 /opt/a2a-msg-<短 SHA>/.deployed-ref 一致
 ```
 
+- 历史：T3 时部署基线是 `origin/master` = `66f1c53f0545b5825868b8722c451259a9d1f961`；T100123 把服务从 `/opt/a2a-msg` 换到 `/opt/a2a-msg-2f29707d7`（`2f29707d7e50637ba46ef4afd48e4784e4d0e905`），并在 Caddy 后改为回环监听（§5.4）。`2f29707d` 与当前 `main` 的 `src/`、`scripts/`、`bin/`、`package*.json` 逐字节相同，差别只在文档。
 - 部署/验证完成后，`tests/im-nana-*.test.js` 在部署树上 `8/8` 通过（`evidence/t3/logs/local-suite-im-nana.log`）。
 
 ## 3. 服务器事实
@@ -75,6 +79,8 @@ git -C <仓库> rev-parse origin/master   # 期望 66f1c53f0545b5825868b8722c451
 中心库只存凭据的 SHA-256 哈希（`im_credentials.secret_hash`），明文只存在于上面的 `credentials/*` 文件与各设备本机副本。
 
 ## 5. 部署步骤（复现用；已执行）
+
+> 首次部署的历史记录（基线 `origin/master`）。**日常重新部署跟 `main`，用 §5.5 的步骤**；本节只在重建整台中心时参考。
 
 ```sh
 # 0) SSH（密钥；口令登录保留但只允许固定来源）
@@ -249,6 +255,37 @@ ssh root@114.134.185.39 'openssl s_client -connect 127.0.0.1:4443 -servername 11
   -CAfile /etc/a2a-msg/tls/ca-cert.pem </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256'
 curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem https://114.134.185.39/ca.pem | shasum -a 256   # 经 Caddy，应为 b6b73089…
 ```
+
+### 5.5 按 `main` 重新部署（2026-11-11 T100190）
+
+`main` 是唯一部署来源；`feat/a2a-no-install` 已合入 `main`。重新部署仍不在服务器 clone，用 `git archive` 建新的版本目录，**端口、Caddy 站点与证书都不动**：
+
+```sh
+SHA=$(git -C <本地仓库> rev-parse origin/main)
+SHORT=${SHA:0:10}
+git -C <本地仓库> archive --format=tar "$SHA" \
+  | ssh -i ~/.ssh/a2a_vps_ed25519 root@<CENTER_PUBLIC_IP> "mkdir -p /opt/a2a-msg-$SHORT && tar -xf - -C /opt/a2a-msg-$SHORT"
+ssh -i ~/.ssh/a2a_vps_ed25519 root@<CENTER_PUBLIC_IP> "cd /opt/a2a-msg-$SHORT && npm ci --omit=dev --no-audit --no-fund"
+echo "$SHA origin/main" \
+  | ssh -i ~/.ssh/a2a_vps_ed25519 root@<CENTER_PUBLIC_IP> "cat > /opt/a2a-msg-$SHORT/.deployed-ref"
+
+# 单元备份后改指向新目录与新提交，再重载重启
+ssh -i ~/.ssh/a2a_vps_ed25519 root@<CENTER_PUBLIC_IP> "mkdir -p /root/a2a-backups && cp /etc/systemd/system/a2a-msg-center.service \
+  /root/a2a-backups/a2a-msg-center.service.\$(date +%Y%m%d-%H%M%S).bak && \
+  sed -i 's|/opt/a2a-msg-2f29707d7|/opt/a2a-msg-$SHORT|g; s|2f29707d7e50637ba46ef4afd48e4784e4d0e905|$SHA|g' \
+  /etc/systemd/system/a2a-msg-center.service && systemctl daemon-reload && systemctl restart a2a-msg-center"
+```
+
+核验：
+
+```sh
+ssh -i ~/.ssh/a2a_vps_ed25519 root@<CENTER_PUBLIC_IP> 'systemctl is-active a2a-msg-center; cat /opt/a2a-msg-*/\.deployed-ref | tail -1; journalctl -u a2a-msg-center -n 20 --no-pager'
+curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem -o /dev/null -w '%{http_code}\n' https://114.134.185.39/join     # 200
+curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem https://114.134.185.39/ca.pem | shasum -a 256                  # b6b73089…（不变）
+# 未认证 POST /mcp → 401 AUTH_REQUIRED；带 Agent 凭据 initialize → 200，serverInfo.name = a2a-msg-im-http
+```
+
+回滚：把单元里的目录与提交改回旧版本（或恢复 `/root/a2a-backups/` 里的单元），`systemctl daemon-reload && systemctl restart a2a-msg-center`；旧 `/opt/a2a-msg-*` 目录保留不删。
 
 ## 6. 本机（MacBook Air M4）侧
 

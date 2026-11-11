@@ -103,7 +103,19 @@ npx --yes github:goudaren0528/a2a-msg#<COMMIT> register --help
 
 ## 仓库与兼容命名
 
-项目展示名为 **a2a-msg**；本地 `origin` 指向 [github.com/goudaren0528/team-mailbox](https://github.com/goudaren0528/team-mailbox)，`package.json` 仍为 `team-mailbox` / `0.1.0`，且 `private: true`，**不表示 npm 已发布**。包、安装目录、MCP 配置键与命令的 `team-mailbox` 是真实兼容名称，切勿自行改成 `a2a-msg`。本地未发现 LICENSE、CONTRIBUTING、SECURITY 或 `.github` 工作流/模板；公开可读**不等于授予开源许可**，后续公开治理详见 [PRD](docs/prd/a2a-msg-agent-im-v1.md#36-公开仓库与-readme-治理r-oss)。不添加未验证 badge 或自称已有贡献/安全渠道。
+项目展示名为 **a2a-msg**；`origin` 指向 [github.com/goudaren0528/a2a-msg](https://github.com/goudaren0528/a2a-msg)，`package.json` 仍为 `team-mailbox` / `0.1.0`，且 `private: true`，**不表示 npm 已发布**。包、安装目录、MCP 配置键与命令的 `team-mailbox` 是真实兼容名称，切勿自行改成 `a2a-msg`。仓库已有 `CONTRIBUTING.md`、`SECURITY.md` 与 `.github/` 的 Issue/PR 模板和 CI 工作流；仍**没有 LICENSE**，公开可读**不等于授予开源许可**，后续公开治理详见 [PRD](docs/prd/a2a-msg-agent-im-v1.md#36-公开仓库与-readme-治理r-oss)。不添加未验证 badge 或自称已有贡献/安全渠道。
+
+## 分支与部署（2026-11-11 起）
+
+- **`main` 是唯一主分支，也是唯一部署来源。** `feat/a2a-no-install` 线已整体合入 `main`（两条历史此前无共同祖先，按 `--allow-unrelated-histories` 合并，冲突取更新的 feat 线内容）；`master`、`archive/lan`、`chore/trunk-docs` 及旧任务分支的内容均已确认被 `main` 包含后删除。不要再向这些分支提交或从它们部署。
+- 部署不在服务器 clone 私有仓库：在可信机器上 `git archive origin/main` 推到 VPS 的 `/opt/a2a-msg-<短 SHA>`（root 只读），`npm ci --omit=dev --no-audit --no-fund`；systemd `a2a-msg-center.service` 以 `a2a` 用户运行 `scripts/im-center.mjs`，只有 `/srv/a2a-msg` 可写。换版本时新建目录并同步单元里的 `WorkingDirectory`、`ExecStart`、`Documentation`、`ReadOnlyPaths` 与 `A2A_MSG_BUILD_COMMIT`，旧目录保留用于回滚。
+- 中心只监听回环 `https://127.0.0.1:4443`（`policy.transport.bindUrl`），公网 443 由 Caddy 终止 TLS 后反代；**不改端口与证书**（证书与 CA 在 `/etc/a2a-msg/tls`，Caddy 使用 `/etc/caddy/a2a/` 下的副本）。完整步骤与回滚见 [T3 部署手册](docs/delivery/2026-11-05-nana-cross-device-messaging/t3-deploy-runbook.md)。
+- 部署后只读核验（2026-11-11 按 `main` 重新部署后实测）：`/join` 200、`/ca.pem` 200，且 CA 字节 SHA-256 仍为 `b6b73089cc68d53a75abde7a0796d61aa8480818ea2927d8630612e0bf6fd298`（未轮换证书）；未认证 `POST /mcp` 返回 401 `AUTH_REQUIRED`，带 Agent 凭据 `initialize` 返回 200 且 `serverInfo.name` 为 `a2a-msg-im-http`。
+
+```sh
+curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem -o /dev/null -w '%{http_code}\n' https://<中心地址>/join
+curl -sS --cacert ~/.a2a-msg/tls/ca-cert.pem https://<中心地址>/ca.pem | shasum -a 256
+```
 
 ## 文档导航
 
