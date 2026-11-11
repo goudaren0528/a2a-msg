@@ -26,7 +26,7 @@ summary: "T3 本机侧交付：香港 VPS 上部署 a2a-msg IM v1 中心（direc
 
 > **2026-11-11 T100190 起：部署基线是 `origin/main`，`main` 是唯一主分支。** 本节其余内容记录 T3 当时的基线，仅作历史说明。
 
-- 当前部署与本地客户端都以 `git archive origin/main` 的同一棵树运行；`feat/a2a-no-install` 已整体合入 `main`，`master`、`archive/lan`、`chore/trunk-docs` 已确认被 `main` 包含后删除。
+- 当前部署与本地客户端都以 `git archive origin/main` 的同一棵树运行；`feat/a2a-no-install` 已整体合入 `main`，`master`、`archive/lan`、`chore/trunk-docs` 与旧任务分支的提交均已通过祖先校验确认被 `main` 包含，远端分支已于 2026-11-11 删除。
 - 每次重新部署按 `main` 的提交建新目录 `/opt/a2a-msg-<短 SHA>`，systemd 单元指向新目录（见 §5.5）；部署目录里的 `.deployed-ref` 写完整 SHA 与 `origin/main`。
 - 复跑前先核对：
 
