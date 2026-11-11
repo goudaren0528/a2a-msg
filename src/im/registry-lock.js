@@ -1,5 +1,6 @@
 import { constants, closeSync, fstatSync, fsyncSync, openSync } from 'node:fs';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
 
 const fail = code => Object.assign(new Error(code), { code });
@@ -8,6 +9,8 @@ const asyncFunction = callback => Object.prototype.toString.call(callback) === '
 const busy = error => (error?.sqliteCode === 5 || error?.sqliteCode === 6 ||
   error?.code === 'SQLITE_BUSY' || error?.code === 'SQLITE_LOCKED' ||
   /\b(?:database is locked|database is busy|SQLITE_BUSY|SQLITE_LOCKED)\b/i.test(String(error?.message ?? '')));
+const sleeper = new Int32Array(new SharedArrayBuffer(4));
+const pause = ms => Atomics.wait(sleeper, 0, 0, ms);
 
 // This is a lock database, not the live IM database. Never unlink it after initialization.
 // SQLite owns the OS byte-range lock; a process dying releases it without a stale PID lease.
@@ -26,7 +29,19 @@ export function createRegistryLock(root, platform) {
     let db;
     try {
       db = new DatabaseSync(path);
-      db.exec('PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=0; PRAGMA user_version=1');
+      // This process won O_EXCL, so it is the only one allowed to initialize the
+      // inode. A process that lost that race can be probing the still empty file
+      // right now; its SHARED lock makes the header write return SQLITE_BUSY
+      // immediately (SQLite skips the busy handler when waiting could deadlock),
+      // so wait out that transient reader instead of misreporting the probe as a
+      // durability failure.
+      for (const deadline = performance.now() + 2000; ;) {
+        try { db.exec('PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=0; PRAGMA user_version=1'); break; }
+        catch (error) {
+          if (!busy(error) || performance.now() >= deadline) throw error;
+          pause(2);
+        }
+      }
       db.close(); db = undefined;
       const current = platform.protectedPath(path);
       if (!same(current, created)) throw fail('REGISTRY_UNTRUSTED_PATH');

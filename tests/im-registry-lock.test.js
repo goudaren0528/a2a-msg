@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, chmodSync, lstatSync, writeFileSync, readFileSync, symlinkSync, linkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, chmodSync, lstatSync, writeFileSync, readFileSync, symlinkSync, linkSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -171,6 +171,39 @@ test('simultaneous first init from independent processes retains one coordinatio
   assert.equal(before.nlink, 1);
   createBackupRegistry({ dir });
   assert.equal(lstatSync(path).ino, before.ino);
+});
+
+test('first init waits out a reader that probed the just-created inode', { skip: !unix, timeout: 20000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'registry-init-probe-')); chmodSync(root, 0o700);
+  const dir = join(root, 'registry'); mkdirSync(dir, { mode: 0o700 });
+  const path = join(dir, 'coordination.sqlite'), marker = join(root, 'reader-holding');
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  const children = [];
+  t.after(async () => {
+    await stopChildren(children);
+    rmSync(root, { recursive: true, force: true });
+  });
+  const reader = trackedFork(new URL('./fixtures/im-registry-lock/reader.js', import.meta.url),
+    [dir, marker, '500'], children);
+  let blocked = false;
+  const platform = { privateDirectory: path => path, protectedPath: path => lstatSync(path),
+    checkOpened: (opened, before, openedNow) => {
+      assert.equal(before.ino, openedNow.ino);
+      if (blocked) return;
+      blocked = true;
+      // Stop the O_EXCL winner exactly where a loser's probe can interleave:
+      // after the raw inode exists, before SQLite writes the header.
+      const deadline = performance.now() + 5000;
+      while (!existsSync(marker)) {
+        assert.ok(performance.now() < deadline, 'transient reader never acquired the lock');
+        Atomics.wait(sleeper, 0, 0, 1);
+      }
+    },
+    syncDirectory() {} };
+  const lock = createRegistryLock(dir, platform);
+  assert.equal(await expectMessage(reader, ['released'], 'transient reader release'), 'released');
+  assert.equal(lock.withLock(() => 42), 42);
+  assert.equal(lstatSync(path).nlink, 1);
 });
 
 test('native separate process lock releases upon holder death; revocation wins afterward', { skip: !unix, timeout: 20000 }, async t => {
