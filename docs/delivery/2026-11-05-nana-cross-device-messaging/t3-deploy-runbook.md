@@ -32,7 +32,10 @@ summary: "T3 本机侧交付：香港 VPS 上部署 a2a-msg IM v1 中心（direc
 
 ```sh
 git fetch origin
-git -C <仓库> rev-parse origin/main   # 与 /opt/a2a-msg-<短 SHA>/.deployed-ref 一致
+cat /opt/a2a-msg-<短 SHA>/.deployed-ref     # 部署时写入的 main 提交
+git -C <仓库> rev-parse origin/main        # 可等于或新于部署提交
+git -C <仓库> diff --stat <部署提交>..origin/main -- src scripts bin package.json package-lock.json
+# 上面为空 = 部署后只有文档变化，不需要为它重部署
 ```
 
 - 历史：T3 时部署基线是 `origin/master` = `66f1c53f0545b5825868b8722c451259a9d1f961`；T100123 把服务从 `/opt/a2a-msg` 换到 `/opt/a2a-msg-2f29707d7`（`2f29707d7e50637ba46ef4afd48e4784e4d0e905`），并在 Caddy 后改为回环监听（§5.4）。`2f29707d` 与当前 `main` 的 `src/`、`scripts/`、`bin/`、`package*.json` 逐字节相同，差别只在文档。
